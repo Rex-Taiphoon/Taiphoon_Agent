@@ -1,4 +1,4 @@
-# Taiphoon_Agent 🚁
+# Taiphoon_Agent
 
 **無人機任務與感測器執行中樞**
 
@@ -16,17 +16,34 @@ Taiphoon_Agent 是一套裝載於無人載具上的自主飛行控制中樞，�
 
 ## 系統架構
 
-\mermaid
-flowchart RL
-    GCS[地面控制站] <-->|ROS2 / QGC| Agent1[Taiphoon_Agent #1]
-    Agent1 <-->|ROS2| FC1[PX4 / Ardupilot]
-    Agent1 <-->|ROS2| Agent2[Taiphoon_Agent #2]
-    Agent2 <-->|ROS2| FC2[PX4 / Ardupilot]
-    Agent1 <-->|ROS2| Agent3[Taiphoon_Agent #N]
-    Agent3 <-->|ROS2| FC3[PX4 / Ardupilot]
+```
++--------------------+          +------------------------+
+|                    |  ROS2    |  Taiphoon_Agent #1     |
+|   地面控制站 (GCS)  |<-------->|  (uXRCE-DDS-Agent)     |
+|   (QGC / ROS2)     |          |         |              |
+|                    |          +---------|--------------+
++--------------------+                    | ROS2 / uXRCE-DDS
+                                          |
+                                   +------|------+
+                                   | PX4 #1     |
+                                   | (Ardupilot) |
+                                   +-------------+
+
++------------------------+          +------------------------+
+|  Taiphoon_Agent #2     |  ROS2    |  Taiphoon_Agent #N     |
+|  (uXRCE-DDS-Agent)     |<-------->|  (uXRCE-DDS-Agent)     |
+|         |              |          |         |              |
++---------|--------------+          +---------|--------------+
+          | ROS2 / uXRCE-DDS                  | ROS2 / uXRCE-DDS
+   +------|------+                     +------|------+
+   | PX4 #2     |                     | PX4 #N     |
+   | (Ardupilot) |                     | (Ardupilot) |
+   +-------------+                     +-------------+
+```
+
 - 一個 Taiphoon_Agent 直接控制一臺飛控
 - 編隊時由一個 Agent 向另一個 Agent 下達高階指令
-- 對地面站的 ROS2 Topic 使用 \/fmu1_agent/xxx\ 格式
+- 對地面站的 ROS2 Topic 使用 `/fmu1_agent/xxx/` 格式
 
 ## 快速開始
 
@@ -39,14 +56,16 @@ flowchart RL
 
 ### 啟動模擬
 
-\ash
+```bash
 # 啟動 PX4 SITL 模擬（預設 3 臺無人機）
 ./skills/px4-sitl-launcher/scripts/launch_all.sh
+```
+
 ## 核心任務
 
 | 任務 | 說明 |
 |------|------|
-| MicroROS Agent | 負責 PX4 / Ardupilot 的 uXRCE-DDS 雙向橋接 |
+| uXRCE-DDS-Agent | 負責 PX4 / Ardupilot 的 uXRCE-DDS 雙向橋接 |
 | 自主飛行 | 編隊飛行、避障、導航等任務排程 |
 | 邊緣運算 | 視覺辨識、感測器融合、即時定位 |
 | 影像串流 | 向地面控制站轉發即時影像 |
@@ -56,7 +75,7 @@ flowchart RL
 - **語言**：C++ 為主，必要時輔以 Python / C
 - **編碼風格**：Allman 括號、Doxygen 註解、遵循 SOLID 原則
 - **命名慣例**：請參閱 [CODE_CONSTRAINT.md](CODE_CONSTRAINT.md)
-- **提交格式**：\模組: 更動項目\（簡要描述，100 字內）
+- **提交格式**：`模組: 更動項目`（簡要描述，100 字內）
 
 ## 授權條款
 
