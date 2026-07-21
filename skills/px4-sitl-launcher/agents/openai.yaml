@@ -1,0 +1,3 @@
+﻿interface:
+  display_name: "PX4 SITL Launcher"
+  short_description: "Launch and manage multi-vehicle PX4 SITL simulations with uXRCE-DDS ROS2 bridging"
