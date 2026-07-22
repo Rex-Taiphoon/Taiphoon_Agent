@@ -1,0 +1,86 @@
+[0.813s] DEBUG:colcon:Command line arguments: ['/usr/bin/colcon', 'build', '--packages-select', 'taiphoon_agent']
+[0.813s] DEBUG:colcon:Parsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='build', build_base='build', install_base='install', merge_install=False, symlink_install=False, test_result_base=None, continue_on_error=False, executor='parallel', parallel_workers=8, event_handlers=None, ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['.'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=['taiphoon_agent'], packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, allow_overriding=[], cmake_args=None, cmake_target=None, cmake_target_skip_unavailable=False, cmake_clean_cache=False, cmake_clean_first=False, cmake_force_configure=False, ament_cmake_args=None, catkin_cmake_args=None, catkin_skip_building_tests=False, verb_parser=<colcon_defaults.argument_parser.defaults.DefaultArgumentsDecorator object at 0x782e8b065a20>, verb_extension=<colcon_core.verb.build.BuildVerb object at 0x782e8b157100>, main=<bound method BuildVerb.main of <colcon_core.verb.build.BuildVerb object at 0x782e8b157100>>)
+[0.993s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) check parameters
+[0.993s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) check parameters
+[0.993s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) check parameters
+[0.993s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) check parameters
+[0.993s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) discover
+[0.994s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) discover
+[0.994s] INFO:colcon.colcon_core.package_discovery:Crawling recursively for packages in '/home/taiphoon/Taiphoon_Agent'
+[0.994s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['ignore', 'ignore_ament_install']
+[0.994s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ignore'
+[0.994s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ignore_ament_install'
+[0.994s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['colcon_pkg']
+[0.995s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'colcon_pkg'
+[0.995s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['colcon_meta']
+[0.995s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'colcon_meta'
+[0.995s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['ros']
+[0.995s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ros'
+[1.087s] DEBUG:colcon.colcon_core.package_identification:Package '.' with type 'ros.ament_cmake' and name 'taiphoon_agent'
+[1.087s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) using defaults
+[1.087s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) discover
+[1.087s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) using defaults
+[1.087s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) discover
+[1.087s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) using defaults
+[1.173s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) check parameters
+[1.174s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) discover
+[1.183s] DEBUG:colcon.colcon_installed_package_information.package_discovery:Found 1 installed packages in /home/taiphoon/px4_ros_uxrce_dds_ws/install
+[1.187s] DEBUG:colcon.colcon_installed_package_information.package_discovery:Found 273 installed packages in /opt/ros/humble
+[1.195s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) using defaults
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_args' from command line to 'None'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_target' from command line to 'None'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_clean_cache' from command line to 'False'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_clean_first' from command line to 'False'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'cmake_force_configure' from command line to 'False'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'ament_cmake_args' from command line to 'None'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'catkin_cmake_args' from command line to 'None'
+[1.345s] Level 5:colcon.colcon_core.verb:set package 'taiphoon_agent' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.345s] DEBUG:colcon.colcon_core.verb:Building package 'taiphoon_agent' with the following arguments: {'ament_cmake_args': None, 'build_base': '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent', 'merge_install': False, 'path': '/home/taiphoon/Taiphoon_Agent', 'symlink_install': False, 'test_result_base': None}
+[1.346s] INFO:colcon.colcon_core.executor:Executing jobs using 'parallel' executor
+[1.348s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:run_until_complete
+[1.349s] INFO:colcon.colcon_ros.task.ament_cmake.build:Building ROS package in '/home/taiphoon/Taiphoon_Agent' with build type 'ament_cmake'
+[1.349s] INFO:colcon.colcon_cmake.task.cmake.build:Building CMake package in '/home/taiphoon/Taiphoon_Agent'
+[1.358s] INFO:colcon.colcon_core.plugin_system:Skipping extension 'colcon_core.shell.bat': Not used on non-Windows systems
+[1.358s] INFO:colcon.colcon_core.shell:Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[1.358s] DEBUG:colcon.colcon_core.shell:Skip shell extension 'dsv' for command environment
+[1.385s] DEBUG:colcon.colcon_core.event_handler.log_command:Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[16.744s] DEBUG:colcon.colcon_core.event_handler.log_command:Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[16.745s] Level 1:colcon.colcon_core.environment:create_environment_scripts_only(taiphoon_agent)
+[16.750s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent' for CMake module files
+[16.765s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent' for CMake config files
+[16.767s] Level 1:colcon.colcon_core.shell:create_environment_hook('taiphoon_agent', 'cmake_prefix_path')
+[16.768s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/hook/cmake_prefix_path.ps1'
+[16.770s] INFO:colcon.colcon_core.shell:Creating environment descriptor '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/hook/cmake_prefix_path.dsv'
+[16.772s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/hook/cmake_prefix_path.sh'
+[16.774s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib'
+[16.775s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/bin'
+[16.775s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/pkgconfig/taiphoon_agent.pc'
+[16.775s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/python3.10/site-packages'
+[16.776s] Level 1:colcon.colcon_core.environment:checking '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/bin'
+[16.777s] INFO:colcon.colcon_core.shell:Creating package script '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.ps1'
+[16.779s] INFO:colcon.colcon_core.shell:Creating package descriptor '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.dsv'
+[16.780s] INFO:colcon.colcon_core.shell:Creating package script '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.sh'
+[16.783s] INFO:colcon.colcon_core.shell:Creating package script '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.bash'
+[16.784s] INFO:colcon.colcon_core.shell:Creating package script '/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.zsh'
+[16.785s] Level 1:colcon.colcon_core.environment:create_file_with_runtime_dependencies(/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/colcon-core/packages/taiphoon_agent)
+[16.796s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:closing loop
+[16.797s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:loop closed
+[16.797s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:run_until_complete finished with '2'
+[16.797s] DEBUG:colcon.colcon_core.event_reactor:joining thread
+[16.894s] INFO:colcon.colcon_core.plugin_system:Skipping extension 'colcon_notification.desktop_notification.notify_send': Could not find 'notify-send'
+[16.894s] INFO:colcon.colcon_core.plugin_system:Skipping extension 'colcon_notification.desktop_notification.terminal_notifier': Not used on non-Darwin systems
+[16.894s] INFO:colcon.colcon_core.plugin_system:Skipping extension 'colcon_notification.desktop_notification.win32': Not used on non-Windows systems
+[16.894s] INFO:colcon.colcon_notification.desktop_notification:Sending desktop notification using 'notify2'
+[16.895s] DEBUG:colcon.colcon_notification.desktop_notification.notify2:Failed to initialize notify2: org.freedesktop.DBus.Error.FileNotFound: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[16.895s] DEBUG:colcon.colcon_core.event_reactor:joined thread
+[16.896s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/taiphoon/Taiphoon_Agent/install/local_setup.ps1'
+[16.898s] INFO:colcon.colcon_core.shell:Creating prefix util module '/home/taiphoon/Taiphoon_Agent/install/_local_setup_util_ps1.py'
+[16.901s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/taiphoon/Taiphoon_Agent/install/setup.ps1'
+[16.906s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/taiphoon/Taiphoon_Agent/install/local_setup.sh'
+[16.908s] INFO:colcon.colcon_core.shell:Creating prefix util module '/home/taiphoon/Taiphoon_Agent/install/_local_setup_util_sh.py'
+[16.911s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/taiphoon/Taiphoon_Agent/install/setup.sh'
+[16.915s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/taiphoon/Taiphoon_Agent/install/local_setup.bash'
+[16.919s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/taiphoon/Taiphoon_Agent/install/setup.bash'
+[16.930s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/taiphoon/Taiphoon_Agent/install/local_setup.zsh'
+[16.932s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/taiphoon/Taiphoon_Agent/install/setup.zsh'

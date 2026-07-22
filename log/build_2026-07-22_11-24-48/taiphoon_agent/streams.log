@@ -1,0 +1,27 @@
+[0.015s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[0.083s] Consolidate compiler generated dependencies of target basic_controller
+[0.113s] [100%] Built target basic_controller
+[0.130s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[0.143s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent
+[0.154s] -- Install configuration: ""
+[0.154s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/taiphoon_agent/basic_controller
+[0.154s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config
+[0.155s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config/basic_controller.yaml
+[0.155s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch
+[0.155s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch/basic_controller.launch.py
+[0.155s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/package_run_dependencies/taiphoon_agent
+[0.155s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/parent_prefix_path/taiphoon_agent
+[0.156s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.sh
+[0.156s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.dsv
+[0.156s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.sh
+[0.156s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.dsv
+[0.157s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.bash
+[0.157s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.sh
+[0.158s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.zsh
+[0.158s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.dsv
+[0.158s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.dsv
+[0.158s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/packages/taiphoon_agent
+[0.159s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig.cmake
+[0.159s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig-version.cmake
+[0.159s] -- Up-to-date: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.xml
+[0.160s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent

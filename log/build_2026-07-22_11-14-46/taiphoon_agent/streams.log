@@ -1,0 +1,67 @@
+[0.029s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake /home/taiphoon/Taiphoon_Agent -DCMAKE_INSTALL_PREFIX=/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent
+[0.420s] -- The C compiler identification is GNU 11.4.0
+[1.159s] -- The CXX compiler identification is GNU 11.4.0
+[1.639s] -- Detecting C compiler ABI info
+[1.900s] -- Detecting C compiler ABI info - done
+[1.912s] -- Check for working C compiler: /usr/bin/cc - skipped
+[1.913s] -- Detecting C compile features
+[1.915s] -- Detecting C compile features - done
+[1.921s] -- Detecting CXX compiler ABI info
+[2.189s] -- Detecting CXX compiler ABI info - done
+[2.204s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[2.205s] -- Detecting CXX compile features
+[2.205s] -- Detecting CXX compile features - done
+[2.227s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[3.082s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[3.338s] -- Found rclcpp: 16.0.19 (/opt/ros/humble/share/rclcpp/cmake)
+[3.683s] -- Found rosidl_generator_c: 3.1.9 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[3.702s] -- Found rosidl_adapter: 3.1.9 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[3.751s] -- Found rosidl_generator_cpp: 3.1.9 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[3.813s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[3.868s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[4.030s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[4.041s] -- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)
+[5.958s] -- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.0.2")  
+[8.390s] -- Found FastRTPS: /opt/ros/humble/include  
+[11.676s] -- Using RMW implementation 'rmw_fastrtps_cpp' as default
+[11.699s] -- Looking for pthread.h
+[11.936s] -- Looking for pthread.h - found
+[11.937s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+[12.114s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+[12.116s] -- Found Threads: TRUE  
+[12.232s] -- Found px4_msgs: 1.17.0 (/home/taiphoon/px4_ros_uxrce_dds_ws/install/px4_msgs/share/px4_msgs/cmake)
+[12.367s] -- Configuring done
+[12.385s] -- Generating done
+[12.393s] -- Build files have been written to: /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent
+[12.407s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake /home/taiphoon/Taiphoon_Agent -DCMAKE_INSTALL_PREFIX=/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent
+[12.411s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[12.468s] [ 75%] Building CXX object CMakeFiles/basic_controller.dir/src/nodes/basic_controller_node.cpp.o
+[12.468s] [ 75%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o
+[12.468s] [ 75%] Building CXX object CMakeFiles/basic_controller.dir/src/main.cpp.o
+[29.153s] [100%] Linking CXX executable basic_controller
+[30.063s] [100%] Built target basic_controller
+[30.076s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[30.089s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent
+[30.103s] -- Install configuration: ""
+[30.104s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/taiphoon_agent/basic_controller
+[30.109s] -- Set runtime path of "/home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/taiphoon_agent/basic_controller" to ""
+[30.109s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config
+[30.110s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config/basic_controller.yaml
+[30.110s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch
+[30.111s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch/basic_controller.launch.py
+[30.113s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/package_run_dependencies/taiphoon_agent
+[30.114s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/parent_prefix_path/taiphoon_agent
+[30.114s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.sh
+[30.115s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.dsv
+[30.116s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.sh
+[30.117s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.dsv
+[30.117s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.bash
+[30.117s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.sh
+[30.118s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.zsh
+[30.118s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.dsv
+[30.118s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.dsv
+[30.119s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/packages/taiphoon_agent
+[30.120s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig.cmake
+[30.121s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig-version.cmake
+[30.121s] -- Installing: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.xml
+[30.123s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent

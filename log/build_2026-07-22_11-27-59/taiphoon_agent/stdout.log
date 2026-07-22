@@ -1,0 +1,4 @@
+[ 25%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o
+[ 50%] Linking CXX executable basic_controller
+[100%] Built target basic_controller
+-- Install configuration: ""

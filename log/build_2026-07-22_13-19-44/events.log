@@ -1,0 +1,221 @@
+[0.000000] (-) TimerEvent: {}
+[0.002082] (taiphoon_agent) JobQueued: {'identifier': 'taiphoon_agent', 'dependencies': OrderedDict()}
+[0.002182] (taiphoon_agent) JobStarted: {'identifier': 'taiphoon_agent'}
+[0.015811] (taiphoon_agent) JobProgress: {'identifier': 'taiphoon_agent', 'progress': 'cmake'}
+[0.016862] (taiphoon_agent) JobProgress: {'identifier': 'taiphoon_agent', 'progress': 'build'}
+[0.018912] (taiphoon_agent) Command: {'cmd': ['/usr/bin/cmake', '--build', '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent', '--', '-j8', '-l8'], 'cwd': '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent', 'env': OrderedDict([('USER', 'taiphoon'), ('SHLVL', '1'), ('HOME', '/home/taiphoon'), ('OLDPWD', '/home/taiphoon/Taiphoon_Agent'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('WSL_DISTRO_NAME', 'Ubuntu-22.04'), ('WAYLAND_DISPLAY', 'wayland-0'), ('LOGNAME', 'taiphoon'), ('NAME', 'DESKTOP-HFF56R9'), ('WSL_INTEROP', '/run/WSL/75054_interop'), ('PULSE_SERVER', 'unix:/mnt/wslg/PulseServer'), ('_', '/usr/bin/colcon'), ('TERM', 'xterm-256color'), ('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Users/JK/.codex/tmp/arg0/codex-arg01nZjvT:/mnt/c/Users/JK/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program Files/dotnet/:/mnt/c/Program Files (x86)/STMicroelectronics/STM32 ST-LINK Utility/ST-LINK Utility:/mnt/c/Users/JK/AppData/Local/Microsoft/WindowsApps:/mnt/c/Users/JK/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/JK/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:/mnt/c/Users/JK/AppData/Local/OpenAI/Codex/bin/ada252862d154cdd:/mnt/c/Program Files/WindowsApps/OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0/app/resources'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('DISPLAY', ':0'), ('LANG', 'C.UTF-8'), ('SHELL', '/bin/bash'), ('PWD', '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent'), ('COLCON', '1'), ('WSL2_GUI_APPS_ENABLED', '1'), ('HOSTTYPE', 'x86_64'), ('WSLENV', '')]), 'shell': False}
+[0.100026] (-) TimerEvent: {}
+[0.121099] (taiphoon_agent) StdoutLine: {'line': b'[ 50%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o\n'}
+[0.121522] (taiphoon_agent) StdoutLine: {'line': b'[ 50%] Building CXX object CMakeFiles/basic_controller.dir/src/main.cpp.o\n'}
+[0.126094] (taiphoon_agent) StdoutLine: {'line': b'[ 75%] Building CXX object CMakeFiles/basic_controller.dir/src/nodes/basic_controller_node.cpp.o\n'}
+[0.200211] (-) TimerEvent: {}
+[0.300535] (-) TimerEvent: {}
+[0.400888] (-) TimerEvent: {}
+[0.501251] (-) TimerEvent: {}
+[0.601564] (-) TimerEvent: {}
+[0.701834] (-) TimerEvent: {}
+[0.802137] (-) TimerEvent: {}
+[0.902453] (-) TimerEvent: {}
+[1.002737] (-) TimerEvent: {}
+[1.103136] (-) TimerEvent: {}
+[1.203762] (-) TimerEvent: {}
+[1.304258] (-) TimerEvent: {}
+[1.404590] (-) TimerEvent: {}
+[1.504904] (-) TimerEvent: {}
+[1.605233] (-) TimerEvent: {}
+[1.705571] (-) TimerEvent: {}
+[1.806079] (-) TimerEvent: {}
+[1.906770] (-) TimerEvent: {}
+[2.007201] (-) TimerEvent: {}
+[2.107458] (-) TimerEvent: {}
+[2.207781] (-) TimerEvent: {}
+[2.308290] (-) TimerEvent: {}
+[2.408656] (-) TimerEvent: {}
+[2.509762] (-) TimerEvent: {}
+[2.610662] (-) TimerEvent: {}
+[2.711109] (-) TimerEvent: {}
+[2.811462] (-) TimerEvent: {}
+[2.911794] (-) TimerEvent: {}
+[3.012129] (-) TimerEvent: {}
+[3.112538] (-) TimerEvent: {}
+[3.213166] (-) TimerEvent: {}
+[3.313630] (-) TimerEvent: {}
+[3.413884] (-) TimerEvent: {}
+[3.514159] (-) TimerEvent: {}
+[3.614435] (-) TimerEvent: {}
+[3.714752] (-) TimerEvent: {}
+[3.815198] (-) TimerEvent: {}
+[3.915715] (-) TimerEvent: {}
+[4.016252] (-) TimerEvent: {}
+[4.116654] (-) TimerEvent: {}
+[4.216996] (-) TimerEvent: {}
+[4.317312] (-) TimerEvent: {}
+[4.417774] (-) TimerEvent: {}
+[4.518121] (-) TimerEvent: {}
+[4.618524] (-) TimerEvent: {}
+[4.718878] (-) TimerEvent: {}
+[4.819203] (-) TimerEvent: {}
+[4.919557] (-) TimerEvent: {}
+[5.019975] (-) TimerEvent: {}
+[5.120306] (-) TimerEvent: {}
+[5.220641] (-) TimerEvent: {}
+[5.320980] (-) TimerEvent: {}
+[5.421317] (-) TimerEvent: {}
+[5.521604] (-) TimerEvent: {}
+[5.622150] (-) TimerEvent: {}
+[5.722416] (-) TimerEvent: {}
+[5.822817] (-) TimerEvent: {}
+[5.923300] (-) TimerEvent: {}
+[6.023821] (-) TimerEvent: {}
+[6.124759] (-) TimerEvent: {}
+[6.225551] (-) TimerEvent: {}
+[6.325877] (-) TimerEvent: {}
+[6.426167] (-) TimerEvent: {}
+[6.526457] (-) TimerEvent: {}
+[6.626790] (-) TimerEvent: {}
+[6.727158] (-) TimerEvent: {}
+[6.828027] (-) TimerEvent: {}
+[6.928694] (-) TimerEvent: {}
+[7.029050] (-) TimerEvent: {}
+[7.129567] (-) TimerEvent: {}
+[7.229974] (-) TimerEvent: {}
+[7.330476] (-) TimerEvent: {}
+[7.430891] (-) TimerEvent: {}
+[7.531299] (-) TimerEvent: {}
+[7.631698] (-) TimerEvent: {}
+[7.732127] (-) TimerEvent: {}
+[7.832442] (-) TimerEvent: {}
+[7.932719] (-) TimerEvent: {}
+[8.033014] (-) TimerEvent: {}
+[8.133382] (-) TimerEvent: {}
+[8.233804] (-) TimerEvent: {}
+[8.334112] (-) TimerEvent: {}
+[8.434409] (-) TimerEvent: {}
+[8.534651] (-) TimerEvent: {}
+[8.635013] (-) TimerEvent: {}
+[8.735340] (-) TimerEvent: {}
+[8.835809] (-) TimerEvent: {}
+[8.936540] (-) TimerEvent: {}
+[9.037262] (-) TimerEvent: {}
+[9.138060] (-) TimerEvent: {}
+[9.238656] (-) TimerEvent: {}
+[9.339051] (-) TimerEvent: {}
+[9.439402] (-) TimerEvent: {}
+[9.539720] (-) TimerEvent: {}
+[9.640049] (-) TimerEvent: {}
+[9.740387] (-) TimerEvent: {}
+[9.840716] (-) TimerEvent: {}
+[9.941045] (-) TimerEvent: {}
+[10.041340] (-) TimerEvent: {}
+[10.141666] (-) TimerEvent: {}
+[10.242011] (-) TimerEvent: {}
+[10.342381] (-) TimerEvent: {}
+[10.442764] (-) TimerEvent: {}
+[10.543072] (-) TimerEvent: {}
+[10.643405] (-) TimerEvent: {}
+[10.744030] (-) TimerEvent: {}
+[10.844435] (-) TimerEvent: {}
+[10.944751] (-) TimerEvent: {}
+[11.045111] (-) TimerEvent: {}
+[11.145474] (-) TimerEvent: {}
+[11.245836] (-) TimerEvent: {}
+[11.346152] (-) TimerEvent: {}
+[11.446631] (-) TimerEvent: {}
+[11.546917] (-) TimerEvent: {}
+[11.647118] (-) TimerEvent: {}
+[11.747749] (-) TimerEvent: {}
+[11.848260] (-) TimerEvent: {}
+[11.948599] (-) TimerEvent: {}
+[12.048926] (-) TimerEvent: {}
+[12.149224] (-) TimerEvent: {}
+[12.249719] (-) TimerEvent: {}
+[12.350025] (-) TimerEvent: {}
+[12.450377] (-) TimerEvent: {}
+[12.550654] (-) TimerEvent: {}
+[12.650922] (-) TimerEvent: {}
+[12.751464] (-) TimerEvent: {}
+[12.852201] (-) TimerEvent: {}
+[12.952606] (-) TimerEvent: {}
+[13.052920] (-) TimerEvent: {}
+[13.153350] (-) TimerEvent: {}
+[13.253617] (-) TimerEvent: {}
+[13.354510] (-) TimerEvent: {}
+[13.455508] (-) TimerEvent: {}
+[13.555975] (-) TimerEvent: {}
+[13.656290] (-) TimerEvent: {}
+[13.756670] (-) TimerEvent: {}
+[13.856968] (-) TimerEvent: {}
+[13.957331] (-) TimerEvent: {}
+[14.057625] (-) TimerEvent: {}
+[14.158000] (-) TimerEvent: {}
+[14.258522] (-) TimerEvent: {}
+[14.358886] (-) TimerEvent: {}
+[14.459178] (-) TimerEvent: {}
+[14.559465] (-) TimerEvent: {}
+[14.659790] (-) TimerEvent: {}
+[14.760081] (-) TimerEvent: {}
+[14.860369] (-) TimerEvent: {}
+[14.960718] (-) TimerEvent: {}
+[15.061005] (-) TimerEvent: {}
+[15.161319] (-) TimerEvent: {}
+[15.261680] (-) TimerEvent: {}
+[15.361905] (-) TimerEvent: {}
+[15.462250] (-) TimerEvent: {}
+[15.563049] (-) TimerEvent: {}
+[15.663810] (-) TimerEvent: {}
+[15.764124] (-) TimerEvent: {}
+[15.864452] (-) TimerEvent: {}
+[15.964755] (-) TimerEvent: {}
+[16.065114] (-) TimerEvent: {}
+[16.165932] (-) TimerEvent: {}
+[16.266472] (-) TimerEvent: {}
+[16.366783] (-) TimerEvent: {}
+[16.467175] (-) TimerEvent: {}
+[16.567632] (-) TimerEvent: {}
+[16.667884] (-) TimerEvent: {}
+[16.768166] (-) TimerEvent: {}
+[16.770906] (taiphoon_agent) StdoutLine: {'line': b'[100%] Linking CXX executable basic_controller\n'}
+[16.869913] (-) TimerEvent: {}
+[16.970273] (-) TimerEvent: {}
+[17.070547] (-) TimerEvent: {}
+[17.170917] (-) TimerEvent: {}
+[17.271252] (-) TimerEvent: {}
+[17.371622] (-) TimerEvent: {}
+[17.471995] (-) TimerEvent: {}
+[17.572667] (-) TimerEvent: {}
+[17.673172] (-) TimerEvent: {}
+[17.773584] (-) TimerEvent: {}
+[17.873905] (-) TimerEvent: {}
+[17.974297] (-) TimerEvent: {}
+[18.074695] (-) TimerEvent: {}
+[18.175511] (-) TimerEvent: {}
+[18.276252] (-) TimerEvent: {}
+[18.376643] (-) TimerEvent: {}
+[18.382278] (taiphoon_agent) StdoutLine: {'line': b'[100%] Built target basic_controller\n'}
+[18.413086] (taiphoon_agent) CommandEnded: {'returncode': 0}
+[18.414351] (taiphoon_agent) JobProgress: {'identifier': 'taiphoon_agent', 'progress': 'install'}
+[18.428764] (taiphoon_agent) Command: {'cmd': ['/usr/bin/cmake', '--install', '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent'], 'cwd': '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent', 'env': OrderedDict([('USER', 'taiphoon'), ('SHLVL', '1'), ('HOME', '/home/taiphoon'), ('OLDPWD', '/home/taiphoon/Taiphoon_Agent'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('WSL_DISTRO_NAME', 'Ubuntu-22.04'), ('WAYLAND_DISPLAY', 'wayland-0'), ('LOGNAME', 'taiphoon'), ('NAME', 'DESKTOP-HFF56R9'), ('WSL_INTEROP', '/run/WSL/75054_interop'), ('PULSE_SERVER', 'unix:/mnt/wslg/PulseServer'), ('_', '/usr/bin/colcon'), ('TERM', 'xterm-256color'), ('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Users/JK/.codex/tmp/arg0/codex-arg01nZjvT:/mnt/c/Users/JK/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program Files/dotnet/:/mnt/c/Program Files (x86)/STMicroelectronics/STM32 ST-LINK Utility/ST-LINK Utility:/mnt/c/Users/JK/AppData/Local/Microsoft/WindowsApps:/mnt/c/Users/JK/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/JK/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:/mnt/c/Users/JK/AppData/Local/OpenAI/Codex/bin/ada252862d154cdd:/mnt/c/Program Files/WindowsApps/OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0/app/resources'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('DISPLAY', ':0'), ('LANG', 'C.UTF-8'), ('SHELL', '/bin/bash'), ('PWD', '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent'), ('COLCON', '1'), ('WSL2_GUI_APPS_ENABLED', '1'), ('HOSTTYPE', 'x86_64'), ('WSLENV', '')]), 'shell': False}
+[18.443453] (taiphoon_agent) StdoutLine: {'line': b'-- Install configuration: ""\n'}
+[18.444045] (taiphoon_agent) StdoutLine: {'line': b'-- Execute custom install script\n'}
+[18.444524] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/taiphoon_agent/basic_controller\n'}
+[18.444911] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config/basic_controller.yaml\n'}
+[18.445191] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch/basic_controller.launch.py\n'}
+[18.446844] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/package_run_dependencies/taiphoon_agent\n'}
+[18.446984] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/parent_prefix_path/taiphoon_agent\n'}
+[18.447047] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.sh\n'}
+[18.447104] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.dsv\n'}
+[18.447157] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.sh\n'}
+[18.447211] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.dsv\n'}
+[18.447293] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.bash\n'}
+[18.447363] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.sh\n'}
+[18.447417] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.zsh\n'}
+[18.447471] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.dsv\n'}
+[18.447523] (taiphoon_agent) StdoutLine: {'line': b'-- Symlinking: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.dsv\n'}
+[18.463006] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/packages/taiphoon_agent\n'}
+[18.463818] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig.cmake\n'}
+[18.464046] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig-version.cmake\n'}
+[18.464159] (taiphoon_agent) StdoutLine: {'line': b'-- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.xml\n'}
+[18.468413] (taiphoon_agent) CommandEnded: {'returncode': 0}
+[18.476819] (-) TimerEvent: {}
+[18.509278] (taiphoon_agent) JobEnded: {'identifier': 'taiphoon_agent', 'rc': 0}
+[18.510542] (-) EventReactorShutdown: {}

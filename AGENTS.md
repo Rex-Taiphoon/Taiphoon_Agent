@@ -22,7 +22,7 @@ Taiphoon_Agent開發時必須要注意以下基本架構：
 - 與無人機、地面控制站的資料鏈**必須**基於ROS2的通訊系統
 - 一個Taiphoon_Agnet只能直接控制一臺PX4或Ardupilot的飛控，如果要進行編隊，應該由一個Taiphoon_Agent向另一個Taiphoon_Agent下指令
 - 對地面端與其他Taiphoon_Agnet的ROS2 topic應盡可能留下必要的即可，避免頻寬消耗
-- 如果無人機的ROS2為/fmu1，對地面站與其他Taiphoon_Agnet的ROS2 topic應為/fmu1_agent/xxx
+- 如果無人機的ROS2為/fmu1，對地面站與其他Taiphoon_Agnet的ROS2 topic應為/fmu1_agent/xxx1表示地面站或其他Agent對其下的命令；對所有Agent的統一命令應為/fmu_all_agent，所有Agent都要服從此命令，作為統一控制使用
 ## 程式開發原則
 - 所有中文註解必須要以繁體中文撰寫，並且不可以出現中國用語
 - 所有開發僅限於Taiphoon_Agent這個專案
@@ -39,7 +39,7 @@ Taiphoon_Agent開發時必須要注意以下基本架構：
 - 每次測試都需要留下Log
 - 測試時一定要參考驗收標準，如果沒有符合標準應該將錯誤紀錄留下，並且在下一次程式修正注意這個問題
 - 所有無人機初始狀態為一字型排列，模擬起始位置為(25.03996592258936, 121.51195163336611)
-- 一次啟動3臺無人機模擬器，並且下達同時解鎖(Arm)與起飛至5m(Takeoff to 5m)
+- 一次啟動3臺無人機模擬器，並切換到Offboard模式，依序解鎖(Arm)並起飛至5m(Takeoff to 5m)
 
 # 驗收標準
 - 每一個Taiphoon_Agnet是否都能連上各自的飛控/模擬器，且數量必須正確(一個Taiphoon_Agnet對應到一個飛控/模擬器)

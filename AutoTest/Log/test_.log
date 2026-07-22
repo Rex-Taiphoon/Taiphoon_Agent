@@ -1,0 +1,20 @@
+=== BasicController Test Log ===
+Timestamp: 07/22/2026 11:26:26
+
+[INFO] [1784690790.425393898] [fmu1.basic_controller_node]: Parameters: target_altitude=3.00 m, hover_duration=3.00 s
+[INFO] [1784690790.435531663] [BasicController]: BasicController initialized
+[INFO] [1784690790.437032167] [fmu1.basic_controller_node]: BasicControllerNode initialized, control rate 20 Hz
+[INFO] [1784690790.437137801] [main]: Taiphoon Agent BasicController starting...
+[INFO] [1784690790.487426386] [fmu1.basic_controller_node]: ============================================
+[INFO] [1784690790.487552084] [fmu1.basic_controller_node]:   Triggering takeoff-land sequence
+[INFO] [1784690790.487568796] [fmu1.basic_controller_node]:   Target altitude: 3.00 m
+[INFO] [1784690790.487589773] [fmu1.basic_controller_node]:   Hover duration: 3.00 s
+[INFO] [1784690790.487602315] [fmu1.basic_controller_node]: ============================================
+[INFO] [1784690790.487621652] [BasicController]: ===== Starting takeoff-land sequence =====
+[INFO] [1784690790.487677183] [BasicController]: Offboard mode switch command sent
+[INFO] [1784690790.487882736] [BasicController]: Waiting for offboard mode activation...
+[INFO] [1784690792.526080759] [BasicController]: Offboard init complete, arming...
+[INFO] [1784690792.526208391] [BasicController]: Sending arm command
+[INFO] [1784690792.526239281] [BasicController]: Arm command sent: ARM
+[INFO] [1784690809.577353956] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[INFO] [1784690809.578101358] [main]: Taiphoon Agent BasicController shutting down

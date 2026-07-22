@@ -1,0 +1,2 @@
+Consolidate compiler generated dependencies of target basic_controller
+[ 25%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o

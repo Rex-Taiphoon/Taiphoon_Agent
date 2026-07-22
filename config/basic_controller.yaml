@@ -1,0 +1,9 @@
+# Taiphoon Agent BasicController 參數設定檔
+# 可透過 ROS2 參數系統在執行期覆寫
+
+basic_controller_node:
+  ros__parameters:
+    # 目標起飛高度（公尺）
+    target_altitude_m: 3.0
+    # 停懸持續時間（秒）
+    hover_duration_s: 3.0

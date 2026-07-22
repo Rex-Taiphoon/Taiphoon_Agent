@@ -1,0 +1,41 @@
+============================================
+  Basic Takeoff-Land Test (SIH + ROS2)
+  Wed Jul 22 11:43:11 CST 2026
+============================================
+
+--- Initial State ---
+position:
+- 0.060122307389974594
+- -0.008901016786694527
+- 0.0335693359375
+flag_armed: false
+
+--- Arming ---
+Arm status:
+flag_armed: false
+
+--- Takeoff to 3m ---
+Position during takeoff:
+position:
+- 0.04531487450003624
+- -0.03829043731093407
+- 0.025848388671875
+
+--- Hovering (3 seconds) ---
+Position during hover:
+position:
+- -0.017330463975667953
+- -0.024209069088101387
+- 0.0328369140625
+
+--- Landing ---
+Position after landing:
+position:
+- 0.0622829794883728
+- 0.030009407550096512
+- 0.02777099609375
+
+============================================
+  Test Complete
+============================================
+Log saved to: /home/taiphoon/Taiphoon_Agent/AutoTest/Log/takeoff_land_test_20260722_114311.log

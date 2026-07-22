@@ -1,0 +1,30 @@
+[0.016s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[0.093s] Consolidate compiler generated dependencies of target basic_controller
+[0.115s] [ 25%] Building CXX object CMakeFiles/basic_controller.dir/src/nodes/basic_controller_node.cpp.o
+[0.115s] [ 50%] Building CXX object CMakeFiles/basic_controller.dir/src/main.cpp.o
+[0.118s] [ 75%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o
+[18.134s] [100%] Linking CXX executable basic_controller
+[19.325s] [100%] Built target basic_controller
+[19.347s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[19.364s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent
+[19.372s] -- Install configuration: ""
+[19.373s] -- Execute custom install script
+[19.373s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/lib/taiphoon_agent/basic_controller
+[19.374s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/config/basic_controller.yaml
+[19.374s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/launch/basic_controller.launch.py
+[19.375s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/package_run_dependencies/taiphoon_agent
+[19.375s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/parent_prefix_path/taiphoon_agent
+[19.376s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.sh
+[19.377s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/ament_prefix_path.dsv
+[19.377s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.sh
+[19.377s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/environment/path.dsv
+[19.378s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.bash
+[19.378s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.sh
+[19.379s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.zsh
+[19.379s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/local_setup.dsv
+[19.379s] -- Symlinking: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.dsv
+[19.393s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/ament_index/resource_index/packages/taiphoon_agent
+[19.394s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig.cmake
+[19.394s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/cmake/taiphoon_agentConfig-version.cmake
+[19.394s] -- Up-to-date symlink: /home/taiphoon/Taiphoon_Agent/install/taiphoon_agent/share/taiphoon_agent/package.xml
+[19.398s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '0': /usr/bin/cmake --install /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent

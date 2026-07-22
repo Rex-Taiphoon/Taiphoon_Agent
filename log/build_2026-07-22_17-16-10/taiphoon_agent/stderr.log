@@ -1,0 +1,7 @@
+[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:[m[K In member function ‘[01m[Kvirtual bool taiphoon::controllers::BasicController::initialize()[m[K’:
+[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:50:47:[m[K [01;31m[Kerror: [m[K‘[01m[KRELIABILITY_QOS_POLICY[m[K’ was not declared in this scope
+   50 |             "fmu/out/vehicle_command_ack_v1", [01;31m[KRELIABILITY_QOS_POLICY[m[K,
+      |                                               [01;31m[K^~~~~~~~~~~~~~~~~~~~~~[m[K
+gmake[2]: *** [CMakeFiles/basic_controller.dir/build.make:90: CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o] Error 1
+gmake[1]: *** [CMakeFiles/Makefile2:137: CMakeFiles/basic_controller.dir/all] Error 2
+gmake: *** [Makefile:146: all] Error 2

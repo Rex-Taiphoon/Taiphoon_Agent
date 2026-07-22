@@ -10,6 +10,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 讀取無人機數量參數，預設為 3
 COUNT=${1:-3}
 
+# 啟動前清理任何殘留的 tmux session 與程序，避免埠號衝突
+echo "=== 清理舊有模擬器 ==="
+"${SCRIPT_DIR}/stop_all.sh" 2>/dev/null || true
+sleep 1
+echo ""
+
 echo "=== 啟動 ${COUNT} 台 PX4 SITL 模擬器 ==="
 
 for ((i=0; i<COUNT; i++)); do

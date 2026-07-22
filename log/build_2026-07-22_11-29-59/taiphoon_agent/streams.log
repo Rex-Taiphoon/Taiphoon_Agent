@@ -1,0 +1,33 @@
+[0.034s] Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
+[0.184s] Consolidate compiler generated dependencies of target basic_controller
+[0.247s] [ 25%] Building CXX object CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o
+[11.422s] In file included from /opt/ros/humble/include/rclcpp/rclcpp/logging.hpp:24,
+[11.423s]                  from /opt/ros/humble/include/rclcpp/rclcpp/client.hpp:40,
+[11.423s]                  from /opt/ros/humble/include/rclcpp/rclcpp/callback_group.hpp:24,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/any_executable.hpp:20,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/memory_strategy.hpp:25,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/memory_strategies.hpp:18,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/executor_options.hpp:20,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/executor.hpp:37,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/executors/multi_threaded_executor.hpp:25,
+[11.424s]                  from /opt/ros/humble/include/rclcpp/rclcpp/executors.hpp:21,
+[11.425s]                  from /opt/ros/humble/include/rclcpp/rclcpp/rclcpp.hpp:155,
+[11.425s]                  from /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.hpp:14,
+[11.425s]                  from /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:8:
+[11.425s] /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp: In member function ‘virtual bool taiphoon::controllers::BasicController::execute_takeoff_land_sequence(float, float)’:
+[11.425s] /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:224:41: error: expected ‘)’ before ‘;’ token
+[11.426s]   224 |     target_altitude_m_.store(altitude_m);
+[11.426s]       |                                         ^
+[11.426s] /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:223:5: note: to match this ‘(’
+[11.426s]   223 |     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+[11.426s]       |     ^~~~~~~~~~~
+[11.426s] /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:223:5: error: expected ‘;’ before ‘)’ token
+[11.427s]   223 |     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+[11.427s]       |     ^~~~~~~~~~~
+[11.427s] /home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:226:17: warning: statement has no effect [-Wunused-value]
+[11.427s]   226 |                 "Waiting for offboard mode activation...");
+[11.427s]       |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[15.385s] gmake[2]: *** [CMakeFiles/basic_controller.dir/build.make:90: CMakeFiles/basic_controller.dir/src/controllers/BasicController.cpp.o] Error 1
+[15.385s] gmake[1]: *** [CMakeFiles/Makefile2:137: CMakeFiles/basic_controller.dir/all] Error 2
+[15.386s] gmake: *** [Makefile:146: all] Error 2
+[15.392s] Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
