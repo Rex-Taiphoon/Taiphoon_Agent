@@ -1,0 +1,5 @@
+interface:
+  display_name: "ROS2 工具集"
+  short_description: "ROS2 除錯、主題檢視、daemon 問題排除與 MicroXRCEAgent 管理"
+  icon_small: "./assets/ros2-tools-small.svg"
+  icon_large: "./assets/ros2-tools.svg"

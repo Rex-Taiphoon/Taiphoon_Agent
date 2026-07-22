@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="16" y="16" width="96" height="96" rx="12" fill="#2d3436"/>
+  <rect x="28" y="28" width="72" height="72" rx="8" fill="#636e72"/>
+  <path d="M44 64 L56 52 L68 64 L56 76 Z" fill="#00b894"/>
+  <rect x="74" y="52" width="10" height="24" rx="2" fill="#00b894"/>
+  <circle cx="64" cy="64" r="30" fill="none" stroke="#00b894" stroke-width="2" stroke-dasharray="4,4" opacity="0.5"/>
+  <text x="64" y="124" text-anchor="middle" fill="#00b894" font-family="monospace" font-size="12" font-weight="bold">PX4 BUILD</text>
+</svg>

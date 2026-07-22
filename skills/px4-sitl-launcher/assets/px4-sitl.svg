@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <circle cx="64" cy="64" r="60" fill="#1a1a2e"/>
+  <path d="M64 20 L76 50 L108 50 L82 70 L90 100 L64 82 L38 100 L46 70 L20 50 L52 50 Z" fill="none" stroke="#00d2ff" stroke-width="3"/>
+  <circle cx="64" cy="64" r="16" fill="#00d2ff" opacity="0.15"/>
+  <circle cx="64" cy="64" r="6" fill="#00d2ff"/>
+  <path d="M64 34 A30 30 0 0 1 94 64" fill="none" stroke="#00d2ff" stroke-width="2" stroke-dasharray="4,4"/>
+  <path d="M34 64 A30 30 0 0 1 64 34" fill="none" stroke="#00d2ff" stroke-width="2" stroke-dasharray="4,4"/>
+  <path d="M64 94 A30 30 0 0 1 34 64" fill="none" stroke="#00d2ff" stroke-width="2" stroke-dasharray="4,4"/>
+  <path d="M94 64 A30 30 0 0 1 64 94" fill="none" stroke="#00d2ff" stroke-width="2" stroke-dasharray="4,4"/>
+  <circle cx="64" cy="34" r="4" fill="#00d2ff"/>
+  <circle cx="94" cy="64" r="4" fill="#00d2ff"/>
+  <circle cx="64" cy="94" r="4" fill="#00d2ff"/>
+  <circle cx="34" cy="64" r="4" fill="#00d2ff"/>
+  <text x="64" y="118" text-anchor="middle" fill="#00d2ff" font-family="monospace" font-size="11">PX4 SITL</text>
+</svg>
