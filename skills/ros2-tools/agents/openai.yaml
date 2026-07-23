@@ -1,0 +1,5 @@
+interface:
+  display_name: "ROS2 指令工具"
+  short_description: "ROS2 topics、nodes、daemon 管理與通訊問題排除"
+  icon_small: "./assets/ros2-tools-small.svg"
+  icon_large: "./assets/ros2-tools.svg"

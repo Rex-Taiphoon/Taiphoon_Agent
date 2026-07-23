@@ -1,0 +1,3 @@
+interface:
+  display_name: "uXRCE-DDS Agent 工具"
+  short_description: "MicroXRCEAgent 啟動、重啟與連線狀態診斷"
