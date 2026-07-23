@@ -1,0 +1,51 @@
+# =============================================================================
+# Taiphoon_Agent Docker Compose
+# =============================================================================
+# Usage:
+#   docker compose build    # Build the image
+#   docker compose up -d    # Start container (background)
+#   docker compose exec taiphoon bash   # Enter container
+#   docker compose down     # Stop container
+# =============================================================================
+
+services:
+  taiphoon-agt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: taiphoon-dev
+    container_name: taiphoon_agent_dev
+    hostname: taiphoon-agent
+    user: taiphoon
+    working_dir: /home/taiphoon/Taiphoon_Agent
+
+    volumes:
+      # 將專案原始碼掛載至容器內以進行開發
+      - type: bind
+        source: .
+        target: /home/taiphoon/Taiphoon_Agent
+
+    # ROS2 DDS 通訊需要 host 網路模式以支援 UDP multicast
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+    environment:
+      # ---- 顯示轉發（若有 GUI 需求） ----
+      - DISPLAY=${DISPLAY:-:0}
+      # ---- ROS2 DDS 設定 ----
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}
+      - RCUTILS_COLORIZED_OUTPUT=1
+      # ---- Taiphoon_Agent 工作空間路徑 ----
+      - PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
+      - TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
+
+    restart: unless-stopped

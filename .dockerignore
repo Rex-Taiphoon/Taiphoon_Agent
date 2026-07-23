@@ -1,0 +1,48 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Build artifacts
+build/
+install/
+devel/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+
+# Object files
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+*.obj
+*.lib
+*.dll
+*.exp
+*.pdb
+*.ilk
+
+# Logs
+log/
+*.log
+AutoTest/Log/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backups
+*.bak
+*~
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
