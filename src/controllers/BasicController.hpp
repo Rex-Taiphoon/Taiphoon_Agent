@@ -27,355 +27,393 @@ namespace taiphoon
 namespace controllers
 {
 
-/// ­¸¦æª¬ºA¾÷
+/// é£›è¡Œç‹€æ…‹æ©Ÿ
 enum class FlightState : uint8_t
 {
     IDLE = 0,
-    OFFBOARD_INIT,   ///< µ¥«İ Offboard ¼Ò¦¡±Ò¥Î
+    OFFBOARD_INIT,   ///< ç­‰å¾… Offboard æ¨¡å¼å•Ÿç”¨
+    OFFBOARD_ACTIVE, ///< Offboard å·²å•Ÿç”¨ï¼Œç­‰å¾…è§£é–å‘½ä»¤
     ARMED,
     TAKEOFF,
     HOVER,
-    RTL,             ///< ªğ¯è (PX4 ¦Û°Ê­°¸¨¨Ã¤WÂê)
-    LAND,            ///< ­°¸¨¼Ò¦¡
-    MOVING,          ///< ¤ô¥­²¾°Ê¤¤
+    RTL,             ///< è¿”èˆª (PX4 è‡ªå‹•é™è½ä¸¦ä¸Šé–)
+    LAND,            ///< é™è½æ¨¡å¼
+    MOVING,          ///< æ°´å¹³ç§»å‹•ä¸­
+    POST_RTL,        ///< RTL é™è½å¾Œè‡ªå‹•åµæ¸¬ï¼Œåœæ­¢ Offboard ä¸¦åˆ‡æ› Hold
     ERROR
 };
 
-/// ·x¾÷¤ß¸õ®É¶¡ (²@¬í)
+/// æš–æ©Ÿå¿ƒè·³æ™‚é–“ (æ¯«ç§’)
 constexpr int HEARTBEAT_WARMUP_MS = 2000;
 
-/// ¼Ò¦¡¤Á´««á VehicleCommand ¦^À³¶W®É (²@¬í)
+/// æ¨¡å¼åˆ‡æ›å¾Œ VehicleCommand å›æ‡‰è¶…æ™‚ (æ¯«ç§’)
 constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
 
-/// °_­¸¶W®É (²@¬í)
+/// èµ·é£›è¶…æ™‚ (æ¯«ç§’)
 constexpr int TAKEOFF_TIMEOUT_MS = 30000;
 
-/// °ª«×¤é»x°O¿ı¶¡¹j (±±¨î¶g´Á¼Æ)
+/// é«˜åº¦æ—¥èªŒè¨˜éŒ„é–“éš” (æ§åˆ¶é€±æœŸæ•¸)
 constexpr int ALTITUDE_LOG_INTERVAL = 20;
 
-/// °ª«×¨ì¹F¤ñ¨Ò (0.95 = 95% µø¬°¨ì¹F)
+/// é«˜åº¦åˆ°é”æ¯”ä¾‹ (0.95 = 95% è¦–ç‚ºåˆ°é”)
 constexpr float ALTITUDE_ARRIVAL_RATIO = 0.95F;
 
-/// RTL §¹¦¨µ¥«İ¶W®É (²@¬í)
+/// RTL å®Œæˆç­‰å¾…è¶…æ™‚ (æ¯«ç§’)
 constexpr int RTL_TIMEOUT_MS = 60000;
 
-/// ¹w³] ROS2 QoS depth
+/// é è¨­ ROS2 QoS depth
 constexpr int DEFAULT_QOS_DEPTH = 10;
 
-/// ¹w³]¥Ø¼Ğ¨t²Î ID
+/// é è¨­ç›®æ¨™ç³»çµ± ID
 constexpr uint8_t DEFAULT_TARGET_SYSTEM = 1;
 
 /**
- * @brief °òÂ¦­¸¦æ±±¨î¾¹
+ * @brief åŸºç¤é£›è¡Œæ§åˆ¶å™¨
  *
- * ¹ê§@ IBasicFlightController ¤¶­±¡A³z¹L PX4 Offboard ¼Ò¦¡±±¨îµL¤H¾÷¡C
- * ´£¨Ñ°_­¸¡B­°¸¨¡Bªğ¯è¡B¤ô¥­²¾°Ê¡B¼Ò¦¡¤Á´«µ¥°òÂ¦­¸¦æ¥\¯à¡C
+ * å¯¦ä½œ IBasicFlightController ä»‹é¢ï¼Œé€é PX4 Offboard æ¨¡å¼æ§åˆ¶ç„¡äººæ©Ÿã€‚
+ * æä¾›èµ·é£›ã€é™è½ã€è¿”èˆªã€æ°´å¹³ç§»å‹•ã€æ¨¡å¼åˆ‡æ›ç­‰åŸºç¤é£›è¡ŒåŠŸèƒ½ã€‚
  */
 class BasicController : public core::IBasicFlightController
 {
 public:
     /**
-     * @brief «Øºc¤l
+     * @brief å»ºæ§‹å­
      *
-     * @param node ROS2 ¸`ÂI«ü¼Ğ (¥²¶·¤£¬° nullptr)
-     * @param target_system PX4 MAVLink ¨t²Î ID (fmu1=1, fmu2=2, ...)
+     * @param node ROS2 ç¯€é»æŒ‡æ¨™ (å¿…é ˆä¸ç‚º nullptr)
+     * @param target_system PX4 MAVLink ç³»çµ± ID (fmu1=1, fmu2=2, ...)
      */
     explicit BasicController(rclcpp::Node* node,
                              uint8_t target_system = DEFAULT_TARGET_SYSTEM);
 
     ~BasicController() override = default;
 
-    // ==================== IBasicFlightController ¤¶­±¹ê§@ ====================
+    // ==================== IBasicFlightController ä»‹é¢å¯¦ä½œ ====================
 
-    /** @brief ªì©l¤Æ©Ò¦³ Publisher »P Subscriber */
+    /** @brief åˆå§‹åŒ–æ‰€æœ‰ Publisher èˆ‡ Subscriber */
     bool initialize() override;
 
-    /** @brief ²M²z±±¨î¾¹¸ê·½ */
+    /** @brief æ¸…ç†æ§åˆ¶å™¨è³‡æº */
     void shutdown() override;
 
-    /** @brief ÀË¬d±±¨î¾¹¬O§_¤wªì©l¤Æ */
+    /** @brief æª¢æŸ¥æ§åˆ¶å™¨æ˜¯å¦å·²åˆå§‹åŒ– */
     bool is_initialized() const override;
 
-    /** @brief µo°e Arm (¸ÑÂê) ©R¥O */
+    /** @brief ç™¼é€ Arm (è§£é–) å‘½ä»¤ */
     bool arm() override;
 
-    /** @brief µo°e Disarm (¤WÂê) ©R¥O */
+    /** @brief ç™¼é€ Disarm (ä¸Šé–) å‘½ä»¤ */
     bool disarm() override;
 
-    /** @brief °_­¸¦Ü«ü©w°ª«× (¤½¤Ø) */
+    /** @brief èµ·é£›è‡³æŒ‡å®šé«˜åº¦ (å…¬å°º) */
     bool takeoff(float altitude_m) override;
 
-    /** @brief ¦bªÅ¤¤°±¯d«ü©w¬í¼Æ */
+    /** @brief åœ¨ç©ºä¸­åœç•™æŒ‡å®šç§’æ•¸ */
     bool hold_position(float duration_s) override;
 
-    /** @brief ­°¸¨ */
+    /** @brief é™è½ */
     bool land() override;
 
-    /** @brief °õ¦æ°_­¸-°±¯d-­°¸¨§¹¾ã¥ô°È§Ç¦C */
+    /** @brief åŸ·è¡Œèµ·é£›-åœç•™-é™è½å®Œæ•´ä»»å‹™åºåˆ— */
     bool execute_takeoff_land_sequence(
         float altitude_m, float hover_duration_s) override;
 
-    /** @brief ¨ú±o¥Ø«e­¸¦æª¬ºA¦r¦ê */
+    /** @brief å–å¾—ç›®å‰é£›è¡Œç‹€æ…‹å­—ä¸² */
     const char* get_state() const override;
 
-    // ==================== °ª¶¥©R¥O·s¼W¤èªk ====================
+    // ==================== é«˜éšå‘½ä»¤æ–°å¢æ–¹æ³• ====================
 
     /**
-     * @brief ¤Á´«¦Ü RTL (Return to Launch) ¼Ò¦¡
+     * @brief åˆ‡æ›è‡³ RTL (Return to Launch) æ¨¡å¼
      *
-     * PX4 ·|¦Û°Ê³B²z­°¸¨¡B¸¨¦a°»´ú»P¦Û°Ê¤WÂê
+     * PX4 æœƒè‡ªå‹•è™•ç†é™è½ã€è½åœ°åµæ¸¬èˆ‡è‡ªå‹•ä¸Šé–
      *
-     * @return true ©R¥Oµo°e¦¨¥\
+     * @return true å‘½ä»¤ç™¼é€æˆåŠŸ
      */
     bool switch_to_rtl_mode();
 
     /**
-     * @brief ¤Á´«¦Ü LAND ¼Ò¦¡
+     * @brief åˆ‡æ›è‡³ LAND æ¨¡å¼
      *
-     * PX4 ·|¦Û°Ê³B²z­°¸¨µ{§Ç
+     * PX4 æœƒè‡ªå‹•è™•ç†é™è½ç¨‹åº
      *
-     * @return true ©R¥Oµo°e¦¨¥\
+     * @return true å‘½ä»¤ç™¼é€æˆåŠŸ
      */
     bool switch_to_land_mode();
 
     /**
-     * @brief ¤Á´«¦Ü OFFBOARD ¼Ò¦¡
+     * @brief åˆ‡æ›è‡³ OFFBOARD æ¨¡å¼
      *
-     * @return true ©R¥Oµo°e¦¨¥\
+     * @return true å‘½ä»¤ç™¼é€æˆåŠŸ
      */
     bool switch_to_offboard_mode();
 
     /**
-     * @brief ±q¥Ø«e¦ì¸m¦V«e/«á²¾°Ê«ü©w¶ZÂ÷
+     * @brief åˆ‡æ›è‡³ HOLD (ä½ç½®ä¿æŒ) æ¨¡å¼
      *
-     * @param distance_m ²¾°Ê¶ZÂ÷ (¥¿¼Æ¬°¦V«e¡A­t¼Æ¬°¦V«á)
-     * @return true ²¾°Ê©R¥O³]©w¦¨¥\
+     * ç™¼é€ HOLD æ¨¡å¼å‘½ä»¤ï¼Œä½¿ç„¡äººæ©Ÿåœ¨ç•¶å‰ä½ç½®ä¿æŒæ‡¸åœ
+     *
+     * @return true å‘½ä»¤ç™¼é€æˆåŠŸ
+     */
+    bool switch_to_hold_mode();
+
+    /**
+     * @brief å¾ç›®å‰ä½ç½®å‘å‰/å¾Œç§»å‹•æŒ‡å®šè·é›¢
+     *
+     * @param distance_m ç§»å‹•è·é›¢ (æ­£æ•¸ç‚ºå‘å‰ï¼Œè² æ•¸ç‚ºå‘å¾Œ)
+     * @return true ç§»å‹•å‘½ä»¤è¨­å®šæˆåŠŸ
      */
     bool move_forward(float distance_m);
 
     /**
-     * @brief ±q¥Ø«e¦ì¸m¦V¥ª/¥k²¾°Ê«ü©w¶ZÂ÷
+     * @brief å¾ç›®å‰ä½ç½®å‘å·¦/å³ç§»å‹•æŒ‡å®šè·é›¢
      *
-     * @param distance_m ²¾°Ê¶ZÂ÷ (¥¿¼Æ¬°¦V¥k¡A­t¼Æ¬°¦V¥ª)
-     * @return true ²¾°Ê©R¥O³]©w¦¨¥\
+     * @param distance_m ç§»å‹•è·é›¢ (æ­£æ•¸ç‚ºå‘å³ï¼Œè² æ•¸ç‚ºå‘å·¦)
+     * @return true ç§»å‹•å‘½ä»¤è¨­å®šæˆåŠŸ
      */
     bool move_right(float distance_m);
 
-    // ==================== ¤½¶}»²§U¤èªk ====================
+
+    // ==================== å…¬é–‹è¼”åŠ©æ–¹æ³• ====================
 
     /**
-     * @brief §ó·s¨®½ø¨½µ{­p (¥Ñ¸`ÂI¦^©IÅX°Ê)
+     * @brief æ›´æ–°è»Šè¼›é‡Œç¨‹è¨ˆ (ç”±ç¯€é»å›å‘¼é©…å‹•)
      *
-     * @param msg VehicleOdometry °T®§
+     * @param msg VehicleOdometry è¨Šæ¯
      */
     void update_odometry(const px4_msgs::msg::VehicleOdometry& msg);
 
     /**
-     * @brief µo¥¬ Offboard ±±¨î¼Ò¦¡»P­y¸ñ³]©wÂI (­p®É¾¹¦^©I)
+     * @brief ç™¼å¸ƒ Offboard æ§åˆ¶æ¨¡å¼èˆ‡è»Œè·¡è¨­å®šé» (è¨ˆæ™‚å™¨å›å‘¼)
      */
     void publish_control_commands();
 
     /**
-     * @brief ¨ú±o¥Ø«e°ª«×
+     * @brief å–å¾—ç›®å‰é«˜åº¦
      *
-     * @return float ¥Ø«e°ª«× (¤½¤Ø)
+     * @return float ç›®å‰é«˜åº¦ (å…¬å°º)
      */
     float get_current_altitude() const;
 
     /**
-     * @brief ¨ú±o¥Ø«e¦ì¸m (NED ®y¼Ğ)
+     * @brief å–å¾—ç›®å‰ä½ç½® (NED åº§æ¨™)
      *
      * @return std::array<float, 3> [x, y, z]
      */
     std::array<float, 3> get_current_position_ned() const;
 
 private:
-    // ==================== Publisher ªì©l¤Æ (³æ¤@Â¾³d) ====================
+    // ==================== Publisher åˆå§‹åŒ– (å–®ä¸€è·è²¬) ====================
 
     /**
-     * @brief «Ø¥ß OffboardControlMode Publisher
+     * @brief å»ºç«‹ OffboardControlMode Publisher
      *
-     * µo¥¬¦Ü fmu/in/offboard_control_mode
+     * ç™¼å¸ƒè‡³ fmu/in/offboard_control_mode
      *
-     * @return true «Ø¥ß¦¨¥\
+     * @return true å»ºç«‹æˆåŠŸ
      */
     bool create_offboard_control_mode_publisher();
 
     /**
-     * @brief «Ø¥ß TrajectorySetpoint Publisher
+     * @brief å»ºç«‹ TrajectorySetpoint Publisher
      *
-     * µo¥¬¦Ü fmu/in/trajectory_setpoint
+     * ç™¼å¸ƒè‡³ fmu/in/trajectory_setpoint
      *
-     * @return true «Ø¥ß¦¨¥\
+     * @return true å»ºç«‹æˆåŠŸ
      */
     bool create_trajectory_setpoint_publisher();
 
     /**
-     * @brief «Ø¥ß VehicleCommand Publisher
+     * @brief å»ºç«‹ VehicleCommand Publisher
      *
-     * µo¥¬¦Ü fmu/in/vehicle_command
+     * ç™¼å¸ƒè‡³ fmu/in/vehicle_command
      *
-     * @return true «Ø¥ß¦¨¥\
+     * @return true å»ºç«‹æˆåŠŸ
      */
     bool create_vehicle_command_publisher();
 
-    // ==================== Subscriber ªì©l¤Æ (³æ¤@Â¾³d) ====================
+    // ==================== Subscriber åˆå§‹åŒ– (å–®ä¸€è·è²¬) ====================
 
     /**
-     * @brief «Ø¥ß VehicleCommandAck Subscriber
+     * @brief å»ºç«‹ VehicleCommandAck Subscriber
      *
-     * ­q¾\ fmu/out/vehicle_command_ack_v1¡A¥Î©ó½T»{©R¥O¦^À³
+     * è¨‚é–± fmu/out/vehicle_command_ack_v1ï¼Œç”¨æ–¼ç¢ºèªå‘½ä»¤å›æ‡‰
      *
-     * @return true «Ø¥ß¦¨¥\
+     * @return true å»ºç«‹æˆåŠŸ
      */
     bool create_vehicle_command_ack_subscriber();
 
     /**
-     * @brief «Ø¥ß VehicleStatus Subscriber
+     * @brief å»ºç«‹ VehicleStatus Subscriber
      *
-     * ­q¾\ fmu/out/vehicle_status_v4¡A¥Î©óºÊ±±¸ÑÂê/¤WÂêª¬ºA
+     * è¨‚é–± fmu/out/vehicle_status_v4ï¼Œç”¨æ–¼ç›£æ§è§£é–/ä¸Šé–ç‹€æ…‹
      *
-     * @return true «Ø¥ß¦¨¥\
+     * @return true å»ºç«‹æˆåŠŸ
      */
     bool create_vehicle_status_subscriber();
 
-    // ==================== ª¬ºA¾÷³B²z (³æ¤@Â¾³d) ====================
+    // ==================== ç‹€æ…‹æ©Ÿè™•ç† (å–®ä¸€è·è²¬) ====================
 
     /**
-     * @brief ³B²z OFFBOARD_INIT ª¬ºA
+     * @brief è™•ç† OFFBOARD_INIT ç‹€æ…‹
      *
-     * µo°e¤ß¸õ·x¾÷¡A¹Á¸Õ¤Á´«¦Ü Offboard ¼Ò¦¡¡Aµ¥«İ¦^À³«á¸ÑÂê
+     * ç™¼é€å¿ƒè·³æš–æ©Ÿï¼Œå˜—è©¦åˆ‡æ›è‡³ Offboard æ¨¡å¼ï¼Œç­‰å¾…å›æ‡‰å¾Œè§£é–
      *
-     * @param msg OffboardControlMode °T®§ (¥Î©óµo¥¬¤ß¸õ)
+     * @param msg OffboardControlMode è¨Šæ¯ (ç”¨æ–¼ç™¼å¸ƒå¿ƒè·³)
      */
     void handle_offboard_init_state(
         px4_msgs::msg::OffboardControlMode& /*msg*/);
 
     /**
-     * @brief ³B²z ARMED ª¬ºA
+     * @brief è™•ç† ARMED ç‹€æ…‹
      *
-     * µ¥«İ Arm ©R¥O½T»{«áÄ²µo°_­¸
+     * ç­‰å¾… Arm å‘½ä»¤ç¢ºèªå¾Œè§¸ç™¼èµ·é£›
      */
     void handle_armed_state(
         px4_msgs::msg::OffboardControlMode& /*msg*/);
 
     /**
-     * @brief ³B²z TAKEOFF ª¬ºA
+     * @brief è™•ç† TAKEOFF ç‹€æ…‹
      *
-     * ³]©w¤W¤É­y¸ñ³]©wÂI¡AºÊ±±°ª«×¨ì¹Fª¬ºA
+     * è¨­å®šä¸Šå‡è»Œè·¡è¨­å®šé»ï¼Œç›£æ§é«˜åº¦åˆ°é”ç‹€æ…‹
      *
-     * @param msg TrajectorySetpoint °T®§ (§ó·s¦ì¸m)
+     * @param msg TrajectorySetpoint è¨Šæ¯ (æ›´æ–°ä½ç½®)
      */
     void handle_takeoff_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
 
     /**
-     * @brief ³B²z HOVER ª¬ºA
+     * @brief è™•ç† HOVER ç‹€æ…‹
      *
-     * ¦b¥Ø¼Ğ°ª«×°±¯d«ü©w®É¶¡«á¤Á´«¦Ü RTL
+     * åœ¨ç›®æ¨™é«˜åº¦åœç•™æŒ‡å®šæ™‚é–“å¾Œåˆ‡æ›è‡³ RTL
      *
-     * @param msg TrajectorySetpoint °T®§ («O«ù°ª«×)
+     * @param msg TrajectorySetpoint è¨Šæ¯ (ä¿æŒé«˜åº¦)
      */
     void handle_hover_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
 
     /**
-     * @brief ³B²z RTL ª¬ºA
+     * @brief è™•ç† RTL ç‹€æ…‹
      *
-     * µo°e RTL ©R¥O¡Aµ¥«İ PX4 §¹¦¨­°¸¨¨Ã¤WÂê
+     * ç™¼é€ RTL å‘½ä»¤ï¼Œç­‰å¾… PX4 å®Œæˆé™è½ä¸¦ä¸Šé–
      *
-     * @param msg TrajectorySetpoint °T®§ (°±¥Î¦ì¸m³]©w)
+     * @param msg TrajectorySetpoint è¨Šæ¯ (åœç”¨ä½ç½®è¨­å®š)
      */
     void handle_rtl_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
 
     /**
-     * @brief ³B²z LAND ª¬ºA
+     * @brief è™•ç† LAND ç‹€æ…‹
      *
-     * µo°e LAND ©R¥O¡Aµ¥«İ PX4 §¹¦¨­°¸¨
+     * ç™¼é€ LAND å‘½ä»¤ï¼Œç­‰å¾… PX4 å®Œæˆé™è½
      *
-     * @param msg TrajectorySetpoint °T®§ (°±¥Î¦ì¸m³]©w)
+     * @param msg TrajectorySetpoint è¨Šæ¯ (åœç”¨ä½ç½®è¨­å®š)
      */
     void handle_land_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
 
     /**
-     * @brief ³B²z MOVING ª¬ºA
+     * @brief è™•ç† OFFBOARD_ACTIVE ç‹€æ…‹
      *
-     * °õ¦æ¤ô¥­²¾°Ê¦Ü¥Ø¼Ğ¦ì¸m
+     * Offboard å·²å•Ÿç”¨ï¼Œç¶­æŒå¿ƒè·³ï¼Œç­‰å¾… ARM å‘½ä»¤
+     */
+    void handle_offboard_active_state(
+        px4_msgs::msg::TrajectorySetpoint& msg);
+
+    /**
+     * @brief è™•ç† MOVING ç‹€æ…‹
      *
-     * @param msg TrajectorySetpoint °T®§ (§ó·s¥Ø¼Ğ¦ì¸m)
+     * åŸ·è¡Œæ°´å¹³ç§»å‹•è‡³ç›®æ¨™ä½ç½®
+     *
+     * @param msg TrajectorySetpoint è¨Šæ¯ (æ›´æ–°ç›®æ¨™ä½ç½®)
      */
     void handle_moving_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
 
-    // ==================== »²§U¤èªk ====================
+    /**
+     * @brief è™•ç† POST_RTL ç‹€æ…‹
+     *
+     * RTL é™è½å®Œæˆå¾Œï¼Œåœæ­¢ Offboard æ§åˆ¶ï¼Œç™¼é€ Hold æ¨¡å¼å‘½ä»¤
+     */
+    void handle_post_rtl_state(
+        px4_msgs::msg::TrajectorySetpoint& msg);
+
+    // ==================== è¼”åŠ©æ–¹æ³• ====================
 
     /**
-     * @brief µo°e Arm/Disarm VehicleCommand
+     * @brief ç™¼é€ Arm/Disarm VehicleCommand
      *
-     * @param do_arm true ¬° Arm¡Afalse ¬° Disarm
-     * @return true µo°e¦¨¥\
+     * @param do_arm true ç‚º Armï¼Œfalse ç‚º Disarm
+     * @return true ç™¼é€æˆåŠŸ
      */
     bool send_arm_command(bool do_arm);
 
     /**
-     * @brief µo°e¤Á´«¦Ü Offboard ¼Ò¦¡ªº VehicleCommand
+     * @brief ç™¼é€åˆ‡æ›è‡³ Offboard æ¨¡å¼çš„ VehicleCommand
      *
      * PX4 1.18: command=176 (VEHICLE_CMD_DO_SET_MODE),
      * param1=1.0 (custom mode), param2=6.0 (Offboard for multicopter)
      *
-     * @return true µo°e¦¨¥\
+     * @return true ç™¼é€æˆåŠŸ
      */
     bool send_offboard_mode_command();
 
     /**
-     * @brief µo°e RTL (Return to Launch) ©R¥O
+     * @brief ç™¼é€ RTL (Return to Launch) å‘½ä»¤
      *
      * PX4 1.18: command=20 (VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
      *
-     * @return true µo°e¦¨¥\
+     * @return true ç™¼é€æˆåŠŸ
      */
     bool send_rtl_command();
 
     /**
-     * @brief µo°e LAND ©R¥O
+     * @brief ç™¼é€ LAND å‘½ä»¤
      *
      * PX4 1.18: command=21 (VEHICLE_CMD_NAV_LAND)
      *
-     * @return true µo°e¦¨¥\
+     * @return true ç™¼é€æˆåŠŸ
      */
     bool send_land_command();
 
     /**
-     * @brief ÅçÃÒ³]©wÂI¼Æ­È (µL NaN/Inf)
+     * @brief ç™¼é€ HOLD (ä¿æŒä½ç½®) æ¨¡å¼å‘½ä»¤
      *
-     * @param x X ®y¼Ğ
-     * @param y Y ®y¼Ğ
-     * @param z Z ®y¼Ğ
-     * @return true ¼Æ­È¦³®Ä
+     * PX4 1.18: command=176 (VEHICLE_CMD_DO_SET_MODE),
+     * param1=1.0 (custom mode), param2=8.0 (Position Hold for multicopter)
+     *
+     * @return true ç™¼é€æˆåŠŸ
+     */
+    bool send_hold_mode_command();
+
+    /**
+     * @brief é©—è­‰è¨­å®šé»æ•¸å€¼ (ç„¡ NaN/Inf)
+     *
+     * @param x X åº§æ¨™
+     * @param y Y åº§æ¨™
+     * @param z Z åº§æ¨™
+     * @return true æ•¸å€¼æœ‰æ•ˆ
      */
     bool validate_setpoint(float x, float y, float z) const;
 
     /**
-     * @brief VehicleCommandAck ¦^©I (PX4 ¿é¥X¥DÃD)
+     * @brief VehicleCommandAck å›å‘¼ (PX4 è¼¸å‡ºä¸»é¡Œ)
      *
-     * @param msg VehicleCommandAck °T®§
+     * @param msg VehicleCommandAck è¨Šæ¯
      */
     void vehicle_command_ack_cb(
         const px4_msgs::msg::VehicleCommandAck::SharedPtr msg);
 
     /**
-     * @brief VehicleStatus ¦^©I (ºÊ±±¸ÑÂê/¤WÂêª¬ºA)
+     * @brief VehicleStatus å›å‘¼ (ç›£æ§è§£é–/ä¸Šé–ç‹€æ…‹)
      *
-     * @param msg VehicleStatus °T®§
+     * @param msg VehicleStatus è¨Šæ¯
      */
     void vehicle_status_cb(
         const px4_msgs::msg::VehicleStatus::SharedPtr msg);
 
-    // ==================== ¦¨­ûÅÜ¼Æ ====================
+    // ==================== æˆå“¡è®Šæ•¸ ====================
 
-    /// ROS2 ¸`ÂI«ü¼Ğ
+    /// ROS2 ç¯€é»æŒ‡æ¨™
     rclcpp::Node* node_;
 
     // --- Publishers ---
@@ -392,25 +430,25 @@ private:
     rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr
         vehicle_status_sub_;
 
-    /// PX4 MAVLink ¨t²Î ID (fmu1=1, fmu2=2, ...)
+    /// PX4 MAVLink ç³»çµ± ID (fmu1=1, fmu2=2, ...)
     uint8_t target_system_{DEFAULT_TARGET_SYSTEM};
 
-    /// ¥Ø«e°ª«× (¤½¤Ø)
+    /// ç›®å‰é«˜åº¦ (å…¬å°º)
     std::atomic<float> current_altitude_m_{0.0F};
 
-    /// ¥Ø¼Ğ°ª«× (¤½¤Ø)
+    /// ç›®æ¨™é«˜åº¦ (å…¬å°º)
     std::atomic<float> target_altitude_m_{0.0F};
 
-    /// °±¯d«ùÄò®É¶¡ (¬í)
+    /// åœç•™æŒçºŒæ™‚é–“ (ç§’)
     std::atomic<float> hover_duration_s_{0.0F};
 
-    /// ¥Ø«e­¸¦æª¬ºA
+    /// ç›®å‰é£›è¡Œç‹€æ…‹
     std::atomic<FlightState> flight_state_{FlightState::IDLE};
 
-    /// ªì©l¤Æ§¹¦¨ºX¼Ğ
+    /// åˆå§‹åŒ–å®Œæˆæ——æ¨™
     std::atomic<bool> is_initialized_{false};
 
-    /// ­p®É¬ÛÃö
+    /// è¨ˆæ™‚ç›¸é—œ
     rclcpp::Time hover_start_time_;
     rclcpp::Time offboard_start_time_;
     rclcpp::Time takeoff_start_time_;
@@ -420,27 +458,33 @@ private:
     bool offboard_cmd_sending_{false};
     int altitude_log_counter_{0};
 
-    /// VehicleCommandAck ½T»{ºX¼Ğ
+    /// VehicleCommandAck ç¢ºèªæ——æ¨™
     std::atomic<bool> offboard_cmd_echo_received_{false};
     std::atomic<bool> arm_cmd_echo_received_{false};
 
-    /// ¨®½ø¸ÑÂêª¬ºA (1=DISARMED, 2=ARMED, °Ñ¾\ px4_msgs/VehicleStatus)
+    /// è»Šè¼›è§£é–ç‹€æ…‹ (1=DISARMED, 2=ARMED, åƒé–± px4_msgs/VehicleStatus)
     std::atomic<uint8_t> arming_state_{0};
 
-    /// RTL ©R¥O¤wµo°eºX¼Ğ
+    /// RTL å‘½ä»¤å·²ç™¼é€æ——æ¨™
     bool rtl_cmd_sent_{false};
 
-    /// LAND ©R¥O¤wµo°eºX¼Ğ
+    /// LAND å‘½ä»¤å·²ç™¼é€æ——æ¨™
     bool land_cmd_sent_{false};
 
-    /// ¥Ø«e¦ì¸m (NED ®y¼Ğ¨t) [x, y, z]
+    /// ç›®å‰ä½ç½® (NED åº§æ¨™ç³») [x, y, z]
     std::array<float, 3> current_position_ned_{0.0F, 0.0F, 0.0F};
 
-    /// ¥Ø¼Ğ¦ì¸m (NED ®y¼Ğ¨t) [x, y, z]¡A¥Î©ó²¾°Ê©R¥O
+    /// ç›®æ¨™ä½ç½® (NED åº§æ¨™ç³») [x, y, z]ï¼Œç”¨æ–¼ç§»å‹•å‘½ä»¤
     std::array<float, 3> target_position_ned_{0.0F, 0.0F, 0.0F};
 
-    /// ²¾°Ê¨ì¦ì¤¸®t (¤½¤Ø)¡A§C©ó¦¹­Èµø¬°¤w¨ì¹F
+    /// ç§»å‹•åˆ°ä½å…ƒå·® (å…¬å°º)ï¼Œä½æ–¼æ­¤å€¼è¦–ç‚ºå·²åˆ°é”
     float move_arrival_threshold_m_{0.2F};
+
+    /// Offboard æ§åˆ¶å·²åœæ­¢æ——æ¨™ (RTL è½åœ°å¾Œ)
+    bool has_offboard_stopped_{false};
+
+    /// Hold æ¨¡å¼å‘½ä»¤å·²ç™¼é€æ——æ¨™
+    bool hold_cmd_sent_{false};
 };
 
 }  // namespace controllers

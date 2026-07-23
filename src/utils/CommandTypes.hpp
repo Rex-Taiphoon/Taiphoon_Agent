@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file CommandTypes.hpp
  * @brief Taiphoon Agent 高階命令類型定義與解析工具
  * @author Taiphoon Agent Team
@@ -35,7 +35,8 @@ enum class AgentCommand : uint8_t
     MOVE_RIGHT,         ///< 向右移動 x 公尺 (參數: 距離)
     ARM,                ///< 解鎖 (Arm)
     DISARM,             ///< 上鎖 (Disarm)
-    TAKEOFF             ///< 起飛至預設高度
+    TAKEOFF,            ///< 起飛至指定高度 (參數: 高度公尺，預設 3.0m)
+    HOLD                ///< 切換至 Hold 模式 (保持目前位置)
 };
 
 /**
@@ -182,6 +183,23 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
     else if (cmd_name == "TAKEOFF")
     {
         result.command = AgentCommand::TAKEOFF;
+        if (tokens.size() >= 2)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);
+                result.has_param = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+                result.has_param = false;
+            }
+        }
+    }
+    else if (cmd_name == "HOLD")
+    {
+        result.command = AgentCommand::HOLD;
     }
     else
     {
@@ -211,6 +229,7 @@ inline const char* agent_command_to_string(AgentCommand cmd)
         case AgentCommand::ARM:            return "ARM";
         case AgentCommand::DISARM:         return "DISARM";
         case AgentCommand::TAKEOFF:        return "TAKEOFF";
+        case AgentCommand::HOLD:           return "HOLD";
         default:                           return "UNKNOWN";
     }
 }

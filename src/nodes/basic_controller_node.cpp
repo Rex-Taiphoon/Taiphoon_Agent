@@ -21,12 +21,14 @@ BasicControllerNode::BasicControllerNode()
     this->declare_parameter<double>("startup_delay_s", 0.0);
     this->declare_parameter<int>("target_system", 1);
     this->declare_parameter<std::string>("agent_namespace", "fmu1");
+    this->declare_parameter<bool>("auto_start_sequence", true);
 
     target_altitude_m_ = this->get_parameter("target_altitude_m").as_double();
     hover_duration_s_ = this->get_parameter("hover_duration_s").as_double();
     startup_delay_s_ = this->get_parameter("startup_delay_s").as_double();
     target_system_ = this->get_parameter("target_system").as_int();
     agent_namespace_ = this->get_parameter("agent_namespace").as_string();
+    auto_start_sequence_ = this->get_parameter("auto_start_sequence").as_bool();
 
     RCLCPP_INFO(this->get_logger(),
                 "Parameters: target_altitude=%.2f m, hover_duration=%.2f s, "
@@ -158,49 +160,21 @@ void BasicControllerNode::control_loop_cb()
     // 驅動控制命令發布
     controller_->publish_control_commands();
 
-    // 如果任務序列尚未啟動，檢查是否應啟動
-    if (!sequence_started_)
+    // Auto-start Offboard mode after connection + startup_delay (if enabled)
+    if (auto_start_sequence_ && !sequence_started_)
     {
         auto elapsed = this->now() - start_time_;
         if (elapsed.seconds() >= startup_delay_s_)
         {
             sequence_started_ = true;
             RCLCPP_INFO(this->get_logger(),
-                        "Startup delay (%.1f s) elapsed, triggering sequence",
+                        "Auto-starting Offboard mode after %.1f s delay",
                         startup_delay_s_);
-            trigger_takeoff_land_sequence();
+            controller_->switch_to_offboard_mode();
         }
     }
 }
 
-void BasicControllerNode::trigger_takeoff_land_sequence()
-{
-    RCLCPP_INFO(this->get_logger(),
-                "============================================");
-    RCLCPP_INFO(this->get_logger(),
-                "  Triggering takeoff-land sequence");
-    RCLCPP_INFO(this->get_logger(),
-                "  Target altitude: %.2f m", target_altitude_m_);
-    RCLCPP_INFO(this->get_logger(),
-                "  Hover duration: %.2f s", hover_duration_s_);
-    RCLCPP_INFO(this->get_logger(),
-                "============================================");
-
-    if (controller_ == nullptr)
-    {
-        RCLCPP_ERROR(this->get_logger(), "Controller is nullptr");
-        return;
-    }
-
-    bool success = controller_->execute_takeoff_land_sequence(
-        static_cast<float>(target_altitude_m_),
-        static_cast<float>(hover_duration_s_));
-
-    if (!success)
-    {
-        RCLCPP_ERROR(this->get_logger(), "Takeoff-land sequence failed");
-    }
-}
 
 void BasicControllerNode::on_agent_command(
     const utils::ParsedCommand& cmd)

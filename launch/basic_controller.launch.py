@@ -43,6 +43,7 @@ def launch_nodes(context, *args, **kwargs):
                 {"hover_duration_s": 3.0},
                 {"startup_delay_s": (i - 1) * 2.0},
                 {"target_system": i},
+                {"auto_start_sequence": True},
                 {"agent_namespace": agent_ns},
             ],
             output="screen",

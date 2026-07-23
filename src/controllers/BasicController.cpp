@@ -1,13 +1,13 @@
 
 /**
  * @file BasicController.cpp
- * @brief ∞Ú¬¶≠∏¶Ê±±®ÓæππÍß@
+ * @brief Âü∫Á§éÈ£õË°åÊéßÂà∂Âô®ÂØ¶‰Ωú
  * @author Taiphoon Agent Team
  * @date 2026-07-22
  *
- * πÍß@ IBasicFlightController §∂≠±°A
- * ®√≠´∫c¨∞øÌ¥` SOLID ≥Ê§@¬æ≥d≠Ï´h°A
- * ±N®C≠” Publisher/Subscriber ™Ï©l§∆ªP™¨∫Aæ˜≥B≤z§¿¬˜¨∞øW•ﬂ®Á¶°°C
+ * ÂØ¶‰Ωú IBasicFlightController ‰ªãÈù¢Ôºå
+ * ‰∏¶ÈáçÊßãÁÇ∫ÈÅµÂæ™ SOLID ÂñÆ‰∏ÄËÅ∑Ë≤¨ÂéüÂâáÔºå
+ * Â∞áÊØèÂÄã Publisher/Subscriber ÂàùÂßãÂåñËàáÁãÄÊÖãÊ©üËôïÁêÜÂàÜÈõ¢ÁÇ∫Áç®Á´ãÂáΩÂºè„ÄÇ
  */
 
 #include "controllers/BasicController.hpp"
@@ -20,15 +20,16 @@ namespace taiphoon
 namespace controllers
 {
 
+
 // =============================================================================
-// ´ÿ∫c§l
+// Âª∫ÊßãÂ≠ê
 // =============================================================================
 
 BasicController::BasicController(rclcpp::Node* node, uint8_t target_system)
     : node_(node),
       target_system_(target_system)
 {
-    // L1-02°G¿À¨d´¸º–¨Oß_¨∞ nullptr
+    // L1-02ÔºöÊ™¢Êü•ÊåáÊ®ôÊòØÂê¶ÁÇ∫ nullptr
     if (node_ == nullptr)
     {
         RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
@@ -36,13 +37,14 @@ BasicController::BasicController(rclcpp::Node* node, uint8_t target_system)
     }
 }
 
+
 // =============================================================================
-// IBasicFlightController §∂≠±πÍß@
+// IBasicFlightController ‰ªãÈù¢ÂØ¶‰Ωú
 // =============================================================================
 
 bool BasicController::initialize()
 {
-    // L1-02°G¿À¨d´¸º–¨Oß_¨∞ nullptr
+    // L1-02ÔºöÊ™¢Êü•ÊåáÊ®ôÊòØÂê¶ÁÇ∫ nullptr
     if (node_ == nullptr)
     {
         RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
@@ -50,7 +52,8 @@ bool BasicController::initialize()
         return false;
     }
 
-    // --- ®Ãß«´ÿ•ﬂ¶U Publisher (≥Ê§@¬æ≥d) ---
+
+    // --- ‰æùÂ∫èÂª∫Á´ãÂêÑ Publisher (ÂñÆ‰∏ÄËÅ∑Ë≤¨) ---
     if (!create_offboard_control_mode_publisher() ||
         !create_trajectory_setpoint_publisher() ||
         !create_vehicle_command_publisher())
@@ -60,7 +63,8 @@ bool BasicController::initialize()
         return false;
     }
 
-    // --- ®Ãß«´ÿ•ﬂ¶U Subscriber (≥Ê§@¬æ≥d) ---
+
+    // --- ‰æùÂ∫èÂª∫Á´ãÂêÑ Subscriber (ÂñÆ‰∏ÄËÅ∑Ë≤¨) ---
     if (!create_vehicle_command_ack_subscriber() ||
         !create_vehicle_status_subscriber())
     {
@@ -98,8 +102,9 @@ bool BasicController::is_initialized() const
     return is_initialized_.load();
 }
 
+
 // =============================================================================
-// ©R•O§∂≠±πÍß@
+// ÂëΩ‰ª§‰ªãÈù¢ÂØ¶‰Ωú
 // =============================================================================
 
 bool BasicController::arm()
@@ -114,7 +119,11 @@ bool BasicController::arm()
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Sending arm command (target_system=%d)", target_system_);
     bool result = send_arm_command(true);
-    if (result) flight_state_.store(FlightState::ARMED);
+    if (result)
+    {
+        offboard_start_time_ = node_->now();
+        flight_state_.store(FlightState::ARMED);
+    }
     return result;
 }
 
@@ -153,7 +162,7 @@ bool BasicController::takeoff(float altitude_m)
                      "Takeoff altitude invalid (NaN or Inf)");
         return false;
     }
-    if (altitude_m <= 0.0F)
+    if (altitude_m <= 1e-6F)
     {
         RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
                      "Takeoff altitude must be positive");
@@ -259,14 +268,17 @@ const char* BasicController::get_state() const
         case FlightState::HOVER:         return "HOVER";
         case FlightState::RTL:           return "RTL";
         case FlightState::LAND:          return "LAND";
+        case FlightState::OFFBOARD_ACTIVE: return "OFFBOARD_ACTIVE";
         case FlightState::MOVING:        return "MOVING";
+        case FlightState::POST_RTL:       return "POST_RTL";
         case FlightState::ERROR:         return "ERROR";
         default:                         return "UNKNOWN";
     }
 }
 
+
 // =============================================================================
-// ∞™∂•©R•O§Ë™kπÍß@
+// È´òÈöéÂëΩ‰ª§ÊñπÊ≥ïÂØ¶‰Ωú
 // =============================================================================
 
 bool BasicController::switch_to_rtl_mode()
@@ -318,6 +330,24 @@ bool BasicController::switch_to_offboard_mode()
     return true;
 }
 
+bool BasicController::switch_to_hold_mode()
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot switch to HOLD: not initialized");
+        return false;
+    }
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "Switching to HOLD mode (target_system=%d)", target_system_);
+    bool result = send_hold_mode_command();
+    if (result)
+    {
+        flight_state_.store(FlightState::IDLE);
+    }
+    return result;
+}
+
 bool BasicController::move_forward(float distance_m)
 {
     if (!is_initialized_.load())
@@ -364,8 +394,9 @@ bool BasicController::move_right(float distance_m)
     return true;
 }
 
+
 // =============================================================================
-// §Ω∂}ª≤ßU§Ë™k
+// ÂÖ¨ÈñãËºîÂä©ÊñπÊ≥ï
 // =============================================================================
 
 void BasicController::update_odometry(const px4_msgs::msg::VehicleOdometry& msg)
@@ -376,8 +407,9 @@ void BasicController::update_odometry(const px4_msgs::msg::VehicleOdometry& msg)
     current_position_ned_[2] = msg.position[2];
 }
 
+
 // =============================================================================
-// Publisher ™Ï©l§∆ (≥Ê§@¬æ≥d≠Ï´h)
+// Publisher ÂàùÂßãÂåñ (ÂñÆ‰∏ÄËÅ∑Ë≤¨ÂéüÂâá)
 // =============================================================================
 
 bool BasicController::create_offboard_control_mode_publisher()
@@ -419,8 +451,9 @@ bool BasicController::create_vehicle_command_publisher()
     return true;
 }
 
+
 // =============================================================================
-// Subscriber ™Ï©l§∆ (≥Ê§@¬æ≥d≠Ï´h)
+// Subscriber ÂàùÂßãÂåñ (ÂñÆ‰∏ÄËÅ∑Ë≤¨ÂéüÂâá)
 // =============================================================================
 
 bool BasicController::create_vehicle_command_ack_subscriber()
@@ -451,8 +484,9 @@ bool BasicController::create_vehicle_status_subscriber()
     return true;
 }
 
+
 // =============================================================================
-// ±±®Ó©R•Oµo•¨ (•D≠n≠pÆ…æπ¶^©I)
+// ÊéßÂà∂ÂëΩ‰ª§ÁôºÂ∏É (‰∏ªË¶ÅË®àÊôÇÂô®ÂõûÂëº)
 // =============================================================================
 
 void BasicController::publish_control_commands()
@@ -460,10 +494,21 @@ void BasicController::publish_control_commands()
     if (!is_initialized_.load()) return;
     if (offboard_control_mode_pub_ == nullptr || trajectory_setpoint_pub_ == nullptr) return;
 
-    auto mode_msg = px4_msgs::msg::OffboardControlMode();
-    mode_msg.timestamp = node_->now().nanoseconds() / 1000ULL;
-    mode_msg.position = true;
-    offboard_control_mode_pub_->publish(mode_msg);
+    // L1-02: POST_RTL ÁãÄÊÖãÂÅúÊ≠¢Áôº‰Ωà Offboard ÊéßÂà∂ÂëΩ‰ª§
+    bool should_publish_offboard = true;
+    auto current_state = flight_state_.load();
+    if (current_state == FlightState::POST_RTL || current_state == FlightState::IDLE)
+    {
+        should_publish_offboard = false;
+    }
+
+    if (should_publish_offboard)
+    {
+        auto mode_msg = px4_msgs::msg::OffboardControlMode();
+        mode_msg.timestamp = node_->now().nanoseconds() / 1000ULL;
+        mode_msg.position = true;
+        offboard_control_mode_pub_->publish(mode_msg);
+    }
 
     auto msg = px4_msgs::msg::TrajectorySetpoint();
     msg.timestamp = node_->now().nanoseconds() / 1000ULL;
@@ -472,15 +517,21 @@ void BasicController::publish_control_commands()
     msg.position[2] = std::numeric_limits<float>::quiet_NaN();
     msg.yaw = std::numeric_limits<float>::quiet_NaN();
 
-    switch (flight_state_.load())
+    auto mode_msg_local = px4_msgs::msg::OffboardControlMode();
+    mode_msg_local.timestamp = node_->now().nanoseconds() / 1000ULL;
+    mode_msg_local.position = true;
+
+    switch (current_state)
     {
-        case FlightState::OFFBOARD_INIT: handle_offboard_init_state(mode_msg); break;
-        case FlightState::ARMED:         handle_armed_state(mode_msg); break;
-        case FlightState::TAKEOFF:       handle_takeoff_state(msg); break;
-        case FlightState::HOVER:         handle_hover_state(msg); break;
-        case FlightState::RTL:           handle_rtl_state(msg); break;
-        case FlightState::LAND:          handle_land_state(msg); break;
-        case FlightState::MOVING:        handle_moving_state(msg); break;
+        case FlightState::OFFBOARD_INIT:  handle_offboard_init_state(mode_msg_local); break;
+        case FlightState::OFFBOARD_ACTIVE: handle_offboard_active_state(msg); break;
+        case FlightState::ARMED:          handle_armed_state(mode_msg_local); break;
+        case FlightState::TAKEOFF:        handle_takeoff_state(msg); break;
+        case FlightState::HOVER:          handle_hover_state(msg); break;
+        case FlightState::RTL:            handle_rtl_state(msg); break;
+        case FlightState::POST_RTL:       handle_post_rtl_state(msg); break;
+        case FlightState::LAND:           handle_land_state(msg); break;
+        case FlightState::MOVING:         handle_moving_state(msg); break;
         case FlightState::IDLE:
         case FlightState::ERROR:
         default: break;
@@ -498,8 +549,9 @@ std::array<float, 3> BasicController::get_current_position_ned() const
     return current_position_ned_;
 }
 
+
 // =============================================================================
-// ™¨∫Aæ˜≥B≤z®Á¶° (≥Ê§@¬æ≥d≠Ï´h)
+// ÁãÄÊÖãÊ©üËôïÁêÜÂáΩÂºè (ÂñÆ‰∏ÄËÅ∑Ë≤¨ÂéüÂâá)
 // =============================================================================
 
 void BasicController::handle_offboard_init_state(px4_msgs::msg::OffboardControlMode& /*mode_msg*/)
@@ -532,12 +584,18 @@ void BasicController::handle_offboard_init_state(px4_msgs::msg::OffboardControlM
                        "Offboard echo timeout after %.0f ms, proceeding", elapsed_ms);
         is_offboard_timer_active_ = false;
         offboard_cmd_sending_ = false;
-        if (!arm())
-        {
-            RCLCPP_ERROR(rclcpp::get_logger("BasicController"), "Arm failed");
-            flight_state_.store(FlightState::ERROR);
-        }
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "Offboard mode established, waiting for ARM command");
+        flight_state_.store(FlightState::OFFBOARD_ACTIVE);
     }
+}
+
+void BasicController::handle_offboard_active_state(
+    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
+{
+    // Offboard Â∑≤ÂïüÁî®ÔºåÁ∂≠ÊåÅÂøÉË∑≥ÔºåÁ≠âÂæÖ ARM ÂëΩ‰ª§
+    // ‰∏çÁôºÈÄÅ‰ªª‰Ωï‰ΩçÁΩÆË®≠ÂÆöÈªûÔºå‰øùÊåÅ Offboard Ê®°Âºè
+    return;
 }
 
 void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*mode_msg*/)
@@ -568,47 +626,48 @@ void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& ms
         RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                     "Takeoff progress: %.2f / %.2f m", current_alt, target_alt);
     }
-
-    if (current_alt >= target_alt * ALTITUDE_ARRIVAL_RATIO)
-    {
-        float hold_dur = hover_duration_s_.load();
-        if (hold_dur > 0.0F)
-        {
-            flight_state_.store(FlightState::HOVER);
-            hover_start_time_ = node_->now();
-            is_hover_timer_active_ = true;
-        }
-        else
-        {
-            flight_state_.store(FlightState::RTL);
-            rtl_cmd_sent_ = false;
-        }
-    }
-    else
-    {
-        auto elapsed = node_->now() - takeoff_start_time_;
-        if (elapsed.seconds() * 1000.0 >= static_cast<double>(TAKEOFF_TIMEOUT_MS))
-        {
-            RCLCPP_WARN(rclcpp::get_logger("BasicController"), "Takeoff timeout, aborting to RTL");
-            flight_state_.store(FlightState::RTL);
-            rtl_cmd_sent_ = false;
-        }
-    }
+    // ÈÅøÂÖçËá™ÂãïÈÄ≤ÂÖ•RTLÊ®°ÂºèÔºåÂÖàË®ªËß£ÊéâËá™ÂãïÈÄ≤ÂÖ•HOVERÊàñRTLÁöÑÈÇèËºØ
+    // if (current_alt >= target_alt * ALTITUDE_ARRIVAL_RATIO)
+    // {
+    //     float hold_dur = hover_duration_s_.load();
+    //     if (hold_dur > 0.0F)
+    //     {
+    //         flight_state_.store(FlightState::HOVER);
+    //         hover_start_time_ = node_->now();
+    //         is_hover_timer_active_ = true;
+    //     }
+    //     else
+    //     {
+    //         flight_state_.store(FlightState::RTL);
+    //         rtl_cmd_sent_ = false;
+    //     }
+    // }
+    // else
+    // {
+    //     auto elapsed = node_->now() - takeoff_start_time_;
+    //     if (elapsed.seconds() * 1000.0 >= static_cast<double>(TAKEOFF_TIMEOUT_MS))
+    //     {
+    //         RCLCPP_WARN(rclcpp::get_logger("BasicController"), "Takeoff timeout, aborting to RTL");
+    //         flight_state_.store(FlightState::RTL);
+    //         rtl_cmd_sent_ = false;
+    //     }
+    // }
 }
 
 void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
     msg.position[2] = -target_altitude_m_.load();
-    if (is_hover_timer_active_)
-    {
-        auto elapsed = node_->now() - hover_start_time_;
-        if (elapsed.seconds() >= static_cast<double>(hover_duration_s_.load()))
-        {
-            flight_state_.store(FlightState::RTL);
-            rtl_cmd_sent_ = false;
-            is_hover_timer_active_ = false;
-        }
-    }
+    // ÈÅøÂÖçËá™ÂãïÈÄ≤ÂÖ•RTLÊ®°ÂºèÔºåÂÖàË®ªËß£ÊéâËá™ÂãïÈÄ≤ÂÖ•HOVERÊàñRTLÁöÑÈÇèËºØ
+    // if (is_hover_timer_active_)
+    // {
+    //     auto elapsed = node_->now() - hover_start_time_;
+    //     if (elapsed.seconds() >= static_cast<double>(hover_duration_s_.load()))
+    //     {
+    //         flight_state_.store(FlightState::RTL);
+    //         rtl_cmd_sent_ = false;
+    //         is_hover_timer_active_ = false;
+    //     }
+    // }
 }
 
 void BasicController::handle_rtl_state(px4_msgs::msg::TrajectorySetpoint& msg)
@@ -624,8 +683,11 @@ void BasicController::handle_rtl_state(px4_msgs::msg::TrajectorySetpoint& msg)
     msg.position[2] = std::numeric_limits<float>::quiet_NaN();
     if (arming_state_.load() == 1)
     {
-        flight_state_.store(FlightState::IDLE);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "RTL landing detected, transitioning to POST_RTL");
+        flight_state_.store(FlightState::POST_RTL);
         rtl_cmd_sent_ = false;
+        hold_cmd_sent_ = false;
     }
     else
     {
@@ -665,6 +727,33 @@ void BasicController::handle_land_state(px4_msgs::msg::TrajectorySetpoint& msg)
     }
 }
 
+void BasicController::handle_post_rtl_state(
+    px4_msgs::msg::TrajectorySetpoint& msg)
+{
+    // RTL ÈôçËêΩÂÆåÊàêÔºåÂÅúÊ≠¢‰ΩçÁΩÆË®≠ÂÆö
+    msg.position[0] = std::numeric_limits<float>::quiet_NaN();
+    msg.position[1] = std::numeric_limits<float>::quiet_NaN();
+    msg.position[2] = std::numeric_limits<float>::quiet_NaN();
+
+    if (!hold_cmd_sent_)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "RTL complete, sending HOLD mode command and stopping Offboard");
+        send_hold_mode_command();
+        hold_cmd_sent_ = true;
+        has_offboard_stopped_ = true;
+    }
+
+    // Á≠âÂæÖ‰∏ÄÊÆµÊôÇÈñìÁ¢∫Ë™çÂëΩ‰ª§ÁôºÂá∫ÂæåËΩâÂÖ• IDLE
+    auto elapsed = node_->now() - takeoff_start_time_;
+    if (elapsed.seconds() >= 2.0)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "POST_RTL complete, entering IDLE");
+        flight_state_.store(FlightState::IDLE);
+    }
+}
+
 void BasicController::handle_moving_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
     msg.position[0] = target_position_ned_[0];
@@ -691,8 +780,9 @@ void BasicController::handle_moving_state(px4_msgs::msg::TrajectorySetpoint& msg
     }
 }
 
+
 // =============================================================================
-// VehicleCommand µo∞eª≤ßU§Ë™k
+// VehicleCommand ÁôºÈÄÅËºîÂä©ÊñπÊ≥ï
 // =============================================================================
 
 bool BasicController::send_arm_command(bool do_arm)
@@ -720,7 +810,12 @@ bool BasicController::send_arm_command(bool do_arm)
 
 bool BasicController::send_offboard_mode_command()
 {
-    if (vehicle_command_pub_ == nullptr) return false;
+    if (vehicle_command_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "VehicleCommand Publisher is nullptr in send_offboard_mode_command");
+        return false;
+    }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
     constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
@@ -738,7 +833,12 @@ bool BasicController::send_offboard_mode_command()
 
 bool BasicController::send_rtl_command()
 {
-    if (vehicle_command_pub_ == nullptr) return false;
+    if (vehicle_command_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "VehicleCommand Publisher is nullptr in send_rtl_command");
+        return false;
+    }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
     constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20;
@@ -756,7 +856,12 @@ bool BasicController::send_rtl_command()
 
 bool BasicController::send_land_command()
 {
-    if (vehicle_command_pub_ == nullptr) return false;
+    if (vehicle_command_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "VehicleCommand Publisher is nullptr in send_land_command");
+        return false;
+    }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
     constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21;
@@ -772,6 +877,31 @@ bool BasicController::send_land_command()
     return true;
 }
 
+bool BasicController::send_hold_mode_command()
+{
+    if (vehicle_command_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "VehicleCommand Publisher is nullptr in send_hold_mode_command");
+        return false;
+    }
+    auto cmd = px4_msgs::msg::VehicleCommand();
+    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
+    cmd.command = VEHICLE_CMD_DO_SET_MODE;
+    cmd.param1 = 1.0F;  // custom mode
+    cmd.param2 = 8.0F;  // Position Hold mode for multicopter
+    cmd.target_system = target_system_;
+    cmd.target_component = 1;
+    cmd.source_system = target_system_;
+    cmd.source_component = 1;
+    cmd.from_external = true;
+    vehicle_command_pub_->publish(cmd);
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "HOLD mode command sent (target_system=%d)", target_system_);
+    return true;
+}
+
 bool BasicController::validate_setpoint(float x, float y, float z) const
 {
     if (!utils::is_valid_float(x) || !utils::is_valid_float(y) || !utils::is_valid_float(z))
@@ -782,8 +912,9 @@ bool BasicController::validate_setpoint(float x, float y, float z) const
     return true;
 }
 
+
 // =============================================================================
-// ROS2 ¶^©I®Á¶°
+// ROS2 ÂõûÂëºÂáΩÂºè
 // =============================================================================
 
 void BasicController::vehicle_command_ack_cb(const px4_msgs::msg::VehicleCommandAck::SharedPtr msg)

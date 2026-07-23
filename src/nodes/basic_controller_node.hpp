@@ -58,11 +58,6 @@ private:
     void control_loop_cb();
 
     /**
-     * @brief 觸發起飛-降落任務序列
-     */
-    void trigger_takeoff_land_sequence();
-
-    /**
      * @brief 高階命令處理回呼
      *
      * 將 AgentCommandHandler 解析的命令轉譯為 BasicController 的呼叫
@@ -117,6 +112,7 @@ private:
     // ==================== 狀態旗標 ====================
 
     bool sequence_started_{false};
+    bool auto_start_sequence_{true};
 };
 
 }  // namespace nodes
