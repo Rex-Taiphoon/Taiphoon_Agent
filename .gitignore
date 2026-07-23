@@ -1,0 +1,39 @@
+# 建置產物
+build/
+devel/
+install/
+
+# 編譯中間檔
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+*.obj
+*.lib
+*.dll
+*.exp
+*.pdb
+*.ilk
+
+# Log 與測試紀錄
+log/
+*.log
+
+# 備份檔
+*.bak
+*~
+
+# IDE 設定
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CMake 暫存
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
