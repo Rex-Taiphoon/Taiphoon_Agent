@@ -1,4 +1,0 @@
-/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp: In member function ‘virtual bool taiphoon::controllers::BasicController::execute_takeoff_land_sequence(float, float)’:
-/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:203:11: warning: unused parameter ‘altitude_m’ [-Wunused-parameter]
-  203 |     float altitude_m, float hover_duration_s)
-      |     ~~~~~~^~~~~~~~~~

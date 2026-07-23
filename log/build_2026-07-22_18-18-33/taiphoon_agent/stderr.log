@@ -1,8 +1,0 @@
-[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:[m[K In member function ‘[01m[Kvoid taiphoon::controllers::BasicController::handle_offboard_init_state(px4_msgs::msg::OffboardControlMode&)[m[K’:
-[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:505:86:[m[K [01;35m[Kwarning: [m[Kunused parameter ‘[01m[Kmode_msg[m[K’ [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wunused-parameter-Wunused-parameter]8;;[m[K]
-  505 | void BasicController::handle_offboard_init_state([01;35m[Kpx4_msgs::msg::OffboardControlMode& mode_msg[m[K)
-      |                                                  [01;35m[K~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~[m[K
-[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:[m[K In member function ‘[01m[Kvoid taiphoon::controllers::BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode&)[m[K’:
-[01m[K/home/taiphoon/Taiphoon_Agent/src/controllers/BasicController.cpp:543:78:[m[K [01;35m[Kwarning: [m[Kunused parameter ‘[01m[Kmode_msg[m[K’ [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wunused-parameter-Wunused-parameter]8;;[m[K]
-  543 | void BasicController::handle_armed_state([01;35m[Kpx4_msgs::msg::OffboardControlMode& mode_msg[m[K)
-      |                                          [01;35m[K~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~[m[K

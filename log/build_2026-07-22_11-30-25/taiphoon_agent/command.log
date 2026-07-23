@@ -1,2 +1,0 @@
-Invoking command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8
-Invoked command in '/home/taiphoon/Taiphoon_Agent/build/taiphoon_agent' returned '2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/taiphoon/Taiphoon_Agent/build/taiphoon_agent -- -j8 -l8

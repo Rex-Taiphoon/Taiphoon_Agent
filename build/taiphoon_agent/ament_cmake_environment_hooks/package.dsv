@@ -1,4 +1,0 @@
-source;share/taiphoon_agent/local_setup.bash
-source;share/taiphoon_agent/local_setup.dsv
-source;share/taiphoon_agent/local_setup.sh
-source;share/taiphoon_agent/local_setup.zsh
