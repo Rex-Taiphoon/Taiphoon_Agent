@@ -1,0 +1,101 @@
+===========================建構Taiphoon_Agent執行環境====================
+建構Taiphoon_Agent(Docker)，參考https://blog.miniasp.com/post/2025/06/14/How-to-remove-Docker-Desktop-and-install-Docker-Engine-on-Windows-with-WSL-2
+# 先到wsl
+wsl
+
+# 執行安裝程序
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+
+# 確認版本
+docker --version
+docker compose version
+
+# 更新以下程式碼到~/.profile
+if grep -q "\-WSL2" /proc/version > /dev/null 2>&1; then
+    if service docker status 2>&1 | grep -q "is not running"; then
+        wsl.exe --distribution "${WSL_DISTRO_NAME}" --user root \
+            --exec /usr/sbin/service docker start > /dev/null 2>&1
+    fi
+fi
+
+# 開始建構Taiphoon_Agent
+docker build --target taiphoon-dev -t taiphoon-agent:dev .
+
+# 下載MicroXRCE-DDS-Agent的Docker版本
+docker pull husarion/micro-xrce-agent:v2.4.1
+
+============================================================================
+以下為單台無人機模擬
+
+===========================開啟PX4模擬器(Docker)=============================
+# 如果在Powershell或Cmd，先進入WSL
+wsl
+
+docker run --rm -it   \
+--net=host \
+-p 14550:14550/udp  \
+-e PX4_UXRCE_DDS_NS=fmu1 \
+-e PX4_SIM_MODEL=sihsim_quadx \
+-e PX4_NET_INTERFACE=eth0 \
+-e PX4_SIMULATOR=sihsim \
+-e PX4_PARAM_COM_RC_IN_MODE=4 \
+-e PX4_HOME_LAT=25.03996592258936 \
+-e PX4_HOME_LON=121.51195163336611 \
+px4io/px4-sitl:latest
+
+===========================開啟MicroXRCE-DDS-Agent(Docker)===========================
+# 如果在Powershell或Cmd，先進入WSL
+wsl
+
+# 執行docker鏡像
+docker run --rm -it --name uxrce-dds-agent --net=host husarion/micro-xrce-agent:v2.4.1 bash
+
+# 執行MicroXRCE-DDS-Agent
+MicroXRCEAgent udp4 -p 8888
+
+
+===========================開啟Taiphoon_Agent(Docker)===========================
+# 如果在Powershell或Cmd，先進入WSL
+wsl
+
+# 啟動Taiphoon_Agent Container
+cd ~/Taiphoon_Agent/ && docker compose up -d
+
+# 進入Taiphoon_Agent的Container
+docker compose exec taiphoon-agt bash
+
+# 啟動控制模組
+ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=1
+
+=======================Taiphoon_Agent指令表====================================
+# 切換OFFBOARD模式
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MODE_OFFBOARD'" --once
+
+# 解鎖
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'ARM'" --once
+
+# 起飛10公尺
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'TAKEOFF 10'" --once
+
+# 向右移動10公尺
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MOVE_RIGHT 10'" --once
+
+# 向左移動10公尺
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MOVE_LEFT 10'" --once
+
+# 向前移動10公尺
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MOVE_FORWARD 10'" --once
+
+# 向後移動10公尺
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MOVE_BACKWARD 10'" --once
+
+# 切換RTL模式
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MODE_RTL'" --once
+
+# 切換LAND模式
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'MODE_LAND'" --once
+
+# 上鎖
+ros2 topic pub /fmu_all_agent/command std_msgs/String "data: 'DISARM'" --once

@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Taiphoon_Agent Docker Compose
 # =============================================================================
 # Usage:
@@ -9,6 +9,7 @@
 # =============================================================================
 
 services:
+  # 定義Compose裡的service名稱，目前定義為 taiphoon-agt
   taiphoon-agt:
     build:
       context: .
@@ -40,9 +41,9 @@ services:
       # ---- 顯示轉發（若有 GUI 需求） ----
       - DISPLAY=${DISPLAY:-:0}
       # ---- ROS2 DDS 設定 ----
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
-      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}
+      # - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      # - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      # - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}
       - RCUTILS_COLORIZED_OUTPUT=1
       # ---- Taiphoon_Agent 工作空間路徑 ----
       - PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
