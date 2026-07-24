@@ -1,3 +1,0 @@
-interface:
-  display_name: "WSL2 環境工具"
-  short_description: "從 Windows 端執行 WSL2 指令、查詢狀態與重啟環境"

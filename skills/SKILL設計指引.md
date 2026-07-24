@@ -75,13 +75,6 @@ interface:
 
 # 目前Taiphoon設計的Skill列表
 
-## WSL工具：
-**當Agent要調用wsl環境裡面的指令時可以調用此工具，可以在使用過程中自行擴充**
-
-- 功能：想要執行WSL的指令時，如果當前終端為CMD或powershell時，應該要用`wsl -d Ubuntu-22.04 -- bash -c "linux_cmd_here"`指令
-- 功能：查詢WSL狀態
-- 功能：重新啟動WSL，`wsl —shutdown`
-
 ## ROS2工具
 **使用ros2相關命令列時常用的工具，可以在使用過程中自行擴充**
 - 功能：基本指令，查詢`ros2 topic list`等
