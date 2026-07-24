@@ -49,12 +49,23 @@ px4io/px4-sitl:latest
 # 如果在Powershell或Cmd，先進入WSL
 wsl
 
-# 執行docker鏡像
+# 手動，啟動進入docker鏡像
 docker run --rm -it --name uxrce-dds-agent --net=host husarion/micro-xrce-agent:v2.4.1 bash
 
-# 執行MicroXRCE-DDS-Agent
+# 手動，執行MicroXRCE-DDS-Agent
 MicroXRCEAgent udp4 -p 8888
 
+# 自動開啟MicroXRCE-DDS-Agent，或是直接執行以下指令
+docker run --rm -it --name uxrce-dds-agent --net=host husarion/micro-xrce-agent:v2.4.1 MicroXRCEAgent udp4 -p 8888
+===========================開啟Taiphoon_Agent(WSL)===========================
+主要用途為開發主要功能用
+# 如果在Powershell或Cmd，先進入WSL
+wsl
+
+# 啟動控制模組
+ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=1
+
+# 注意如果無法連上或ros2指令等待很久，需要ros2 daemon start
 
 ===========================開啟Taiphoon_Agent(Docker)===========================
 # 如果在Powershell或Cmd，先進入WSL
