@@ -1,5 +1,5 @@
 
-# Taiphoon_Agnet的Skill開發原則
+# Taiphoon_Agent的Skill開發原則
 - 每個Skill都專責一個子任務
 - Skill是為了確保的開發、測試、驗證必須在同一個標準上，因此將以指令與使用邏輯為根本，讓Agent可以在需要時調用該指令
 - 所有Skill是建立在Codex上的，必須能夠被Codex顯式或隱式調用
@@ -12,12 +12,12 @@
     - `uxrce_dds_agent-tools`：uxrce-dds-agent相關指令的Skill
 
 
-# Taiphoon_Agnet的Skill框架
-**Taiphoon_Agnet的Skill包含以下結構**
+# Taiphoon_Agent的Skill框架
+**Taiphoon_Agent的Skill包含以下結構**
 ### SKILL.md:：指令 + 元資料 (YAML frontmatter)
 ```
 ---
-name: Skill名稱，應該以英文撰寫，命名規範參考上方Taiphoon_Agnet的Skill開發原則
+name: Skill名稱，應該以英文撰寫，命名規範參考上方Taiphoon_Agent的Skill開發原則
 description: 描述Skill的功能。主要是給Agent看何時觸發這個功能，必須要涵蓋目前這個Skill的全部功能，功能描述必須要專一且明確，總長度不得超過500字
 ---
 # 功能名稱

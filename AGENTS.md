@@ -1,7 +1,7 @@
-# 關於Taiphoon_Agnet
-Taiphoon_Agnet是一個裝載在無人載具上的任務與感測器執行中樞，主控所有自主飛行任務，並且將接入Taiphoon_Agnet的感測器融合運算，執行避障、追蹤、定位等演算法，同時也作為邊緣運算的核心進行即時影像識別，並作為影像串流核心向地面控制站傳遞即時影像
+# 關於Taiphoon_Agent
+Taiphoon_Agent是一個裝載在無人載具上的任務與感測器執行中樞，主控所有自主飛行任務，並且將接入Taiphoon_Agent的感測器融合運算，執行避障、追蹤、定位等演算法，同時也作為邊緣運算的核心進行即時影像識別，並作為影像串流核心向地面控制站傳遞即時影像
 
-Taiphoon_Agnet是一個可以被Docker掛載的程式，因此可以掛載到任何執行Linux核心的電腦上
+Taiphoon_Agent是一個可以被Docker掛載的程式，因此可以掛載到任何執行Linux核心的電腦上
 
 # 核心任務
 1. 負責PX4或Ardupilot的MicroROS或uXRCE-DDS的Agent
@@ -12,17 +12,17 @@ Taiphoon_Agnet是一個可以被Docker掛載的程式，因此可以掛載到任
 # 基本架構
 Taiphoon_Agent開發時必須要注意以下基本架構：
 ## 架構核心
-- Taiphoon_Agnet控制的無人機以四旋翼為主
+- Taiphoon_Agent控制的無人機以四旋翼為主
 - 為了跨平臺移植，所有程式必須掛在Docker上
-- 所有控制Taiphoon_Agnet的方法應該盡量以引數化為主
+- 所有控制Taiphoon_Agent的方法應該盡量以引數化為主
 - 對無人機端的ROS2命令為PX4原生支援的低階命令(例如姿態控制、位置控制、模式切換等)，對地面端則為重新設計的高階命令(例如環形編隊、定點繞圈、智慧避障等)
 - 這套基於Taiphoon_Agent系統必須具備強大的冗餘機制，當其中一臺無人機失效時，整套系統應該持續執行，並自動切換編隊任務
 ## 通訊架構
 - 全部的系統都採用網路(Ethernet)連線
 - 與無人機、地面控制站的資料鏈**必須**基於ROS2的通訊系統
-- 一個Taiphoon_Agnet只能直接控制一臺PX4或Ardupilot的飛控，如果要進行編隊，應該由一個Taiphoon_Agent向另一個Taiphoon_Agent下指令
-- 對地面端與其他Taiphoon_Agnet的ROS2 topic應盡可能留下必要的即可，避免頻寬消耗
-- 如果無人機的ROS2為/fmu1，對地面站與其他Taiphoon_Agnet的ROS2 topic應為/fmu1_agent/xxx1表示地面站或其他Agent對其下的命令；對所有Agent的統一命令應為/fmu_all_agent，所有Agent都要服從此命令，作為統一控制使用
+- 一個Taiphoon_Agent只能直接控制一臺PX4或Ardupilot的飛控，如果要進行編隊，應該由一個Taiphoon_Agent向另一個Taiphoon_Agent下指令
+- 對地面端與其他Taiphoon_Agent的ROS2 topic應盡可能留下必要的即可，避免頻寬消耗
+- 如果無人機的ROS2為/fmu1，對地面站與其他Taiphoon_Agent的ROS2 topic應為/fmu1_agent/xxx1表示地面站或其他Agent對其下的命令；對所有Agent的統一命令應為/fmu_all_agent，所有Agent都要服從此命令，作為統一控制使用
 ## 程式開發原則
 - 所有中文註解必須要以繁體中文撰寫，並且不可以出現中國用語
 - 所有開發僅限於Taiphoon_Agent這個專案
