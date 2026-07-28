@@ -1,5 +1,5 @@
 interface:
-  display_name: "PX4 SITL 啟動器"
-  short_description: "啟動與管理多台 PX4 SITL 模擬器，支援參數化無人機數量與 uXRCE-DDS ROS2 橋接"
+  display_name: "PX4 SITL 啟動器 (Docker)"
+  short_description: "以 Docker 啟動與管理多台 PX4 SITL 模擬器，支援參數化無人機數量與 uXRCE-DDS ROS2 橋接"
   icon_small: "./assets/px4-sitl-small.svg"
   icon_large: "./assets/px4-sitl.svg"

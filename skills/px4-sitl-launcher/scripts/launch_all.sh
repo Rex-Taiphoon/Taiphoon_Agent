@@ -1,33 +1,93 @@
 #!/bin/bash
-# launch_all.sh - 啟動指定數量的 PX4 SITL 模擬器與 MicroXRCEAgent
-# 使用方式：bash launch_all.sh [無人機數量]
-#   無人機數量：預設為 3，可依需求調整
+# =============================================================================
+# launch_all.sh - 以 Docker 啟動多台 PX4 SITL 模擬器與 uXRCE-DDS Agent
+# =============================================================================
+# 使用方式：
+#   bash launch_all.sh --count 3 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]
+#
+# 參數：
+#   --count N      無人機數量（預設 3）
+#   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
+#   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
+# =============================================================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 讀取無人機數量參數，預設為 3
-COUNT=${1:-3}
+# ---- 預設值 ----
+COUNT=3
+NETWORK="Taiphoon_Net"
+RMW="fastrtps"
 
-# 啟動前清理任何殘留的 tmux session 與程序，避免埠號衝突
-echo "=== 清理舊有模擬器 ==="
-"${SCRIPT_DIR}/stop_all.sh" 2>/dev/null || true
+# ---- 解析參數 ----
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --count)
+            COUNT="$2"
+            shift 2
+            ;;
+        --net)
+            NETWORK="$2"
+            shift 2
+            ;;
+        --rmw)
+            RMW="$2"
+            shift 2
+            ;;
+        *)
+            echo "未知參數：$1"
+            echo "使用方式：$0 --count 3 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
+            exit 1
+            ;;
+    esac
+done
+
+# ---- 轉換 RMW 簡稱 ----
+case "$RMW" in
+    fastrtps)
+        RMW_ENV="rmw_fastrtps_cpp"
+        ;;
+    cyclonedds)
+        RMW_ENV="rmw_cyclonedds_cpp"
+        ;;
+    *)
+        echo "錯誤：不支援的 RMW 類型 '$RMW'，請使用 fastrtps 或 cyclonedds"
+        exit 1
+        ;;
+esac
+
+# ---- 確保 Docker 網路存在 ----
+if ! docker network inspect "$NETWORK" > /dev/null 2>&1; then
+    echo "=== 建立 Docker 網路：${NETWORK} ==="
+    docker network create "$NETWORK"
+fi
+
+# ---- 啟動前清理舊容器 ----
+echo "=== 清理舊有模擬器容器 ==="
+"${SCRIPT_DIR}/stop_all.sh" --net "$NETWORK" 2>/dev/null || true
 sleep 1
 echo ""
 
-echo "=== 啟動 ${COUNT} 台 PX4 SITL 模擬器 ==="
+echo "=== 啟動 ${COUNT} 台 PX4 SITL 模擬器（網路：${NETWORK}，RMW：${RMW}）==="
 
 for ((i=0; i<COUNT; i++)); do
+    echo ""
     echo "--- 啟動 Instance ${i} ---"
-    bash "${SCRIPT_DIR}/start_single_instance.sh" "${i}"
+    bash "${SCRIPT_DIR}/start_single_instance.sh" \
+        --index "$i" \
+        --net "$NETWORK" \
+        --rmw "$RMW"
     sleep 2
 done
 
-echo "=== 全部 ${COUNT} 台已啟動完成 ==="
 echo ""
-echo "tmux 工作階段："
-tmux ls 2>/dev/null | grep -E "agent_|sitl_" || echo "(無執行中的 tmux 工作階段)"
+echo "============================================"
+echo " 全部 ${COUNT} 台已啟動完成"
+echo "============================================"
 echo ""
-echo "執行中程序："
-ps aux | grep -E "MicroXRCEAgent|bin/px4" | grep -v grep || echo "(無執行中的 PX4 程序)"
+echo "執行中容器："
+docker ps --filter "name=drone" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "(無執行中的 drone 容器)"
+echo ""
+echo "檢查 ROS2 topics："
+echo "  docker compose exec taiphoon-agt -- ros2 topic list"

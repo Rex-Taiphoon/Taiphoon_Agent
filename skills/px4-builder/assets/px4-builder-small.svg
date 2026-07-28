@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <rect x="8" y="8" width="48" height="48" rx="8" fill="#2d3436"/>
-  <rect x="14" y="14" width="36" height="36" rx="4" fill="#636e72"/>
-  <path d="M22 32 L28 26 L34 32 L28 38 Z" fill="#00b894"/>
-  <rect x="36" y="26" width="6" height="12" rx="1" fill="#00b894"/>
-  <text x="32" y="60" text-anchor="middle" fill="#636e72" font-family="monospace" font-size="6">BUILD</text>
-</svg>

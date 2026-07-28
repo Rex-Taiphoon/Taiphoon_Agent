@@ -2,14 +2,17 @@
 # Taiphoon_Agent Docker Compose
 # =============================================================================
 # Usage:
-#   docker compose build    # Build the image
-#   docker compose up -d    # Start container (background)
-#   docker compose exec taiphoon bash   # Enter container
-#   docker compose down     # Stop container
+#   docker compose build                        # Build Taiphoon_Agent image
+#   docker compose up -d                        # Start Taiphoon_Agent (dev)
+#   docker compose --profile hw up -d           # Start with uXRCE-DDS Agent (實機)
+#   docker compose exec taiphoon-agt bash       # Enter agent container
+#   docker compose down                         # Stop all services
 # =============================================================================
 
 services:
-  # 定義Compose裡的service名稱，目前定義為 taiphoon-agt
+  # ===========================================================================
+  # Taiphoon_Agent 開發容器
+  # ===========================================================================
   taiphoon-agt:
     build:
       context: .
@@ -45,9 +48,6 @@ services:
       # ---- 顯示轉發（若有 GUI 需求） ----
       - DISPLAY=${DISPLAY:-:0}
       # ---- ROS2 DDS 設定 ----
-      # - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      # - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
-      # - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}
       - RCUTILS_COLORIZED_OUTPUT=1
       # ---- SSH agent 轉發（讓容器內可使用主機 SSH 金鑰） ----
       - SSH_AUTH_SOCK=${SSH_AUTH_SOCK}
@@ -56,3 +56,31 @@ services:
       - TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
 
     restart: unless-stopped
+
+  # ===========================================================================
+  # uXRCE-DDS Agent 實機常駐服務 (--profile hw)
+  # 模擬時不使用此 service，由 px4-sitl-launcher 腳本動態建立
+  # ===========================================================================
+  uxrce-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.uxrce-agent
+      target: runtime
+    container_name: uxrce_agent_hw
+    hostname: uxrce-agent
+    user: taiphoon
+
+    network_mode: host
+    ipc: host
+
+    environment:
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+
+    # 實機模式下常駐重啟
+    restart: always
+
+    # 使用 profile 區隔，避免模擬時意外啟動
+    profiles:
+      - hw
+
+    command: ["udp4", "-p", "${UXRCE_PORT:-8888}"]

@@ -1,5 +1,0 @@
-interface:
-  display_name: "PX4 建構工具"
-  short_description: "從原始碼建構 PX4-Autopilot 韌體，安裝相依套件與執行環境"
-  icon_small: "./assets/px4-builder-small.svg"
-  icon_large: "./assets/px4-builder.svg"
