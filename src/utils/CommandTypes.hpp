@@ -36,7 +36,15 @@ enum class AgentCommand : uint8_t
     ARM,                ///< 解鎖 (Arm)
     DISARM,             ///< 上鎖 (Disarm)
     TAKEOFF,            ///< 起飛至指定高度 (參數: 高度公尺，預設 3.0m)
-    HOLD                ///< 切換至 Hold 模式 (保持目前位置)
+    HOLD,               ///< 切換至 Hold 模式 (保持目前位置)
+    MOVE_UP,            ///< 向上移動 x 公尺 (參數: 距離)
+    MOVE_DOWN,          ///< 向下移動 x 公尺 (參數: 距離)
+    YAW,                ///< 順時針旋轉 x 度 (參數: 角度)
+    MOVE_POINT,         ///< 移動至指定 NED 絕對位置 (參數: x y z yaw)
+    FORMATION_CIRCLE,   ///< 環形編隊 (參數: 半徑 高度)
+    FORMATION_HORI_LINEAR, ///< 水平直列編隊 (參數: 間距 高度)
+    FORMATION_VERT_LINEAR, ///< 垂直直列編隊 (參數: 間距)
+    FORMATION_CANCEL      ///< 取消當前編隊任務
 };
 
 /**
@@ -47,6 +55,12 @@ struct ParsedCommand
     AgentCommand command{AgentCommand::UNKNOWN};  ///< 命令類型
     float param_value{0.0F};                      ///< 命令參數值 (例如移動距離)
     bool has_param{false};                        ///< 是否包含數值參數
+
+    /// 多參數命令支援 (用於 MOVE_POINT, FORMATION_* 等)
+    float param2{0.0F};                           ///< 第二參數 (y / spacing)
+    float param3{0.0F};                           ///< 第三參數 (z / altitude)
+    float param4{0.0F};                           ///< 第四參數 (yaw)
+    bool has_multi_params{false};                 ///< 是否為多參數命令
 };
 
 /**
@@ -55,7 +69,11 @@ struct ParsedCommand
  * 支援的命令格式：
  *   MODE_RTL, MODE_LAND, MODE_OFFBOARD,
  *   MOVE_FORWARD x, MOVE_BACKWARD x, MOVE_LEFT x, MOVE_RIGHT x,
- *   ARM, DISARM, TAKEOFF
+ *   ARM, DISARM, TAKEOFF, HOLD,
+ *   MOVE_UP x, MOVE_DOWN x,
+ *   YAW x
+ *
+ * 為相容性亦支援簡寫：FORWARD, BACKWARD, LEFT, RIGHT
  *
  * @param cmd_str 輸入命令字串 (不區分大小寫)
  * @return ParsedCommand 解析結果
@@ -201,6 +219,130 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
     {
         result.command = AgentCommand::HOLD;
     }
+    else if (cmd_name == "MOVE_UP")
+    {
+        result.command = AgentCommand::MOVE_UP;
+        if (tokens.size() >= 2)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);
+                result.has_param = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+                result.has_param = false;
+            }
+        }
+    }
+    else if (cmd_name == "MOVE_DOWN")
+    {
+        result.command = AgentCommand::MOVE_DOWN;
+        if (tokens.size() >= 2)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);
+                result.has_param = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+                result.has_param = false;
+            }
+        }
+    }
+    else if (cmd_name == "YAW")
+    {
+        result.command = AgentCommand::YAW;
+        if (tokens.size() >= 2)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);
+                result.has_param = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+                result.has_param = false;
+            }
+        }
+    }
+    else if (cmd_name == "MOVE_POINT")
+    {
+        result.command = AgentCommand::MOVE_POINT;
+        if (tokens.size() >= 5)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);
+                result.param2 = std::stof(tokens[2]);
+                result.param3 = std::stof(tokens[3]);
+                result.param4 = std::stof(tokens[4]);
+                result.has_multi_params = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+            }
+        }
+    }
+    else if (cmd_name == "FORMATION_CIRCLE")
+    {
+        result.command = AgentCommand::FORMATION_CIRCLE;
+        if (tokens.size() >= 3)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);  // 半徑
+                result.param2 = std::stof(tokens[2]);        // 高度
+                result.has_multi_params = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+            }
+        }
+    }
+    else if (cmd_name == "FORMATION_HORI_LINEAR")
+    {
+        result.command = AgentCommand::FORMATION_HORI_LINEAR;
+        if (tokens.size() >= 3)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);  // 間距
+                result.param2 = std::stof(tokens[2]);        // 高度
+                result.has_multi_params = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+            }
+        }
+    }
+    else if (cmd_name == "FORMATION_VERT_LINEAR")
+    {
+        result.command = AgentCommand::FORMATION_VERT_LINEAR;
+        if (tokens.size() >= 2)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);  // 間距
+                result.has_multi_params = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+            }
+        }
+    }
+    else if (cmd_name == "FORMATION_CANCEL")
+    {
+        result.command = AgentCommand::FORMATION_CANCEL;
+    }
     else
     {
         result.command = AgentCommand::UNKNOWN;
@@ -230,7 +372,15 @@ inline const char* agent_command_to_string(AgentCommand cmd)
         case AgentCommand::DISARM:         return "DISARM";
         case AgentCommand::TAKEOFF:        return "TAKEOFF";
         case AgentCommand::HOLD:           return "HOLD";
-        default:                           return "UNKNOWN";
+        case AgentCommand::MOVE_UP:        return "MOVE_UP";
+        case AgentCommand::MOVE_DOWN:      return "MOVE_DOWN";
+        case AgentCommand::YAW:                 return "YAW";
+        case AgentCommand::MOVE_POINT:          return "MOVE_POINT";
+        case AgentCommand::FORMATION_CIRCLE:     return "FORMATION_CIRCLE";
+        case AgentCommand::FORMATION_HORI_LINEAR: return "FORMATION_HORI_LINEAR";
+        case AgentCommand::FORMATION_VERT_LINEAR: return "FORMATION_VERT_LINEAR";
+        case AgentCommand::FORMATION_CANCEL:      return "FORMATION_CANCEL";
+        default:                                   return "UNKNOWN";
     }
 }
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file basic_controller_node.cpp
  * @brief BasicController ROS2 節點實作
  * @author Taiphoon Agent Team
@@ -60,6 +60,13 @@ BasicControllerNode::BasicControllerNode()
         return;
     }
 
+    // --- 初始化 NED 目標訂閱者 ---
+    if (!initialize_ned_target_subscriber())
+    {
+        RCLCPP_ERROR(this->get_logger(), "NED target subscriber init failed");
+        return;
+    }
+
     // --- 初始化命令處理器 ---
     if (!initialize_agent_command_handler())
     {
@@ -98,6 +105,29 @@ bool BasicControllerNode::initialize_odometry_subscriber()
         return false;
     }
 
+    return true;
+}
+
+bool BasicControllerNode::initialize_ned_target_subscriber()
+{
+    std::string ned_topic = "/" + agent_namespace_ + "/ned_target";
+
+    ned_target_sub_ = this->create_subscription<taiphoon_agent::msg::NedTarget>(
+        ned_topic,
+        rclcpp::QoS(5).best_effort(),
+        std::bind(&BasicControllerNode::ned_target_cb, this,
+                  std::placeholders::_1));
+
+    if (ned_target_sub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create NED target subscriber on '%s'",
+                     ned_topic.c_str());
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "Subscribed to NED target topic: %s", ned_topic.c_str());
     return true;
 }
 
@@ -176,6 +206,26 @@ void BasicControllerNode::control_loop_cb()
 }
 
 
+void BasicControllerNode::ned_target_cb(
+    const taiphoon_agent::msg::NedTarget::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "ned_target_cb received nullptr, ignoring");
+        return;
+    }
+
+    if (controller_ == nullptr)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Controller not available, NED target ignored");
+        return;
+    }
+
+    controller_->set_ned_target(msg->x, msg->y, msg->z, msg->yaw);
+}
+
 void BasicControllerNode::on_agent_command(
     const utils::ParsedCommand& cmd)
 {
@@ -250,8 +300,46 @@ void BasicControllerNode::on_agent_command(
             break;
 
         case utils::AgentCommand::TAKEOFF:
-            result = controller_->takeoff(
-                static_cast<float>(target_altitude_m_));
+            {
+                // 有命令參數時使用命令指定的高度，否則使用 YAML 設定值
+                float alt = cmd.has_param
+                    ? cmd.param_value
+                    : static_cast<float>(target_altitude_m_);
+                result = controller_->takeoff(alt);
+            }
+            break;
+
+        case utils::AgentCommand::MOVE_UP:
+            if (cmd.has_param)
+                result = controller_->move_vertical(cmd.param_value);
+            else
+                RCLCPP_WARN(this->get_logger(),
+                           "UP requires a distance parameter");
+            break;
+
+        case utils::AgentCommand::MOVE_DOWN:
+            if (cmd.has_param)
+                result = controller_->move_vertical(-cmd.param_value);
+            else
+                RCLCPP_WARN(this->get_logger(),
+                           "DOWN requires a distance parameter");
+            break;
+
+        case utils::AgentCommand::YAW:
+            if (cmd.has_param)
+                result = controller_->rotate_yaw(cmd.param_value);
+            else
+                RCLCPP_WARN(this->get_logger(),
+                           "YAW requires an angle parameter");
+            break;
+
+        case utils::AgentCommand::MOVE_POINT:
+            if (cmd.has_multi_params)
+                result = controller_->set_ned_target(
+                    cmd.param_value, cmd.param2, cmd.param3, cmd.param4);
+            else
+                RCLCPP_WARN(this->get_logger(),
+                           "MOVE_POINT requires x y z yaw parameters");
             break;
 
         default:

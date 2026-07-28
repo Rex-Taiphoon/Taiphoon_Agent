@@ -18,6 +18,7 @@
 
 #include "controllers/BasicController.hpp"
 #include "controllers/AgentCommandHandler.hpp"
+#include "taiphoon_agent/msg/ned_target.hpp"
 
 namespace taiphoon
 {
@@ -51,6 +52,15 @@ private:
     void odometry_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
 
     /**
+     * @brief NED 目標位置回呼
+     *
+     * 接收來自 formation_node 的絕對 NED 位置指令
+     *
+     * @param msg NED 目標訊息
+     */
+    void ned_target_cb(const taiphoon_agent::msg::NedTarget::SharedPtr msg);
+
+    /**
      * @brief 控制迴圈計時器回呼
      *
      * 以固定頻率驅動控制器發布 Offboard 控制命令
@@ -80,6 +90,13 @@ private:
      */
     bool initialize_odometry_subscriber();
 
+    /**
+     * @brief 初始化 NED 目標訂閱者
+     *
+     * @return true 初始化成功
+     */
+    bool initialize_ned_target_subscriber();
+
     // ==================== 參數 ====================
 
     double target_altitude_m_{DEFAULT_TARGET_ALTITUDE_M};
@@ -96,6 +113,10 @@ private:
 
     rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr
         odometry_sub_;
+
+    /// NED 目標位置訂閱者 (來自 formation_node)
+    rclcpp::Subscription<taiphoon_agent::msg::NedTarget>::SharedPtr
+        ned_target_sub_;
 
     // ==================== 控制器 ====================
 

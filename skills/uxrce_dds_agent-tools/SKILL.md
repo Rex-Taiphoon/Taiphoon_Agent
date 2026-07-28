@@ -20,19 +20,19 @@ uXRCE-DDS Agent Docker 容器管理
 
 ## 啟動 Agent 容器
 啟動一個 MicroXRCEAgent 容器，監聽指定埠號。
-`bash scripts/start_agent.sh --name drone1-agent --rmw fastrtps --port 8888 --net Taiphoon_Net`
+`bash scripts/start_agent.sh --name drone1-uxrce-dds-agent --rmw fastrtps --port 8888 --net Taiphoon_Net`
 
 ## 重新啟動 Agent 容器
 當某個 Agent 連線異常時，重新建立該容器（停止舊容器後以相同參數啟動）。
-`bash scripts/restart_agent.sh --name drone1-agent --rmw fastrtps --port 8888 --net Taiphoon_Net`
+`bash scripts/restart_agent.sh --name drone1-uxrce-dds-agent --rmw fastrtps --port 8888 --net Taiphoon_Net`
 
 ## 使用 CycloneDDS 啟動 Agent
 切換至 CycloneDDS 中介軟體，適用於需要與特定 ROS2 節點相容的情境。
-`bash scripts/start_agent.sh --name drone1-agent --rmw cyclonedds --port 8888`
+`bash scripts/start_agent.sh --name drone1-uxrce-dds-agent --rmw cyclonedds --port 8888`
 
 ## 手動啟動 Agent（不使用腳本）
 直接使用 docker run 啟動，適合快速測試。
-`docker run -d --rm --net=Taiphoon_Net --name=drone1-agent -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp taiphoon/uxrce-agent:latest udp4 -p 8888`
+`docker run -d --rm --net=Taiphoon_Net --name=drone1-uxrce-dds-agent -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp taiphoon/uxrce-agent:latest udp4 -p 8888`
 
 # 進階使用方式
 
@@ -45,21 +45,21 @@ docker ps --filter "name=drone" --format "table {{.Names}}\t{{.Status}}\t{{.Imag
 ## 強制關閉並重啟所有 Agent
 當多個 Agent 同時異常時，批次清理並重新啟動。
 ```bash
-docker ps --filter "name=drone" --format '{{.Names}}' | grep '\-agent$' | xargs -r docker stop
+docker ps --filter "name=drone" --format '{{.Names}}' | grep '\-uxrce-dds-agent$' | xargs -r docker stop
 # 再透過 px4-sitl-launcher 重新啟動所有實例
 ```
 
 ## 查看 Agent 容器日誌
 檢查特定 Agent 的執行日誌以診斷連線問題。
 ```bash
-docker logs drone1-agent
-docker logs -f drone1-agent  # 即時追蹤
+docker logs drone1-uxrce-dds-agent
+docker logs -f drone1-uxrce-dds-agent  # 即時追蹤
 ```
 
 ## 切換執行中的 Agent RMW
 若要變更執行中 Agent 的 RMW，需停止後以新參數重啟。
 ```bash
-bash scripts/restart_agent.sh --name drone1-agent --rmw cyclonedds --port 8888
+bash scripts/restart_agent.sh --name drone1-uxrce-dds-agent --rmw cyclonedds --port 8888
 ```
 
 # 開發原則限制

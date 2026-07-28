@@ -3,10 +3,10 @@
 # restart_agent.sh - 重新啟動 Docker uXRCE-DDS Agent 容器
 # =============================================================================
 # 使用方式：
-#   bash restart_agent.sh --name drone1-agent --rmw fastrtps --port 8888 --net Taiphoon_Net
+#   bash restart_agent.sh --name drone1-uxrce-dds-agent --rmw fastrtps --port 8888 --net Taiphoon_Net
 #
 # 參數：
-#   --name NAME    容器名稱（預設 drone1-agent）
+#   --name NAME    容器名稱（預設 drone1-uxrce-dds-agent）
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
 #   --port PORT    uXRCE-DDS 監聽埠號（預設 8888）
 #   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
@@ -15,7 +15,7 @@
 set -e
 
 # ---- 預設值 ----
-AGENT_NAME="drone1-agent"
+AGENT_NAME="drone1-uxrce-dds-agent"
 RMW="fastrtps"
 PORT=8888
 NETWORK="Taiphoon_Net"
@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "未知參數：$1"
-            echo "使用方式：$0 --name drone1-agent --rmw fastrtps --port 8888 --net Taiphoon_Net"
+            echo "使用方式：$0 --name drone1-uxrce-dds-agent --rmw fastrtps --port 8888 --net Taiphoon_Net"
             exit 1
             ;;
     esac

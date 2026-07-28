@@ -3,7 +3,7 @@
 <package format="3">
   <name>taiphoon_agent</name>
   <version>0.1.0</version>
-  <description>Taiphoon Agent - UAV autonomous flight control hub</description>
+  <description>Taiphoon Agent - UAV autonomous flight control hub with formation control</description>
   <maintainer email="taiphoon@taiphoon.dev">Taiphoon Agent Team</maintainer>
   <license>Proprietary</license>
 
@@ -12,6 +12,9 @@
   <depend>rclcpp</depend>
   <depend>px4_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>rosidl_default_generators</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

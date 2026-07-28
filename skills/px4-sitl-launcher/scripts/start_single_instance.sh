@@ -43,7 +43,7 @@ offset = instance * 3.0 * lon_per_m
 print(f'{base_lat} {base_lon + offset}')
 " $INSTANCE)
 
-AGENT_NAME="drone${NS_INDEX}-agent"
+AGENT_NAME="drone${NS_INDEX}-uxrce-dds-agent"
 DRONE_NAME="drone${NS_INDEX}"
 
 docker rm -f "$AGENT_NAME" 2>/dev/null || true

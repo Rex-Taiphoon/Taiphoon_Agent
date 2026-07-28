@@ -12,6 +12,7 @@
 
 #include "controllers/BasicController.hpp"
 #include "utils/math_utils.hpp"
+#include <cmath>
 
 #include <limits>
 
@@ -200,8 +201,6 @@ bool BasicController::hold_position(float duration_s)
     }
     hover_duration_s_.store(duration_s);
     flight_state_.store(FlightState::HOVER);
-    hover_start_time_ = node_->now();
-    is_hover_timer_active_ = true;
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Hovering for %.2f seconds", duration_s);
     return true;
@@ -245,7 +244,6 @@ bool BasicController::execute_takeoff_land_sequence(float altitude_m, float hove
     target_altitude_m_.store(altitude_m);
     hover_duration_s_.store(hover_duration_s);
     is_offboard_timer_active_ = true;
-    is_hover_timer_active_ = false;
     offboard_cmd_sending_ = false;
     offboard_cmd_echo_received_.store(false);
     arm_cmd_echo_received_.store(false);
@@ -365,7 +363,6 @@ bool BasicController::move_forward(float distance_m)
     target_position_ned_ = current_position_ned_;
     target_position_ned_[0] += distance_m;
     flight_state_.store(FlightState::MOVING);
-    move_start_time_ = node_->now();
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving forward %.2f m (target_system=%d)", distance_m, target_system_);
     return true;
@@ -388,7 +385,6 @@ bool BasicController::move_right(float distance_m)
     target_position_ned_ = current_position_ned_;
     target_position_ned_[1] += distance_m;
     flight_state_.store(FlightState::MOVING);
-    move_start_time_ = node_->now();
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving right %.2f m (target_system=%d)", distance_m, target_system_);
     return true;
@@ -396,6 +392,127 @@ bool BasicController::move_right(float distance_m)
 
 
 // =============================================================================
+
+bool BasicController::move_vertical(float delta_m)
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot move vertically: not initialized");
+        return false;
+    }
+    if (!utils::is_valid_float(delta_m))
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Vertical move delta invalid (NaN or Inf)");
+        return false;
+    }
+
+    FlightState current_state = flight_state_.load();
+    if (current_state != FlightState::HOVER &&
+        current_state != FlightState::TAKEOFF &&
+        current_state != FlightState::MOVING)
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Cannot move vertically: not in flight state (current=%d)",
+                    static_cast<int>(current_state));
+        return false;
+    }
+
+    float new_alt = target_altitude_m_.load() + delta_m;
+    if (new_alt < ALTITUDE_MIN_M)
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Vertical move clamped: target %.2f m below minimum %.2f m, using minimum",
+                    new_alt, ALTITUDE_MIN_M);
+        new_alt = ALTITUDE_MIN_M;
+    }
+
+    target_altitude_m_.store(new_alt);
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "Vertical move %.2f m, new target altitude: %.2f m (target_system=%d)",
+                delta_m, new_alt, target_system_);
+    return true;
+}
+
+
+bool BasicController::rotate_yaw(float degrees)
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot rotate: not initialized");
+        return false;
+    }
+    if (!utils::is_valid_float(degrees))
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Yaw angle invalid (NaN or Inf)");
+        return false;
+    }
+
+    FlightState current_state = flight_state_.load();
+    if (current_state != FlightState::HOVER &&
+        current_state != FlightState::TAKEOFF &&
+        current_state != FlightState::MOVING)
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Cannot rotate: not in flight state (current=%d)",
+                    static_cast<int>(current_state));
+        return false;
+    }
+
+    constexpr float DEG_TO_RAD = 3.14159265358979323846F / 180.0F;
+    float delta_rad = degrees * DEG_TO_RAD;
+
+    if (std::isnan(target_yaw_rad_))
+    {
+        target_yaw_rad_ = 0.0F;
+    }
+    target_yaw_rad_ += delta_rad;
+
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
+                degrees, target_yaw_rad_ * 180.0F / DEG_TO_RAD, target_system_);
+    return true;
+}
+
+bool BasicController::set_ned_target(float x, float y, float z, float yaw_deg)
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot set NED target: not initialized");
+        return false;
+    }
+    if (!utils::is_valid_float(x) || !utils::is_valid_float(y) ||
+        !utils::is_valid_float(z))
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "NED target values invalid (NaN or Inf)");
+        return false;
+    }
+
+    target_position_ned_[0] = x;
+    target_position_ned_[1] = y;
+    target_position_ned_[2] = z;
+
+    if (!std::isnan(yaw_deg) && utils::is_valid_float(yaw_deg))
+    {
+        constexpr float DEG_TO_RAD = 3.14159265358979323846F / 180.0F;
+        target_yaw_rad_ = yaw_deg * DEG_TO_RAD;
+    }
+
+    flight_state_.store(FlightState::MOVING);
+
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "NED target set: (%.2f, %.2f, %.2f) yaw=%.1f deg (target_system=%d)",
+                static_cast<double>(x), static_cast<double>(y),
+                static_cast<double>(z), static_cast<double>(yaw_deg),
+                target_system_);
+    return true;
+}
+
 // 公開輔助方法
 // =============================================================================
 
@@ -536,6 +653,12 @@ void BasicController::publish_control_commands()
         case FlightState::ERROR:
         default: break;
     }
+    // 若已設定目標偏航角，則控制偏航
+    if (!std::isnan(target_yaw_rad_))
+    {
+        msg.yaw = target_yaw_rad_;
+    }
+
     trajectory_setpoint_pub_->publish(msg);
 }
 
@@ -756,28 +879,12 @@ void BasicController::handle_post_rtl_state(
 
 void BasicController::handle_moving_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
+    // 發布完整 3D NED 目標位置，支援水平與垂直移動
     msg.position[0] = target_position_ned_[0];
     msg.position[1] = target_position_ned_[1];
-    msg.position[2] = current_position_ned_[2];
-    float dx = target_position_ned_[0] - current_position_ned_[0];
-    float dy = target_position_ned_[1] - current_position_ned_[1];
-    float dist = std::sqrt(dx * dx + dy * dy);
-    if (dist <= move_arrival_threshold_m_)
-    {
-        flight_state_.store(FlightState::HOVER);
-        hover_start_time_ = node_->now();
-        is_hover_timer_active_ = true;
-        hover_duration_s_.store(3.0F);
-    }
-    else
-    {
-        auto elapsed = node_->now() - move_start_time_;
-        if (static_cast<int>(elapsed.seconds()) % 2 == 0 && elapsed.nanoseconds() < 100000000LL)
-        {
-            RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                       "Moving: %.2f m remaining", static_cast<double>(dist));
-        }
-    }
+    msg.position[2] = target_position_ned_[2];
+
+    // 不進行達成判斷：由外部節點（如 formation_node）決定何時切換狀態
 }
 
 

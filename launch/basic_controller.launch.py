@@ -1,16 +1,19 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 @file basic_controller.launch.py
-@brief Launch multiple BasicController nodes with PX4 SITL instances
+@brief Launch BasicController + FormationNode with PX4 SITL instances
 @author Taiphoon Agent Team
-@date 2026-07-22
+@date 2026-07-28
 
 Usage:
   ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=3
 
 Each node subscribes to:
-  - /<agent_namespace>/command  (individual agent commands)
-  - /fmu_all_agent/command      (broadcast commands to all agents)
+  - /<agent_namespace>/command     (individual agent commands)
+  - /fmu_all_agent/command         (broadcast commands to all agents)
+  - /<agent_namespace>/ned_target  (NED target from formation_node)
+
+FormationNode is launched for each drone when drone_count > 1.
 """
 
 from launch import LaunchDescription
@@ -33,7 +36,8 @@ def launch_nodes(context, *args, **kwargs):
         ns = "fmu{}".format(i)
         agent_ns = "fmu{}_agent".format(i)
 
-        node = Node(
+        # BasicController 節點
+        bc_node = Node(
             package="taiphoon_agent",
             executable="basic_controller",
             namespace=ns,
@@ -49,7 +53,24 @@ def launch_nodes(context, *args, **kwargs):
             output="screen",
             emulate_tty=True,
         )
-        nodes.append(node)
+        nodes.append(bc_node)
+
+        # FormationNode 節點 (僅在多機時啟動)
+        if drone_count > 1:
+            fn_node = Node(
+                package="taiphoon_agent",
+                executable="formation_node",
+                namespace=ns,
+                name="formation_node",
+                parameters=[
+                    {"drone_count": float(drone_count)},
+                    {"agent_namespace": agent_ns},
+                    {"formation_update_rate_hz": 5.0},
+                ],
+                output="screen",
+                emulate_tty=True,
+            )
+            nodes.append(fn_node)
 
     return nodes
 

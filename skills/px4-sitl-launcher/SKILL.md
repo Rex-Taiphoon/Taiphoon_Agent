@@ -7,7 +7,7 @@ description: 以 Docker 容器啟動與管理多台 PX4 SITL 模擬器，搭配�
 PX4 SITL 模擬器 Docker 啟動管理
 
 本技能以 Docker 容器管理多台 PX4 SITL 模擬器。每台無人機由兩個獨立容器組成：
-- **uXRCE-DDS Agent 容器**（`drone{N}-agent`）：使用 `taiphoon/uxrce-agent` 映像，負責 PX4 與 ROS2 之間的 DDS 橋接
+- **uXRCE-DDS Agent 容器**（`drone{N}-uxrce-dds-agent`）：使用 `taiphoon/uxrce-agent` 映像，負責 PX4 與 ROS2 之間的 DDS 橋接
 - **PX4 SITL 容器**（`drone{N}`）：使用 `px4io/px4-sitl:latest` 官方映像，執行 SIH 內建模擬器
 
 所有容器加入指定的 Docker 網路（預設 `Taiphoon_Net`），透過 UDP multicast 進行 DDS 通訊。PX4 使用環境變數注入參數，不依賴 WSL2 本機環境或 tmux。
@@ -33,7 +33,7 @@ PX4 SITL 模擬器 Docker 啟動管理
 `bash scripts/start_single_instance.sh --index 0 --net Taiphoon_Net --fg`
 
 ## 關閉所有模擬器
-停止所有執行中的 drone 與 drone-agent 容器。
+停止所有執行中的 drone 與 drone-uxrce-dds-agent 容器。
 `bash scripts/stop_all.sh [--net Taiphoon_Net]`
 
 # 進階使用方式
@@ -50,7 +50,7 @@ PX4 SITL 模擬器 Docker 啟動管理
 不使用腳本，直接啟動容器：
 ```bash
 # Agent
-docker run -d --rm --net=Taiphoon_Net --name=drone1-agent \
+docker run -d --rm --net=Taiphoon_Net --name=drone1-uxrce-dds-agent \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
   taiphoon/uxrce-agent:latest udp4 -p 8888
 

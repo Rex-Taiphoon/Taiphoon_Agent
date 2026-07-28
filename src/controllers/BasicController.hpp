@@ -49,14 +49,17 @@ constexpr int HEARTBEAT_WARMUP_MS = 2000;
 /// 模式切換後 VehicleCommand 回應超時 (毫秒)
 constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
 
-/// 起飛超時 (毫秒)
-constexpr int TAKEOFF_TIMEOUT_MS = 30000;
+/// 起飛超時 (毫秒，已廢棄：達成判斷由外部節點負責)
+// constexpr int TAKEOFF_TIMEOUT_MS = 30000;
 
 /// 高度日誌記錄間隔 (控制週期數)
 constexpr int ALTITUDE_LOG_INTERVAL = 20;
 
-/// 高度到達比例 (0.95 = 95% 視為到達)
-constexpr float ALTITUDE_ARRIVAL_RATIO = 0.95F;
+/// 高度到達比例 (0.95 = 95% 視為到達，已廢棄：達成判斷由外部節點負責)
+// constexpr float ALTITUDE_ARRIVAL_RATIO = 0.95F;
+
+/// 垂直移動最低高度限制 (公尺)
+constexpr float ALTITUDE_MIN_M = 1.0F;
 
 /// RTL 完成等待超時 (毫秒)
 constexpr int RTL_TIMEOUT_MS = 60000;
@@ -172,6 +175,39 @@ public:
      */
     bool move_right(float distance_m);
 
+    /**
+     * @brief 垂直移動指定高度 (相對位移)
+     *
+     * 正值為上升，負值為下降。下降時不會低於 ALTITUDE_MIN_M。
+     *
+     * @param delta_m 高度變化量 (公尺)
+     * @return true 移動命令設定成功
+     */
+    bool move_vertical(float delta_m) override;
+
+    /**
+     * @brief 旋轉至指定偏航角 (相對目前方向)
+     *
+     * 正值為順時針旋轉。角度以度為單位，內部轉為弧度。
+     *
+     * @param degrees 旋轉角度 (度)
+     * @return true 旋轉命令設定成功
+     */
+    bool rotate_yaw(float degrees) override;
+
+    /**
+     * @brief 設定 NED 絕對座標目標位置與航向
+     *
+     * 直接寫入目標 NED 位置，控制器持續發布 TrajectorySetpoint
+     * 直到收到新命令。不進行內部達成判斷。
+     *
+     * @param x NED X (前向，公尺)
+     * @param y NED Y (右向，公尺)
+     * @param z NED Z (向下，公尺)
+     * @param yaw_deg 目標航向角 (度)，NaN 表示不控制
+     * @return true 目標設定成功
+     */
+    bool set_ned_target(float x, float y, float z, float yaw_deg) override;
 
     // ==================== 公開輔助方法 ====================
 
@@ -449,11 +485,8 @@ private:
     std::atomic<bool> is_initialized_{false};
 
     /// 計時相關
-    rclcpp::Time hover_start_time_;
     rclcpp::Time offboard_start_time_;
     rclcpp::Time takeoff_start_time_;
-    rclcpp::Time move_start_time_;
-    bool is_hover_timer_active_{false};
     bool is_offboard_timer_active_{false};
     bool offboard_cmd_sending_{false};
     int altitude_log_counter_{0};
@@ -477,11 +510,12 @@ private:
     /// 目標位置 (NED 座標系) [x, y, z]，用於移動命令
     std::array<float, 3> target_position_ned_{0.0F, 0.0F, 0.0F};
 
-    /// 移動到位元差 (公尺)，低於此值視為已到達
-    float move_arrival_threshold_m_{0.2F};
 
     /// Offboard 控制已停止旗標 (RTL 落地後)
     bool has_offboard_stopped_{false};
+
+    /// 目標偏航角 (弧度)，NaN 表示不控制偏航
+    float target_yaw_rad_{std::numeric_limits<float>::quiet_NaN()};
 
     /// Hold 模式命令已發送旗標
     bool hold_cmd_sent_{false};
