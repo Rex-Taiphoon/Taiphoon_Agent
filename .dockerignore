@@ -30,7 +30,7 @@ CTestTestfile.cmake
 # Logs
 log/
 *.log
-AutoTest/Log/
+AutoTest
 
 # IDE
 .vscode/
