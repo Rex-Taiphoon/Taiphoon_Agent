@@ -9,8 +9,9 @@
 #   1. Source ROS2、px4_msgs 與 Taiphoon_Agent 工作空間
 #   2. 背景啟動 MicroXRCEAgent (uXRCE-DDS 橋接)
 #   3. 等待 PX4 odometry topic 出現
-#   4. 若 topic 就緒 → 啟動 Taiphoon_Agent 節點（BasicController、MissionPlanner、TrajectoryController）
-#   5. 若 timeout → 保留 shell 供手動除錯（不 exit）
+#   4. 若 topic 就緒 → 啟動 Taiphoon_Agent 節點
+#   5. 若 MicroXRCEAgent crash 則自動重啟，持續等待 topic
+#   6. 始終保留互動 shell 供手動除錯
 # =============================================================================
 
 # ---- 預設環境變數 ----
@@ -20,7 +21,6 @@ UXRCE_PORT="${UXRCE_PORT:-8888}"
 TARGET_SYSTEM="${TARGET_SYSTEM:-1}"
 AGENT_NAMESPACE="${AGENT_NAMESPACE:-fmu1_agent}"
 ODOMETRY_TOPIC="${ODOMETRY_TOPIC:-/fmu1/fmu/out/vehicle_odometry}"
-ODOMETRY_TIMEOUT_S="${ODOMETRY_TIMEOUT_S:-30}"
 
 # 從 namespace 提取 fmu{N} 部分作為 ROS2 namespace
 FMU_NS="${AGENT_NAMESPACE%_agent}"
@@ -70,32 +70,36 @@ else
     echo "[Entrypoint] MicroXRCEAgent 已啟動 (PID=${UXRCE_PID})"
 fi
 
-# ---- Step 5: 等待 odometry topic ----
+# ---- Step 5: 等待 odometry topic（無限期，含 Agent 自動重啟）----
 ODOMETRY_READY=false
 
-if kill -0 ${UXRCE_PID} 2>/dev/null; then
-    echo "[Entrypoint] 等待 odometry topic（含 vehicle_odometry）..."
-    ELAPSED=0
-    while [ ${ELAPSED} -lt ${ODOMETRY_TIMEOUT_S} ]; do
-        if ros2 topic list 2>/dev/null | grep -q "vehicle_odometry"; then
-            echo "[Entrypoint] Odometry topic 已就緒 (${ELAPSED}s)"
-            ODOMETRY_READY=true
-            break
-        fi
-        if ! kill -0 ${UXRCE_PID} 2>/dev/null; then
-            echo "[Entrypoint] 警告：MicroXRCEAgent 已終止，可能是 PX4 未啟動或 port 衝突"
-            break
-        fi
-        sleep 1
-        ELAPSED=$((ELAPSED + 1))
-    done
-
-    if [ "${ODOMETRY_READY}" = false ]; then
-        echo "[Entrypoint] 提示：odometry topic 等待逾時 (${ODOMETRY_TIMEOUT_S}s)"
-        echo "[Entrypoint] Taiphoon_Agent 節點不會自動啟動，請手動操作"
-        echo "[Entrypoint] 若 PX4 尚未啟動，請先啟動模擬器再重新啟動本容器"
+echo "[Entrypoint] 等待 odometry topic（含 vehicle_odometry），無限期等待..."
+ELAPSED=0
+while true; do
+    if ros2 topic list 2>/dev/null | grep -q "vehicle_odometry"; then
+        echo "[Entrypoint] Odometry topic 已就緒 (${ELAPSED}s)"
+        ODOMETRY_READY=true
+        break
     fi
-fi
+    # MicroXRCEAgent crash 時自動重啟
+    if ! kill -0 ${UXRCE_PID} 2>/dev/null; then
+        echo "[Entrypoint] MicroXRCEAgent 已終止，正在重新啟動..."
+        MicroXRCEAgent udp4 -p "${UXRCE_PORT}" &
+        UXRCE_PID=$!
+        sleep 1
+        if kill -0 ${UXRCE_PID} 2>/dev/null; then
+            echo "[Entrypoint] MicroXRCEAgent 已重新啟動 (PID=${UXRCE_PID})"
+        else
+            echo "[Entrypoint] 錯誤：MicroXRCEAgent 重新啟動失敗，稍後重試"
+        fi
+    fi
+    # 每 15 秒印一次狀態
+    if [ $((ELAPSED % 15)) -eq 0 ] && [ ${ELAPSED} -gt 0 ]; then
+        echo "[Entrypoint] 持續等待 odometry topic... (${ELAPSED}s)"
+    fi
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+done
 
 # ---- 確保 binary 與掛載原始碼同步 ----
 echo "[Entrypoint] 同步編譯 Taiphoon_Agent..."

@@ -87,7 +87,7 @@ for ((i=0; i<COUNT; i++)); do
         --index "$i" \
         --net "$NETWORK" \
         --rmw "$RMW" \
-        --agent "$AGENT_CONTAINER"
+        --agent "fmu$((i+1))_agent"
     sleep 2
 done
 
