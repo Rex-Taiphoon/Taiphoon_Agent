@@ -123,6 +123,9 @@ public:
     /** @brief 取得目前飛行狀態字串 */
     const char* get_state() const override;
 
+    /** @brief 取得目前飛行狀態枚舉值 */
+    FlightState get_flight_state() const;
+
     // ==================== 高階命令新增方法 ====================
 
     /**
@@ -236,6 +239,9 @@ public:
      * @return std::array<float, 3> [x, y, z]
      */
     std::array<float, 3> get_current_position_ned() const;
+
+    /** @brief 取得目前目標 NED 位置 */
+    std::array<float, 3> get_target_position_ned() const;
 
 private:
     // ==================== Publisher 初始化 (單一職責) ====================

@@ -1,7 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# launch_all.sh - 以 Docker 啟動多台 PX4 SITL 模擬器與 uXRCE-DDS Agent
+# launch_all.sh - 以 Docker 啟動多台 PX4 SITL 模擬器
 # =============================================================================
+# uXRCE-DDS 橋接已內嵌於 Taiphoon_Agent 容器，本腳本僅管理 PX4 模擬器。
+# 使用前請先啟動 Agent 容器：docker compose up -d
+#
 # 使用方式：
 #   bash launch_all.sh --count 3 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]
 #
@@ -9,6 +12,7 @@
 #   --count N      無人機數量（預設 3）
 #   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
+#   --agent NAME   Agent 容器名稱（預設 taiphoon_agent_dev）
 # =============================================================================
 
 set -e
@@ -19,6 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COUNT=3
 NETWORK="Taiphoon_Net"
 RMW="fastrtps"
+AGENT_CONTAINER="fmu1_agent"
 
 # ---- 解析參數 ----
 while [[ $# -gt 0 ]]; do
@@ -33,6 +38,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --rmw)
             RMW="$2"
+            shift 2
+            ;;
+        --agent)
+            AGENT_CONTAINER="$2"
             shift 2
             ;;
         *)
@@ -77,17 +86,24 @@ for ((i=0; i<COUNT; i++)); do
     bash "${SCRIPT_DIR}/start_single_instance.sh" \
         --index "$i" \
         --net "$NETWORK" \
-        --rmw "$RMW"
+        --rmw "$RMW" \
+        --agent "$AGENT_CONTAINER"
     sleep 2
 done
 
 echo ""
 echo "============================================"
-echo " 全部 ${COUNT} 台已啟動完成"
+echo " 全部 ${COUNT} 台 PX4 SITL 已啟動完成"
 echo "============================================"
 echo ""
 echo "執行中容器："
 docker ps --filter "name=drone" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "(無執行中的 drone 容器)"
 echo ""
-echo "檢查 ROS2 topics："
-echo "  docker compose exec taiphoon-agt -- ros2 topic list"
+echo "QGC 連線 port："
+for ((i=0; i<COUNT; i++)); do
+    MAVLINK_PORT=$((18570 + i))
+    echo "  drone$((i+1)): udp://localhost:${MAVLINK_PORT}"
+done
+echo ""
+echo "檢查 ROS2 topics (在 Agent 容器內)："
+echo "  docker exec ${AGENT_CONTAINER} bash -c \"source /opt/ros/humble/setup.bash && ros2 topic list | grep fmu\""

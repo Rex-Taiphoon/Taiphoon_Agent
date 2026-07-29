@@ -79,7 +79,7 @@ bool AgentCommandHandler::create_agent_command_subscriber()
     agent_command_sub_ =
         node_->create_subscription<std_msgs::msg::String>(
             agent_cmd_topic,
-            rclcpp::QoS(10).best_effort(),
+            rclcpp::QoS(10).reliable(),
             std::bind(&AgentCommandHandler::agent_command_cb, this,
                       std::placeholders::_1));
 
@@ -107,7 +107,7 @@ bool AgentCommandHandler::create_all_agent_command_subscriber()
     all_agent_command_sub_ =
         node_->create_subscription<std_msgs::msg::String>(
             all_cmd_topic,
-            rclcpp::QoS(10).best_effort(),
+            rclcpp::QoS(10).reliable(),
             std::bind(&AgentCommandHandler::all_agent_command_cb, this,
                       std::placeholders::_1));
 

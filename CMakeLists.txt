@@ -9,13 +9,26 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+
+# 測試依賴 (僅在 BUILD_TESTING 啟用時)
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+endif()
 
 # --- 自訂訊息 ---
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/NedTarget.msg"
-  DEPENDENCIES std_msgs
+  "msg/AgentState.msg"
+  "msg/AgentAttitude.msg"
+  "msg/Waypoint.msg"
+  "msg/WaypointSequence.msg"
+  DEPENDENCIES std_msgs builtin_interfaces
 )
+
+# 取得自訂訊息 typesupport target (取代已棄用的 rosidl_target_interfaces)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 include_directories(
   src
@@ -37,37 +50,123 @@ ament_target_dependencies(basic_controller
   rclcpp
   px4_msgs
   std_msgs
+  builtin_interfaces
 )
 
-rosidl_target_interfaces(basic_controller
-  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(basic_controller ${cpp_typesupport_target})
 
-# --- FormationNode 執行檔 ---
-add_executable(formation_node
-  src/main_formation.cpp
-  src/nodes/formation_node.cpp
+# --- MissionPlanner 執行檔 ---
+add_executable(mission_planner
+  src/formation/main_mission_planner.cpp
+  src/formation/MissionPlanner.cpp
 )
 
-target_include_directories(formation_node PRIVATE
+target_include_directories(mission_planner PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-ament_target_dependencies(formation_node
+ament_target_dependencies(mission_planner
   rclcpp
-  px4_msgs
   std_msgs
+  builtin_interfaces
 )
 
-rosidl_target_interfaces(formation_node
-  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(mission_planner ${cpp_typesupport_target})
+
+# --- TrajectoryController 執行檔 ---
+add_executable(trajectory_controller
+  src/trajectory/main_trajectory_controller.cpp
+  src/trajectory/TrajectoryController.cpp
+)
+
+target_include_directories(trajectory_controller PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+ament_target_dependencies(trajectory_controller
+  rclcpp
+  std_msgs
+  builtin_interfaces
+)
+
+target_link_libraries(trajectory_controller ${cpp_typesupport_target})
 
 # --- 安裝 ---
-install(TARGETS basic_controller formation_node
+install(TARGETS basic_controller mission_planner trajectory_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
+
+
+# --- 單元測試 ---
+if(BUILD_TESTING)
+  # StatePublisher 測試
+  ament_add_gtest(test_state_publisher
+    test/test_state_publisher.cpp
+  )
+
+  target_include_directories(test_state_publisher PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  ament_target_dependencies(test_state_publisher
+    rclcpp
+    px4_msgs
+    builtin_interfaces
+  )
+
+  target_link_libraries(test_state_publisher ${cpp_typesupport_target})
+
+  # PositionSafetyMonitor 測試 (純邏輯，獨立編譯)
+  add_executable(test_position_safety_monitor
+    src/safety/position_safety_monitor_test.cpp
+  )
+
+  target_include_directories(test_position_safety_monitor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  add_test(NAME test_position_safety_monitor
+    COMMAND test_position_safety_monitor)
+
+  # FormationCalculator 測試 (純邏輯，獨立編譯)
+  add_executable(test_formation_calculator
+    src/formation/formation_calculator_test.cpp
+  )
+
+  target_include_directories(test_formation_calculator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  add_test(NAME test_formation_calculator
+    COMMAND test_formation_calculator)
+
+  # PeerMatcher 測試 (純邏輯，獨立編譯)
+  add_executable(test_peer_matcher
+    src/formation/peer_matcher_test.cpp
+  )
+
+  target_include_directories(test_peer_matcher PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  add_test(NAME test_peer_matcher
+    COMMAND test_peer_matcher)
+
+  # TrajectoryPlanner 測試 (純邏輯，獨立編譯)
+  add_executable(test_trajectory_planner
+    src/trajectory/trajectory_planner_test.cpp
+  )
+
+  target_include_directories(test_trajectory_planner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  add_test(NAME test_trajectory_planner
+    COMMAND test_trajectory_planner)
+endif()
 
 ament_package()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 @file basic_controller.launch.py
-@brief Launch BasicController + FormationNode with PX4 SITL instances
+@brief Launch BasicController + MissionPlanner with PX4 SITL instances
 @author Taiphoon Agent Team
 @date 2026-07-28
 
@@ -11,9 +11,10 @@ Usage:
 Each node subscribes to:
   - /<agent_namespace>/command     (individual agent commands)
   - /fmu_all_agent/command         (broadcast commands to all agents)
-  - /<agent_namespace>/ned_target  (NED target from formation_node)
+  - /<agent_namespace>/ned_target  (NED target from mission_planner)
 
-FormationNode is launched for each drone when drone_count > 1.
+MissionPlanner is launched for each drone when drone_count > 1.
+It dynamically discovers peers via topic scanning.
 """
 
 from launch import LaunchDescription
@@ -55,22 +56,23 @@ def launch_nodes(context, *args, **kwargs):
         )
         nodes.append(bc_node)
 
-        # FormationNode 節點 (僅在多機時啟動)
+        # MissionPlanner 節點 (僅在多機時啟動)
+        # 動態同儕發現，不需要 drone_count 參數
         if drone_count > 1:
-            fn_node = Node(
+            mp_node = Node(
                 package="taiphoon_agent",
-                executable="formation_node",
+                executable="mission_planner",
                 namespace=ns,
-                name="formation_node",
+                name="mission_planner",
                 parameters=[
-                    {"drone_count": float(drone_count)},
                     {"agent_namespace": agent_ns},
                     {"formation_update_rate_hz": 5.0},
+                    {"peer_scan_interval_s": 3.0},
                 ],
                 output="screen",
                 emulate_tty=True,
             )
-            nodes.append(fn_node)
+            nodes.append(mp_node)
 
     return nodes
 

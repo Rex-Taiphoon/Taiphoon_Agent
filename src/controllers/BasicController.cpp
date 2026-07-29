@@ -170,6 +170,7 @@ bool BasicController::takeoff(float altitude_m)
         return false;
     }
     target_altitude_m_.store(altitude_m);
+    target_position_ned_[2] = -altitude_m;
     flight_state_.store(FlightState::TAKEOFF);
     takeoff_start_time_ = node_->now();
     altitude_log_counter_ = 0;
@@ -272,6 +273,11 @@ const char* BasicController::get_state() const
         case FlightState::ERROR:         return "ERROR";
         default:                         return "UNKNOWN";
     }
+}
+
+FlightState BasicController::get_flight_state() const
+{
+    return flight_state_.load();
 }
 
 
@@ -654,9 +660,14 @@ void BasicController::publish_control_commands()
         default: break;
     }
     // 若已設定目標偏航角，則控制偏航
+    // 位置控制模式下，PX4 要求 yaw 必須有效（非 NaN），否則 setpoint 可能被忽略
     if (!std::isnan(target_yaw_rad_))
     {
         msg.yaw = target_yaw_rad_;
+    }
+    else if (!std::isnan(msg.position[0]) && !std::isnan(msg.position[1]) && !std::isnan(msg.position[2]))
+    {
+        msg.yaw = 0.0F;
     }
 
     trajectory_setpoint_pub_->publish(msg);
@@ -670,6 +681,11 @@ float BasicController::get_current_altitude() const
 std::array<float, 3> BasicController::get_current_position_ned() const
 {
     return current_position_ned_;
+}
+
+std::array<float, 3> BasicController::get_target_position_ned() const
+{
+    return target_position_ned_;
 }
 
 
@@ -738,7 +754,10 @@ void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*m
 void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
     float target_z = -target_altitude_m_.load();
+    msg.position[0] = current_position_ned_[0];
+    msg.position[1] = current_position_ned_[1];
     msg.position[2] = target_z;
+    msg.velocity[2] = -2.0F;  // 2 m/s 向上（NED 負 = 上）
     float current_alt = current_altitude_m_.load();
     float target_alt = target_altitude_m_.load();
 
@@ -780,6 +799,8 @@ void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& ms
 void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
     msg.position[2] = -target_altitude_m_.load();
+    msg.position[0] = current_position_ned_[0];
+    msg.position[1] = current_position_ned_[1];
     // 避免自動進入RTL模式，先註解掉自動進入HOVER或RTL的邏輯
     // if (is_hover_timer_active_)
     // {

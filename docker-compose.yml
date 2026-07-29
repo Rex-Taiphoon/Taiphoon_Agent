@@ -1,86 +1,88 @@
 # =============================================================================
-# Taiphoon_Agent Docker Compose
+# Taiphoon_Agent Docker Compose — 一容器一機部署
 # =============================================================================
-# Usage:
-#   docker compose build                        # Build Taiphoon_Agent image
-#   docker compose up -d                        # Start Taiphoon_Agent (dev)
-#   docker compose --profile hw up -d           # Start with uXRCE-DDS Agent (實機)
-#   docker compose exec taiphoon-agt bash       # Enter agent container
-#   docker compose down                         # Stop all services
+#
+# 前置：先建構共用映像（只需一次）
+#   docker build --target taiphoon-dev -t taiphoon-agent:dev .
+#
+# 實機部署（一台樹莓派 = 一個 agent）：
+#   docker compose up -d fmu1_agent
+#
+# 本機多機測試（三台同時模擬）：
+#   docker compose up -d
 # =============================================================================
+
+networks:
+  taiphoon_net:
+    name: Taiphoon_Net
+    external: true
+
+x-agent-defaults: &agent-defaults
+  image: taiphoon-agent:dev
+  user: taiphoon
+  working_dir: /home/taiphoon/Taiphoon_Agent
+  networks:
+    - taiphoon_net
+  stdin_open: true
+  tty: true
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        memory: 8G
+  volumes:
+    - type: bind
+      source: .
+      target: /home/taiphoon/Taiphoon_Agent
+    - type: bind
+      source: ${SSH_AUTH_SOCK}
+      target: ${SSH_AUTH_SOCK}
 
 services:
-  # ===========================================================================
-  # Taiphoon_Agent 開發容器
-  # ===========================================================================
-  taiphoon-agt:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: taiphoon-dev
-    container_name: taiphoon_agent_dev
-    hostname: taiphoon-agent
-    user: taiphoon
-    working_dir: /home/taiphoon/Taiphoon_Agent
-
-    volumes:
-      # 將專案原始碼掛載至容器內以進行開發
-      - type: bind
-        source: .
-        target: /home/taiphoon/Taiphoon_Agent
-      # 掛載 macOS SSH agent socket，讓容器內可使用 SSH 金鑰進行 git 操作
-      - type: bind
-        source: ${SSH_AUTH_SOCK}
-        target: ${SSH_AUTH_SOCK}
-
-    # ROS2 DDS 通訊需要 host 網路模式以支援 UDP multicast
-    network_mode: host
-    ipc: host
-    stdin_open: true
-    tty: true
-
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-
+  fmu1_agent:
+    <<: *agent-defaults
+    container_name: fmu1_agent
+    hostname: fmu1-agent
     environment:
-      # ---- 顯示轉發（若有 GUI 需求） ----
       - DISPLAY=${DISPLAY:-:0}
-      # ---- ROS2 DDS 設定 ----
       - RCUTILS_COLORIZED_OUTPUT=1
-      # ---- SSH agent 轉發（讓容器內可使用主機 SSH 金鑰） ----
+      - BASH_ENV=/etc/profile.d/ros2.sh
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - SSH_AUTH_SOCK=${SSH_AUTH_SOCK}
-      # ---- Taiphoon_Agent 工作空間路徑 ----
       - PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
       - TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
+      - TARGET_SYSTEM=1
+      - UXRCE_PORT=8888
+      - AGENT_NAMESPACE=fmu1_agent
 
-    restart: unless-stopped
-
-  # ===========================================================================
-  # uXRCE-DDS Agent 實機常駐服務 (--profile hw)
-  # 模擬時不使用此 service，由 px4-sitl-launcher 腳本動態建立
-  # ===========================================================================
-  uxrce-agent:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.uxrce-agent
-      target: runtime
-    container_name: uxrce_agent_hw
-    hostname: uxrce-agent
-    user: taiphoon
-
-    network_mode: host
-    ipc: host
-
+  fmu2_agent:
+    <<: *agent-defaults
+    container_name: fmu2_agent
+    hostname: fmu2-agent
     environment:
-      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      - DISPLAY=${DISPLAY:-:0}
+      - RCUTILS_COLORIZED_OUTPUT=1
+      - BASH_ENV=/etc/profile.d/ros2.sh
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK}
+      - PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
+      - TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
+      - TARGET_SYSTEM=2
+      - UXRCE_PORT=8889
+      - AGENT_NAMESPACE=fmu2_agent
 
-    # 實機模式下常駐重啟
-    restart: always
-
-    # 使用 profile 區隔，避免模擬時意外啟動
-    profiles:
-      - hw
-
-    command: ["udp4", "-p", "${UXRCE_PORT:-8888}"]
+  fmu3_agent:
+    <<: *agent-defaults
+    container_name: fmu3_agent
+    hostname: fmu3-agent
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - RCUTILS_COLORIZED_OUTPUT=1
+      - BASH_ENV=/etc/profile.d/ros2.sh
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK}
+      - PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
+      - TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
+      - TARGET_SYSTEM=3
+      - UXRCE_PORT=8890
+      - AGENT_NAMESPACE=fmu3_agent

@@ -7,10 +7,14 @@
 
 #include "nodes/basic_controller_node.hpp"
 
+#include <cmath>
+
 namespace taiphoon
 {
 namespace nodes
 {
+
+using taiphoon::controllers::FlightState;
 
 BasicControllerNode::BasicControllerNode()
     : rclcpp::Node("basic_controller_node")
@@ -22,6 +26,9 @@ BasicControllerNode::BasicControllerNode()
     this->declare_parameter<int>("target_system", 1);
     this->declare_parameter<std::string>("agent_namespace", "fmu1");
     this->declare_parameter<bool>("auto_start_sequence", true);
+    this->declare_parameter<double>("state_publish_rate_hz", DEFAULT_STATE_PUBLISH_RATE_HZ);
+    this->declare_parameter<double>("position_deviation_threshold_m",
+                                    DEFAULT_POSITION_DEVIATION_THRESHOLD_M);
 
     target_altitude_m_ = this->get_parameter("target_altitude_m").as_double();
     hover_duration_s_ = this->get_parameter("hover_duration_s").as_double();
@@ -29,13 +36,18 @@ BasicControllerNode::BasicControllerNode()
     target_system_ = this->get_parameter("target_system").as_int();
     agent_namespace_ = this->get_parameter("agent_namespace").as_string();
     auto_start_sequence_ = this->get_parameter("auto_start_sequence").as_bool();
+    state_publish_rate_hz_ = this->get_parameter("state_publish_rate_hz").as_double();
+    position_deviation_threshold_m_ =
+        this->get_parameter("position_deviation_threshold_m").as_double();
 
     RCLCPP_INFO(this->get_logger(),
                 "Parameters: target_altitude=%.2f m, hover_duration=%.2f s, "
-                "startup_delay=%.1f s, target_system=%d, agent_namespace=%s",
+                "startup_delay=%.1f s, target_system=%d, agent_namespace=%s, "
+                "state_publish_rate=%.1f Hz, deviation_threshold=%.2f m",
                 target_altitude_m_, hover_duration_s_,
                 startup_delay_s_, target_system_,
-                agent_namespace_.c_str());
+                agent_namespace_.c_str(),
+                state_publish_rate_hz_, position_deviation_threshold_m_);
 
     // --- 建立飛行控制器 ---
     controller_ = std::make_unique<controllers::BasicController>(
@@ -52,6 +64,10 @@ BasicControllerNode::BasicControllerNode()
         RCLCPP_ERROR(this->get_logger(), "Controller init failed");
         return;
     }
+
+    // --- 初始化位置安全監控器 ---
+    position_safety_monitor_ = safety::PositionSafetyMonitor(
+        static_cast<float>(position_deviation_threshold_m_));
 
     // --- 初始化里程計訂閱者 ---
     if (!initialize_odometry_subscriber())
@@ -74,19 +90,35 @@ BasicControllerNode::BasicControllerNode()
         return;
     }
 
+    // --- 初始化 Agent 狀態發布者 ---
+    if (!initialize_state_publishers())
+    {
+        RCLCPP_ERROR(this->get_logger(), "State publishers init failed");
+        return;
+    }
+
     // --- 建立控制迴圈計時器 ---
-    auto period_ms = std::chrono::milliseconds(
+    auto ctrl_period_ms = std::chrono::milliseconds(
         static_cast<int>(1000.0 / CONTROL_LOOP_RATE_HZ));
 
     control_loop_timer_ = this->create_wall_timer(
-        period_ms,
+        ctrl_period_ms,
         std::bind(&BasicControllerNode::control_loop_cb, this));
+
+    // --- 建立狀態發布計時器 ---
+    auto state_period_ms = std::chrono::milliseconds(
+        static_cast<int>(1000.0 / state_publish_rate_hz_));
+
+    state_publish_timer_ = this->create_wall_timer(
+        state_period_ms,
+        std::bind(&BasicControllerNode::state_publish_cb, this));
 
     start_time_ = this->now();
 
     RCLCPP_INFO(this->get_logger(),
-                "BasicControllerNode initialized, control rate %.0f Hz",
-                CONTROL_LOOP_RATE_HZ);
+                "BasicControllerNode initialized, control rate %.0f Hz, "
+                "state publish rate %.1f Hz",
+                CONTROL_LOOP_RATE_HZ, state_publish_rate_hz_);
 }
 
 bool BasicControllerNode::initialize_odometry_subscriber()
@@ -163,6 +195,45 @@ bool BasicControllerNode::initialize_agent_command_handler()
     return true;
 }
 
+bool BasicControllerNode::initialize_state_publishers()
+{
+    std::string state_topic = "/" + agent_namespace_ + "/state";
+    std::string attitude_topic = "/" + agent_namespace_ + "/attitude";
+
+    agent_state_pub_ =
+        this->create_publisher<taiphoon_agent::msg::AgentState>(
+            state_topic, rclcpp::QoS(10));
+
+    if (agent_state_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create AgentState publisher on '%s'",
+                     state_topic.c_str());
+        return false;
+    }
+
+    agent_attitude_pub_ =
+        this->create_publisher<taiphoon_agent::msg::AgentAttitude>(
+            attitude_topic, rclcpp::QoS(10));
+
+    if (agent_attitude_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create AgentAttitude publisher on '%s'",
+                     attitude_topic.c_str());
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "State publishers created: %s, %s",
+                state_topic.c_str(), attitude_topic.c_str());
+    return true;
+}
+
+// =============================================================================
+// 回呼實作
+// =============================================================================
+
 void BasicControllerNode::odometry_cb(
     const px4_msgs::msg::VehicleOdometry::SharedPtr msg)
 {
@@ -173,6 +244,10 @@ void BasicControllerNode::odometry_cb(
                     "odometry_cb received nullptr message, ignoring");
         return;
     }
+
+    // 快取最新里程計資料（用於狀態發布）
+    latest_odometry_ = *msg;
+    has_odometry_data_ = true;
 
     if (controller_ != nullptr)
     {
@@ -185,6 +260,33 @@ void BasicControllerNode::control_loop_cb()
     if (controller_ == nullptr)
     {
         return;
+    }
+
+    // --- 位置安全監控：檢查實際位置與目標位置偏差 ---
+    {
+        auto current_pos = controller_->get_current_position_ned();
+        auto target_pos = controller_->get_target_position_ned();
+
+        // TAKEOFF 期間不檢查位置偏差（爬升為有意行為）
+        if (controller_->get_flight_state() != FlightState::TAKEOFF &&
+            position_safety_monitor_.is_deviation_exceeded(
+                current_pos, target_pos))
+        {
+            float dist = safety::PositionSafetyMonitor::compute_distance(
+                current_pos, target_pos);
+
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(),
+                                 3000,
+                                 "Position deviation %.2f m exceeds threshold "
+                                 "%.2f m — triggering hover intervention",
+                                 static_cast<double>(dist),
+                                 position_deviation_threshold_m_);
+
+            // 觸發 hover 介入：重設目標為目前位置
+            controller_->set_ned_target(
+                current_pos[0], current_pos[1], current_pos[2],
+                std::numeric_limits<float>::quiet_NaN());
+        }
     }
 
     // 驅動控制命令發布
@@ -205,6 +307,36 @@ void BasicControllerNode::control_loop_cb()
     }
 }
 
+void BasicControllerNode::state_publish_cb()
+{
+    // 尚未收到里程計資料時不發布
+    if (!has_odometry_data_)
+    {
+        return;
+    }
+
+    if (controller_ == nullptr)
+    {
+        return;
+    }
+
+    // --- 發布 AgentState ---
+    {
+        taiphoon_agent::msg::AgentState state_msg;
+        safety::StatePublisher::fill_agent_state(
+            state_msg, latest_odometry_,
+            controller_->get_flight_state(), true);
+        agent_state_pub_->publish(state_msg);
+    }
+
+    // --- 發布 AgentAttitude ---
+    {
+        taiphoon_agent::msg::AgentAttitude attitude_msg;
+        safety::StatePublisher::fill_agent_attitude(
+            attitude_msg, latest_odometry_);
+        agent_attitude_pub_->publish(attitude_msg);
+    }
+}
 
 void BasicControllerNode::ned_target_cb(
     const taiphoon_agent::msg::NedTarget::SharedPtr msg)

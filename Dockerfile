@@ -1,13 +1,13 @@
-﻿# =============================================================================
+# =============================================================================
 # @file Dockerfile
-# @brief Taiphoon_Agent 多階段 Docker 建構檔案
+# @brief Taiphoon_Agent 多階段 Docker 建構檔案（含 uXRCE-DDS 橋接）
 # @author Taiphoon Agent Team
 # @date 2026-07-23
 #
 # Stage 階層架構:
 #   taiphoon-base        共用基礎 (locale)
 #     └── taiphoon-ros2   共用 ROS2 repo 設定
-#           ├── taiphoon-builder   完整編譯環境 (Desktop + dev-tools)
+#           ├── taiphoon-builder   完整編譯環境 (Desktop + dev-tools + uXRCE-DDS 橋接)
 #           │     └── taiphoon-dev       開發映像 (+ entrypoint)
 #           └── taiphoon-runtime  精簡執行環境 (ros-base)
 #
@@ -39,7 +39,7 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # =============================================================================
-# Stage 1: 共用 ROS2 repo 層 - 只做一次，builder 和 runtime 都從這裡繼承
+# Stage 1: 共用 ROS2 repo 層
 # =============================================================================
 FROM taiphoon-base AS taiphoon-ros2
 
@@ -61,20 +61,20 @@ RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/r
     | tee /etc/apt/sources.list.d/ros2.list > /dev/null
 
 # =============================================================================
-# Stage 2: 完整建構環境 - ROS2 Desktop + dev-tools + 編譯 px4_msgs & 專案
+# Stage 2: 完整建構環境 - ROS2 Desktop + dev-tools + uXRCE-DDS 橋接
 # =============================================================================
 FROM taiphoon-ros2 AS taiphoon-builder
 
 # ---- 安裝 ROS2 Humble Desktop + 開發工具 ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-desktop \
+    ros-humble-desktop ros-humble-rmw-cyclonedds-cpp \
     ros-dev-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- 初始化 rosdep ----
 RUN rosdep init && rosdep update
 
-# ---- 系統工具補充 ----
+# ---- 系統工具補充 (與原始 Dockerfile 一致，保留 cache) ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -116,6 +116,43 @@ RUN mkdir -p ${PX4_UROS_WS}/src \
     && echo "source ${PX4_UROS_WS}/install/setup.bash" >> /home/taiphoon/.bashrc \
     && echo "px4_msgs workspace built successfully"
 
+# ---- 安裝 MicroXRCEAgent 編譯依賴 (放在 px4_msgs 之後，保留上游 cache) ----
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev \
+    ros-humble-foonathan-memory-vendor \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- 建構 MicroXRCEAgent (uXRCE-DDS 橋接) ----
+# 放在 COPY . . 之前，確保 Taiphoon 程式碼變動不會觸發重編
+USER taiphoon
+ENV UXRCE_AGENT_VERSION=v2.4.3
+ENV UXRCE_AGENT_SRC=/tmp/Micro-XRCE-DDS-Agent
+
+RUN git clone --depth 1 --branch ${UXRCE_AGENT_VERSION} \
+    https://github.com/eProsima/Micro-XRCE-DDS-Agent.git \
+    ${UXRCE_AGENT_SRC} \
+    && mkdir -p ${UXRCE_AGENT_SRC}/build \
+    && cd ${UXRCE_AGENT_SRC}/build \
+    && /bin/bash -c "source /opt/ros/humble/setup.bash && cmake .. \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_PREFIX_PATH=/opt/ros/humble \
+        -Dfoonathan_memory_DIR=/opt/ros/humble/lib/foonathan_memory/cmake" \
+    && make -j$(nproc) \
+    && echo "MicroXRCEAgent build complete"
+
+# ---- 安裝 MicroXRCEAgent (需 root) ----
+USER root
+RUN cd ${UXRCE_AGENT_SRC}/build \
+    && make install \
+    && find temp_install -name 'libfast*.so*' -exec cp -a {} /usr/local/lib/ \; 2>/dev/null || true \
+    && ldconfig \
+    && echo "MicroXRCEAgent installed to /usr/local/bin"
+
+# ---- 驗證 MicroXRCEAgent binary 存在 ----
+USER taiphoon
+RUN which MicroXRCEAgent && echo "MicroXRCEAgent found at $(which MicroXRCEAgent)"
+
 # ---- 建構 Taiphoon_Agent 工作空間 ----
 ENV TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
 
@@ -125,6 +162,18 @@ RUN cd ${TAIPHOON_WS} \
     && /bin/bash -c "source /opt/ros/humble/setup.bash && source ${PX4_UROS_WS}/install/setup.bash && colcon build --symlink-install" \
     && echo "source ${TAIPHOON_WS}/install/setup.bash" >> /home/taiphoon/.bashrc \
     && echo "Taiphoon_Agent built successfully"
+
+# ---- 系統級 shell 環境 (支援 docker compose exec 非互動式 shell) ----
+USER root
+RUN echo "source /opt/ros/humble/setup.bash" > /etc/profile.d/ros2.sh \
+    && echo "source ${PX4_UROS_WS}/install/setup.bash" >> /etc/profile.d/ros2.sh \
+    && echo "source ${TAIPHOON_WS}/install/setup.bash" >> /etc/profile.d/ros2.sh \
+    && chmod +x /etc/profile.d/ros2.sh
+
+# 讓 non-interactive bash shell 也能自動 source ROS2 環境
+ENV BASH_ENV=/etc/profile.d/ros2.sh
+
+USER taiphoon
 
 # =============================================================================
 # Stage 3: 開發映像 - 繼承 builder，加上 entrypoint
@@ -141,13 +190,15 @@ ENTRYPOINT ["/home/taiphoon/entrypoint.sh"]
 CMD ["bash"]
 
 # =============================================================================
-# Stage 4: 精簡執行映像 - 從 ros2 共用層獨立建構，僅含 ros-base
+# Stage 4: 精簡執行環境 - 從 ros2 共用層獨立建構，僅含 ros-base
 # =============================================================================
 FROM taiphoon-ros2 AS taiphoon-runtime
 
-# ---- 僅安裝 ROS2 Humble 基礎執行環境 (不裝 Desktop/GUI) ----
+# ---- 僅安裝 ROS2 Humble 基礎執行環境 ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ros-base \
+    ros-humble-rmw-fastrtps-cpp \
+    ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- 建立 taiphoon 使用者 ----
@@ -164,6 +215,14 @@ ENV TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
 
 # ---- 從 builder 複製已編譯產出 ----
 COPY --from=taiphoon-builder --chown=taiphoon:taiphoon \
+    /usr/local/bin/MicroXRCEAgent \
+    /usr/local/bin/MicroXRCEAgent
+
+COPY --from=taiphoon-builder --chown=taiphoon:taiphoon \
+    /usr/local/lib/ \
+    /usr/local/lib/
+
+COPY --from=taiphoon-builder --chown=taiphoon:taiphoon \
     /home/taiphoon/px4_ros_uxrce_dds_ws/install \
     /home/taiphoon/px4_ros_uxrce_dds_ws/install
 
@@ -179,9 +238,19 @@ COPY --from=taiphoon-builder --chown=taiphoon:taiphoon \
     /home/taiphoon/Taiphoon_Agent/launch \
     /home/taiphoon/Taiphoon_Agent/launch
 
+RUN ldconfig
+
 # ---- bashrc 補上 workspace source ----
 RUN echo "source ${PX4_UROS_WS}/install/setup.bash" >> /home/taiphoon/.bashrc \
     && echo "source ${TAIPHOON_WS}/install/setup.bash" >> /home/taiphoon/.bashrc
+
+# ---- 系統級 shell 環境 ----
+RUN echo "source /opt/ros/humble/setup.bash" > /etc/profile.d/ros2.sh \
+    && echo "source ${PX4_UROS_WS}/install/setup.bash" >> /etc/profile.d/ros2.sh \
+    && echo "source ${TAIPHOON_WS}/install/setup.bash" >> /etc/profile.d/ros2.sh \
+    && chmod +x /etc/profile.d/ros2.sh
+
+ENV BASH_ENV=/etc/profile.d/ros2.sh
 
 USER taiphoon
 WORKDIR /home/taiphoon
