@@ -262,33 +262,33 @@ void BasicControllerNode::control_loop_cb()
         return;
     }
 
-    // --- 位置安全監控：檢查實際位置與目標位置偏差 ---
-    {
-        auto current_pos = controller_->get_current_position_ned();
-        auto target_pos = controller_->get_target_position_ned();
-
-        // TAKEOFF 期間不檢查位置偏差（爬升為有意行為）
-        if (controller_->get_flight_state() != FlightState::TAKEOFF &&
-            position_safety_monitor_.is_deviation_exceeded(
-                current_pos, target_pos))
-        {
-            float dist = safety::PositionSafetyMonitor::compute_distance(
-                current_pos, target_pos);
-
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(),
-                                 3000,
-                                 "Position deviation %.2f m exceeds threshold "
-                                 "%.2f m — triggering hover intervention",
-                                 static_cast<double>(dist),
-                                 position_deviation_threshold_m_);
-
-            // 觸發 hover 介入：重設目標為目前位置
-            controller_->set_ned_target(
-                current_pos[0], current_pos[1], current_pos[2],
-                std::numeric_limits<float>::quiet_NaN());
-        }
-    }
-
+//     // --- 位置安全監控：檢查實際位置與目標位置偏差 ---
+//     {
+//         auto current_pos = controller_->get_current_position_ned();
+//         auto target_pos = controller_->get_target_position_ned();
+// 
+//         // TAKEOFF 期間不檢查位置偏差（爬升為有意行為）
+//         if (controller_->get_flight_state() != FlightState::TAKEOFF &&
+//             position_safety_monitor_.is_deviation_exceeded(
+//                 current_pos, target_pos))
+//         {
+//             float dist = safety::PositionSafetyMonitor::compute_distance(
+//                 current_pos, target_pos);
+// 
+//             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(),
+//                                  3000,
+//                                  "Position deviation %.2f m exceeds threshold "
+//                                  "%.2f m — triggering hover intervention",
+//                                  static_cast<double>(dist),
+//                                  position_deviation_threshold_m_);
+// 
+//             // 觸發 hover 介入：重設目標為目前位置
+//             controller_->set_ned_target(
+//                 current_pos[0], current_pos[1], current_pos[2],
+//                 std::numeric_limits<float>::quiet_NaN());
+//         }
+//     }
+// 
     // 驅動控制命令發布
     controller_->publish_control_commands();
 

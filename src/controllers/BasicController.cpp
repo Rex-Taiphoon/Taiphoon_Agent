@@ -366,8 +366,13 @@ bool BasicController::move_forward(float distance_m)
                      "Move distance invalid (NaN or Inf)");
         return false;
     }
-    target_position_ned_ = current_position_ned_;
-    target_position_ned_[0] += distance_m;
+    // Body → NED: nose direction
+    float yaw = current_yaw_rad_.load();
+    float cos_yaw = std::cos(yaw);
+    float sin_yaw = std::sin(yaw);
+    target_position_ned_[0] = current_position_ned_[0] + distance_m * cos_yaw;
+    target_position_ned_[1] = current_position_ned_[1] + distance_m * sin_yaw;
+    target_position_ned_[2] = current_position_ned_[2];
     flight_state_.store(FlightState::MOVING);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving forward %.2f m (target_system=%d)", distance_m, target_system_);
@@ -388,8 +393,13 @@ bool BasicController::move_right(float distance_m)
                      "Move distance invalid (NaN or Inf)");
         return false;
     }
-    target_position_ned_ = current_position_ned_;
-    target_position_ned_[1] += distance_m;
+    // Body → NED: right direction
+    float yaw = current_yaw_rad_.load();
+    float cos_yaw = std::cos(yaw);
+    float sin_yaw = std::sin(yaw);
+    target_position_ned_[0] = current_position_ned_[0] + distance_m * (-sin_yaw);
+    target_position_ned_[1] = current_position_ned_[1] + distance_m * cos_yaw;
+    target_position_ned_[2] = current_position_ned_[2];
     flight_state_.store(FlightState::MOVING);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving right %.2f m (target_system=%d)", distance_m, target_system_);
@@ -425,19 +435,24 @@ bool BasicController::move_vertical(float delta_m)
         return false;
     }
 
-    float new_alt = target_altitude_m_.load() + delta_m;
+    // target_position_ned_[2] is NED Z (positive = down)
+    // delta_m > 0 = move up → NED Z decreases
+    float new_z = target_position_ned_[2] - delta_m;
+
+    // Clamp: don't go below minimum altitude (1m above ground)
+    float new_alt = -new_z;
     if (new_alt < ALTITUDE_MIN_M)
     {
         RCLCPP_WARN(rclcpp::get_logger("BasicController"),
                     "Vertical move clamped: target %.2f m below minimum %.2f m, using minimum",
                     new_alt, ALTITUDE_MIN_M);
-        new_alt = ALTITUDE_MIN_M;
+        new_z = -ALTITUDE_MIN_M;
     }
 
-    target_altitude_m_.store(new_alt);
+    target_position_ned_[2] = new_z;
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                "Vertical move %.2f m, new target altitude: %.2f m (target_system=%d)",
-                delta_m, new_alt, target_system_);
+                "Vertical move %.2f m, new target NED Z: %.2f (target_system=%d)",
+                static_cast<double>(delta_m), static_cast<double>(new_z), target_system_);
     return true;
 }
 
@@ -475,7 +490,7 @@ bool BasicController::rotate_yaw(float degrees)
     {
         target_yaw_rad_ = 0.0F;
     }
-    target_yaw_rad_ += delta_rad;
+    target_yaw_rad_ -= delta_rad;
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
@@ -528,9 +543,14 @@ void BasicController::update_odometry(const px4_msgs::msg::VehicleOdometry& msg)
     current_position_ned_[0] = msg.position[0];
     current_position_ned_[1] = msg.position[1];
     current_position_ned_[2] = msg.position[2];
+
+    // Extract yaw from orientation quaternion (NED convention)
+    // q = [w, x, y, z], yaw = atan2(2(w*z + x*y), 1 - 2(y² + z²))
+    float w = msg.q[0], x = msg.q[1], y = msg.q[2], z = msg.q[3];
+    float yaw_rad = std::atan2(2.0F * (w * z + x * y),
+                               1.0F - 2.0F * (y * y + z * z));
+    current_yaw_rad_.store(yaw_rad);
 }
-
-
 // =============================================================================
 // Publisher 初始化 (單一職責原則)
 // =============================================================================
@@ -753,13 +773,11 @@ void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*m
 
 void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
-    float target_z = -target_altitude_m_.load();
     msg.position[0] = current_position_ned_[0];
     msg.position[1] = current_position_ned_[1];
-    msg.position[2] = target_z;
-    msg.velocity[2] = -2.0F;  // 2 m/s 向上（NED 負 = 上）
+    msg.position[2] = target_position_ned_[2];
     float current_alt = current_altitude_m_.load();
-    float target_alt = target_altitude_m_.load();
+    float target_alt = -target_position_ned_[2];
 
     altitude_log_counter_++;
     if (altitude_log_counter_ >= ALTITUDE_LOG_INTERVAL)
@@ -798,7 +816,7 @@ void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& ms
 
 void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
-    msg.position[2] = -target_altitude_m_.load();
+    msg.position[2] = target_position_ned_[2];
     msg.position[0] = current_position_ned_[0];
     msg.position[1] = current_position_ned_[1];
     // 避免自動進入RTL模式，先註解掉自動進入HOVER或RTL的邏輯

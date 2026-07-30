@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <regex>
 #include <utility>
+#include <set>
 
 namespace taiphoon
 {
@@ -156,32 +157,31 @@ void MissionPlanner::initial_peer_discovery()
 
 void MissionPlanner::scan_peers_cb()
 {
-    // 取得所有 topic 名稱
-    auto topic_names_and_types = this->get_topic_names_and_types();
+    // 使用 node 名稱取代 topic 名稱進行同儕發現
+    // node 在程序崩潰時立即從 ROS2 graph 消失，不像 topic 有 discovery 快取殘留
+    auto node_names = this->get_node_names();
 
-    std::vector<std::string> all_topics;
-    for (const auto& entry : topic_names_and_types)
-    {
-        all_topics.push_back(entry.first);
-    }
+    // 過濾出 agent 節點索引 (不含自身)
+    auto found_indices = formation::PeerMatcher::filter_agent_nodes(
+        node_names, agent_namespace_);
 
-    // 過濾出同儕的 AgentState topic
-    auto found_peers = formation::PeerMatcher::filter_peers(
-        all_topics, agent_namespace_);
+    // 加入自身：自身的 AgentState 也需納入 peers_ 供編隊計算
+    int self_idx = compute_self_index() + 1;  // 1-based
+    std::set<int> required_indices(found_indices.begin(), found_indices.end());
+    required_indices.insert(self_idx);
 
     // 處理新發現的同儕 (訂閱其 AgentState)
-    for (const auto& peer : found_peers)
+    for (int idx : required_indices)
     {
-        int idx = peer.first;
-        const std::string& topic = peer.second;
-
         // 如果已經訂閱過，跳過
         if (peer_subs_.find(idx) != peer_subs_.end())
         {
             continue;
         }
 
-        // 建立新訂閱
+        // 訂閱 AgentState topic：/fmu<N>_agent/state
+        std::string topic = "/fmu" + std::to_string(idx) + "_agent/state";
+
         auto sub = this->create_subscription<taiphoon_agent::msg::AgentState>(
             topic,
             rclcpp::QoS(10).best_effort(),
@@ -195,22 +195,15 @@ void MissionPlanner::scan_peers_cb()
             peer_subs_[idx] = sub;
             peers_[idx] = formation::PeerPosition();  // 初始化位置
             RCLCPP_INFO(this->get_logger(),
-                        "Discovered peer agent %d on %s", idx, topic.c_str());
+                        "Discovered agent %d on %s", idx, topic.c_str());
         }
     }
 
-    // 檢查離線同儕：已訂閱但 topic 已不存在
-    // (本次掃描的 topic 集合中找不到已訂閱的同儕 → 離線)
-    std::map<int, std::string> current_peers;
-    for (const auto& peer : found_peers)
-    {
-        current_peers[peer.first] = peer.second;
-    }
-
+    // 檢查離線同儕：已訂閱但 node 已不存在
     std::vector<int> stale_indices;
     for (const auto& entry : peer_subs_)
     {
-        if (current_peers.find(entry.first) == current_peers.end())
+        if (required_indices.find(entry.first) == required_indices.end())
         {
             stale_indices.push_back(entry.first);
         }
@@ -219,7 +212,7 @@ void MissionPlanner::scan_peers_cb()
     for (int idx : stale_indices)
     {
         RCLCPP_INFO(this->get_logger(),
-                    "Peer agent %d went offline, removing subscription", idx);
+                    "Agent %d went offline, removing subscription", idx);
         peer_subs_.erase(idx);
         peers_.erase(idx);
     }
@@ -344,10 +337,33 @@ void MissionPlanner::formation_loop_cb()
     params.param1 = formation_param1_;
     params.param2 = formation_param2_;
 
+    // 動態計算 effective_self_index：自身在所有 online agent 中的排序位置
+    // 避免因中間 agent 離線導致 self_index 不連續（如 0, 2）
+    int self_key = compute_self_index() + 1;  // 1-based，對應 peers_ key
+    std::vector<int> alive_keys;
+    for (const auto& entry : peers_)
+    {
+        if (entry.second.online)
+        {
+            alive_keys.push_back(entry.first);
+        }
+    }
+    std::sort(alive_keys.begin(), alive_keys.end());
+
+    size_t effective_self_index = 0;
+    for (size_t i = 0; i < alive_keys.size(); ++i)
+    {
+        if (alive_keys[i] == self_key)
+        {
+            effective_self_index = i;
+            break;
+        }
+    }
+
     // 計算自身目標位置
     auto target = formation::FormationCalculator::compute_formation_target(
         centroid, formation_type_, params,
-        static_cast<size_t>(self_index_), online_count);
+        effective_self_index, online_count);
 
     // 變化檢測：避免重複發布相同目標
     float pos_dx = target[0] - last_published_target_[0];

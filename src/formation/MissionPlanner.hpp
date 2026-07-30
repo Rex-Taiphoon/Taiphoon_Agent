@@ -5,10 +5,11 @@
  * @date 2026-07-29
  *
  * 取代 FormationNode，新增同儕發現機制：
- * 1. 動態掃描 ROS2 topic 發現線上同儕 Agent
+ * 1. 動態掃描 ROS2 node 名稱發現線上同儕 Agent（避免 topic 殘留）
  * 2. 訂閱同儕的 AgentState topic 取得位置
  * 3. 接收 /fmu_all_agent/command 編隊命令
  * 4. 計算自身目標 NED 位置並發布至 /{namespace}/ned_target
+ * 5. 動態重算 effective_self_index，支援任意 agent 離線重編隊
  */
 
 #pragma once

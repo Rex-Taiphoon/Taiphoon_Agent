@@ -512,6 +512,8 @@ private:
 
     /// 目前位置 (NED 座標系) [x, y, z]
     std::array<float, 3> current_position_ned_{0.0F, 0.0F, 0.0F};
+    /// 目前偏航角（弧度，來自 odometry 四元數）
+    std::atomic<float> current_yaw_rad_{0.0F};
 
     /// 目標位置 (NED 座標系) [x, y, z]，用於移動命令
     std::array<float, 3> target_position_ned_{0.0F, 0.0F, 0.0F};

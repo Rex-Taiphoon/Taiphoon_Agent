@@ -18,14 +18,18 @@ docker pull px4io/px4-sitl:latest
 docker network create Taiphoon_Net
 
 # 4. 啟動開發容器
-docker compose up -d taiphoon-agt
+docker compose up -d fmu1_agent
 
 # 5. 啟動模擬器
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 1 --net Taiphoon_Net
+bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3
 
-# 6. 確認 ROS2 通訊
-docker compose exec taiphoon-agt bash -c \
-  "source /opt/ros/humble/setup.bash && ros2 topic list"
+# 6. 編譯 Taiphoon_Agent
+docker compose exec fmu1_agent bash -c \
+  "cd /home/taiphoon/Taiphoon_Agent && \
+   colcon build --symlink-install --packages-select taiphoon_agent"
+
+# 7. 快速起飛（使用 CycloneDDS）
+bash AutoTest/quick_takeoff.sh
 ```
 
 > **實機模式**：加上 `--profile hw` 啟動 uXRCE-DDS Agent 常駐服務。
@@ -47,7 +51,7 @@ docker compose exec taiphoon-agt bash -c \
 所有 ROS2 指令在 Taiphoon_Agent 容器內執行。建議先進入容器再執行指令：
 
 ```bash
-docker compose exec taiphoon-agt bash
+docker compose exec fmu1_agent bash
 ```
 
 進入後需先載入環境（每次開啟新終端都需要）：
@@ -60,13 +64,14 @@ source /home/taiphoon/Taiphoon_Agent/install/setup.bash
 
 ### 1. 模擬器管理
 
-在**宿主機**（非容器內）執行：
-
 ```bash
-# 啟動單機模擬
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 1 --net Taiphoon_Net
+# 啟動三台模擬器（預設）
+bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3
 
-# 啟動多機模擬（3 台一字型排列）
+# 啟動四台模擬器
+bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 4
+
+# 指定 Docker 網路
 bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3 --net Taiphoon_Net
 
 # 使用 CycloneDDS 啟動
@@ -89,7 +94,7 @@ bash skills/px4-sitl-launcher/scripts/stop_all.sh
 先進入容器再載入環境，然後 Launch：
 
 ```bash
-docker compose exec taiphoon-agt bash
+docker compose exec fmu1_agent bash
 
 # 在容器內：
 source /opt/ros/humble/setup.bash
@@ -181,6 +186,66 @@ ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_RTL'
 > RTL（Return to Launch）會讓無人機自動返回起飛點並降落。
 
 ---
+---
+
+## 操作手冊 — 全體控制起飛（CycloneDDS）
+
+在宿主機直接執行完整起飛流程，適用於已啟動 SITL 模擬與 Agent 容器的環境：
+
+```bash
+# 1. OFFBOARD 模式
+docker exec fmu1_agent bash -c "
+  ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
+    /fmu_all_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'"
+
+sleep 3
+
+# 2. 解鎖
+docker exec fmu1_agent bash -c "
+  ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
+    /fmu_all_agent/command std_msgs/msg/String 'data: ARM'"
+
+sleep 2
+
+# 3. 起飛 8m
+docker exec fmu1_agent bash -c "
+  ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
+    /fmu_all_agent/command std_msgs/msg/String 'data: TAKEOFF 8.0'"
+
+# 4. 左右移動
+docker exec fmu1_agent bash -c "
+  ros2 topic pub --wait-matching-subscriptions 3 --once \
+    /fmu_all_agent/command std_msgs/msg/String 'data: MOVE_LEFT 5.0'"
+
+# 5. 上下移動
+docker exec fmu1_agent bash -c "
+  ros2 topic pub --wait-matching-subscriptions 3 --once \
+    /fmu_all_agent/command std_msgs/msg/String 'data: MOVE_UP 5'"
+```
+
+> 也可直接執行一鍵腳本：`bash AutoTest/quick_takeoff.sh`
+
+---
+
+## 操作手冊 — Offboard 直接控制 Topic
+
+進入 Offboard 模式後，可直接對 PX4 內部 topic 發送控制指令：
+
+```bash
+# 位置、速度、加速度、姿態等控制，使用 NED 坐標系
+/fmu1/fmu/in/trajectory_setpoint
+
+# 設定姿態，使用 FRD 坐標系
+/fmu3/fmu/in/vehicle_rates_setpoint
+
+# 設定姿態四元數
+/fmu3/fmu/in/vehicle_attitude_setpoint_v1
+```
+
+> 這些是 PX4 uXRCE-DDS 橋接後的內部 topic，直接控制飛控行為。
+> 建議先透過 Agent 命令層（`/fmu{N}_agent/command`）操作，確有必要時再使用直接控制。
+
+---
 
 ## 操作手冊 — 編隊飛行
 
@@ -198,7 +263,7 @@ bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 4 --net Taiphoon_Net
 
 ```bash
 # 終端 2：啟動 Taiphoon_Agent（含 4 組 BasicController + FormationNode）
-docker compose exec taiphoon-agt bash
+docker compose exec fmu1_agent bash
 # 在容器內：
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -208,7 +273,7 @@ ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=4
 
 ```bash
 # 終端 3：進入容器，手動下達指令
-docker compose exec taiphoon-agt bash
+docker compose exec fmu1_agent bash
 # 在容器內：
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -274,15 +339,25 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 
 ### 編隊命令
 
-| 命令 | 說明 | 參數 | 範例 |
-|------|------|------|------|
-| `FORMATION_CIRCLE` | 環形編隊 | 半徑 (m) 高度 (m) | `FORMATION_CIRCLE 5.0 10.0` |
-| `FORMATION_HORI_LINEAR` | 水平直列編隊 | 間距 (m) 高度 (m) | `FORMATION_HORI_LINEAR 3.0 5.0` |
-| `FORMATION_VERT_LINEAR` | 垂直直列編隊 | 間距 (m) | `FORMATION_VERT_LINEAR 3.0` |
-| `FORMATION_CANCEL` | 取消當前編隊 | 無 | `FORMATION_CANCEL` |
+| 命令字串 | 參數格式 | 說明 |
+|----------|----------|------|
+| `FORMATION_CIRCLE <半徑> <高度>` | `param_value`: 半徑 (m), `param2`: 高度 (m) | 環形編隊，等角分布於質心周圍 |
+| `FORMATION_HORI_LINEAR <間距> <高度>` | `param_value`: 間距 (m), `param2`: 高度 (m) | 水平直列，沿 NED Y 軸排列 |
+| `FORMATION_VERT_LINEAR <間距>` | `param_value`: 間距 (m) | 垂直直列，沿 NED Z 軸排列 |
+| `FORMATION_CANCEL` | 無參數 | 取消編隊，停止發布 NED 目標 |
+
+**使用範例**：
+
+```bash
+# 環形編隊（半徑 20m，高度 30m）
+docker compose exec fmu1_agent bash -c \
+  "ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String \
+   'data: FORMATION_CIRCLE 20 30'"
+```
 
 > 編隊命令必須透過 **`/fmu_all_agent/command`** 廣播，
 > 所有機體的 FormationNode 同時收到並各自計算自身在編隊中的目標位置。
+
 
 ### 簡寫命令
 
@@ -333,7 +408,7 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 範例：停用自動 Offboard 並設定起飛高度 5m：
 
 ```bash
-docker compose exec taiphoon-agt bash -c "
+docker compose exec fmu1_agent bash -c "
   source /opt/ros/humble/setup.bash
   source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
   source /home/taiphoon/Taiphoon_Agent/install/setup.bash
@@ -417,8 +492,20 @@ BasicController 訂閱後據此執行位置控制。
 
 ### 在 Docker 容器內建置
 
+**單行編譯（推薦）**：
+
 ```bash
-docker compose exec taiphoon-agt bash
+docker compose exec fmu1_agent bash -c \
+  "cd /home/taiphoon/Taiphoon_Agent && \
+   colcon build --symlink-install --packages-select taiphoon_agent"
+```
+
+> `--symlink-install` 會以符號連結安裝，修改 Python / 設定檔後無需重新編譯。
+
+**互動式編譯**（進入容器逐步執行）：
+
+```bash
+docker compose exec fmu1_agent bash
 
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -431,6 +518,7 @@ source install/setup.bash
 
 ### 編譯後驗證
 
+
 ```bash
 # 確認執行檔存在
 ls -la install/lib/taiphoon_agent/basic_controller
@@ -439,8 +527,6 @@ ls -la install/lib/taiphoon_agent/formation_node
 # 確認 Launch 檔案存在
 ls -la install/share/taiphoon_agent/launch/basic_controller.launch.py
 ```
-
----
 
 ## 故障排除
 

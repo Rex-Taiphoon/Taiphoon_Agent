@@ -93,15 +93,20 @@ void test_filter_peers_basic()
         "/fmu2/fmu/out/vehicle_odometry",
     };
 
-    // 自身 namespace = "fmu2_agent"，應排除 fmu2_agent/state
+    // 自身 namespace = "fmu2_agent"，filter_peers 現在包含自身
     auto peers = PeerMatcher::filter_peers(topics, "fmu2_agent");
-    TEST_ASSERT(peers.size() == 2, "應找到 2 個同儕 (排除自身)");
-    if (peers.size() >= 2)
+    TEST_ASSERT(peers.size() == 3, "應找到 3 個 agent (含自身)");
+    if (peers.size() >= 3)
     {
         TEST_ASSERT(peers[0].first == 1, "peer[0] index = 1");
         TEST_ASSERT(peers[0].second == "/fmu1_agent/state",
                     "peer[0] topic = /fmu1_agent/state");
-        TEST_ASSERT(peers[1].first == 3, "peer[1] index = 3");
+        TEST_ASSERT(peers[1].first == 2, "peer[1] index = 2");
+        TEST_ASSERT(peers[1].second == "/fmu2_agent/state",
+                    "peer[1] topic = /fmu2_agent/state");
+        TEST_ASSERT(peers[2].first == 3, "peer[2] index = 3");
+        TEST_ASSERT(peers[2].second == "/fmu3_agent/state",
+                    "peer[2] topic = /fmu3_agent/state");
     }
 }
 
@@ -122,6 +127,83 @@ void test_filter_peers_no_matches()
     auto peers = PeerMatcher::filter_peers(topics, "fmu1_agent");
     TEST_ASSERT(peers.empty(), "無符合 → 空結果");
 }
+
+
+void test_is_agent_node_match()
+{
+    std::printf("\n--- test_is_agent_node_match ---\n");
+    TEST_ASSERT(PeerMatcher::is_agent_node("/fmu1/basic_controller_node"),
+                "/fmu1/basic_controller_node 應符合");
+    TEST_ASSERT(PeerMatcher::is_agent_node("/fmu3/mission_planner"),
+                "/fmu3/mission_planner 應符合");
+    TEST_ASSERT(PeerMatcher::is_agent_node("/fmu10/some_node"),
+                "/fmu10/some_node 應符合");
+    TEST_ASSERT(!PeerMatcher::is_agent_node("/fmu1_agent/state"),
+                "topic 格式不應符合 node 判斷");
+    TEST_ASSERT(!PeerMatcher::is_agent_node("/fmu/fmu/out/odometry"),
+                "缺少數字不應符合");
+    TEST_ASSERT(!PeerMatcher::is_agent_node(""),
+                "空字串不應符合");
+    TEST_ASSERT(!PeerMatcher::is_agent_node("fmu1/node"),
+                "缺少前導 / 不應符合");
+}
+
+void test_extract_agent_index_from_node()
+{
+    std::printf("\n--- test_extract_agent_index_from_node ---\n");
+    TEST_ASSERT(PeerMatcher::extract_agent_index_from_node("/fmu1/basic_controller_node") == 1,
+                "fmu1 → 1");
+    TEST_ASSERT(PeerMatcher::extract_agent_index_from_node("/fmu3/mission_planner") == 3,
+                "fmu3 → 3");
+    TEST_ASSERT(PeerMatcher::extract_agent_index_from_node("/fmu10/some_node") == 10,
+                "fmu10 → 10");
+    TEST_ASSERT(PeerMatcher::extract_agent_index_from_node("/invalid/node") == -1,
+                "不符合格式 → -1");
+    TEST_ASSERT(PeerMatcher::extract_agent_index_from_node("") == -1,
+                "空字串 → -1");
+}
+
+void test_filter_agent_nodes_basic()
+{
+    std::printf("\n--- test_filter_agent_nodes_basic ---\n");
+    std::vector<std::string> nodes = {
+        "/fmu1/basic_controller_node",
+        "/fmu1/mission_planner",
+        "/fmu2/basic_controller_node",
+        "/fmu2/mission_planner",
+        "/fmu3/basic_controller_node",
+        "/some/other/node",
+    };
+
+    // 自身 = "fmu2_agent"，應排除 /fmu2/ 下的節點
+    auto indices = PeerMatcher::filter_agent_nodes(nodes, "fmu2_agent");
+    TEST_ASSERT(indices.size() == 2, "應找到 2 個其他 agent (排除自身)");
+    if (indices.size() >= 2)
+    {
+        TEST_ASSERT(indices[0] == 1, "agent[0] = 1");
+        TEST_ASSERT(indices[1] == 3, "agent[1] = 3");
+    }
+}
+
+void test_filter_agent_nodes_empty()
+{
+    std::printf("\n--- test_filter_agent_nodes_empty ---\n");
+    auto indices = PeerMatcher::filter_agent_nodes({}, "fmu1_agent");
+    TEST_ASSERT(indices.empty(), "空輸入 → 空結果");
+}
+
+void test_filter_agent_nodes_self_only()
+{
+    std::printf("\n--- test_filter_agent_nodes_self_only ---\n");
+    std::vector<std::string> nodes = {
+        "/fmu1/basic_controller_node",
+        "/fmu1/mission_planner",
+    };
+    // 只有自身 → 空結果
+    auto indices = PeerMatcher::filter_agent_nodes(nodes, "fmu1_agent");
+    TEST_ASSERT(indices.empty(), "只有自身 → 空結果");
+}
+
 
 // ==================== 主程式 ====================
 
