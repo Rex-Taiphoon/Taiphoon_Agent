@@ -76,6 +76,20 @@ BasicControllerNode::BasicControllerNode()
         return;
     }
 
+    // --- 初始化 GPS 訂閱者 ---
+    if (!initialize_gps_subscriber())
+    {
+        RCLCPP_ERROR(this->get_logger(), "GPS subscriber init failed");
+        return;
+    }
+
+    // --- 初始化電池狀態訂閱者 ---
+    if (!initialize_battery_subscriber())
+    {
+        RCLCPP_ERROR(this->get_logger(), "Battery subscriber init failed");
+        return;
+    }
+
     // --- 初始化 NED 目標訂閱者 ---
     if (!initialize_ned_target_subscriber())
     {
@@ -129,7 +143,6 @@ bool BasicControllerNode::initialize_odometry_subscriber()
         std::bind(&BasicControllerNode::odometry_cb, this,
                   std::placeholders::_1));
 
-    // L1-12：檢查 Subscriber 是否建立成功
     if (odometry_sub_ == nullptr)
     {
         RCLCPP_ERROR(this->get_logger(),
@@ -140,10 +153,47 @@ bool BasicControllerNode::initialize_odometry_subscriber()
     return true;
 }
 
+bool BasicControllerNode::initialize_gps_subscriber()
+{
+    gps_sub_ =
+        this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
+            "fmu/out/vehicle_global_position",
+            rclcpp::QoS(10).best_effort(),
+            std::bind(&BasicControllerNode::gps_cb, this,
+                      std::placeholders::_1));
+
+    if (gps_sub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create GPS subscriber");
+        return false;
+    }
+
+    return true;
+}
+
+bool BasicControllerNode::initialize_battery_subscriber()
+{
+    battery_sub_ =
+        this->create_subscription<px4_msgs::msg::BatteryStatus>(
+            "fmu/out/battery_status_v1",
+            rclcpp::QoS(10).best_effort(),
+            std::bind(&BasicControllerNode::battery_cb, this,
+                      std::placeholders::_1));
+
+    if (battery_sub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create battery subscriber");
+        return false;
+    }
+
+    return true;
+}
+
 bool BasicControllerNode::initialize_ned_target_subscriber()
 {
     std::string ned_topic = "/" + agent_namespace_ + "/ned_target";
-
     ned_target_sub_ = this->create_subscription<taiphoon_agent::msg::NedTarget>(
         ned_topic,
         rclcpp::QoS(5).best_effort(),
@@ -165,18 +215,17 @@ bool BasicControllerNode::initialize_ned_target_subscriber()
 
 bool BasicControllerNode::initialize_agent_command_handler()
 {
-    // 建立命令處理器，傳入 Agent 命名空間
-    agent_cmd_handler_ = std::make_unique<controllers::AgentCommandHandler>(
-        this, agent_namespace_);
+    agent_cmd_handler_ =
+        std::make_unique<controllers::AgentCommandHandler>(
+            this, agent_namespace_);
 
     if (agent_cmd_handler_ == nullptr)
     {
         RCLCPP_ERROR(this->get_logger(),
-                     "AgentCommandHandler creation failed");
+                     "Failed to create AgentCommandHandler");
         return false;
     }
 
-    // 註冊命令執行回呼
     agent_cmd_handler_->set_command_callback(
         std::bind(&BasicControllerNode::on_agent_command, this,
                   std::placeholders::_1));
@@ -237,7 +286,6 @@ bool BasicControllerNode::initialize_state_publishers()
 void BasicControllerNode::odometry_cb(
     const px4_msgs::msg::VehicleOdometry::SharedPtr msg)
 {
-    // L1-03：ROS2 回呼必須檢查訊息指標
     if (msg == nullptr)
     {
         RCLCPP_WARN(this->get_logger(),
@@ -245,7 +293,6 @@ void BasicControllerNode::odometry_cb(
         return;
     }
 
-    // 快取最新里程計資料（用於狀態發布）
     latest_odometry_ = *msg;
     has_odometry_data_ = true;
 
@@ -253,6 +300,34 @@ void BasicControllerNode::odometry_cb(
     {
         controller_->update_odometry(*msg);
     }
+}
+
+void BasicControllerNode::gps_cb(
+    const px4_msgs::msg::VehicleGlobalPosition::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "gps_cb received nullptr message, ignoring");
+        return;
+    }
+
+    latest_gps_ = *msg;
+    has_gps_data_ = true;
+}
+
+void BasicControllerNode::battery_cb(
+    const px4_msgs::msg::BatteryStatus::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "battery_cb received nullptr message, ignoring");
+        return;
+    }
+
+    latest_battery_ = *msg;
+    has_battery_data_ = true;
 }
 
 void BasicControllerNode::control_loop_cb()
@@ -266,7 +341,7 @@ void BasicControllerNode::control_loop_cb()
 //     {
 //         auto current_pos = controller_->get_current_position_ned();
 //         auto target_pos = controller_->get_target_position_ned();
-// 
+//
 //         // TAKEOFF 期間不檢查位置偏差（爬升為有意行為）
 //         if (controller_->get_flight_state() != FlightState::TAKEOFF &&
 //             position_safety_monitor_.is_deviation_exceeded(
@@ -274,21 +349,21 @@ void BasicControllerNode::control_loop_cb()
 //         {
 //             float dist = safety::PositionSafetyMonitor::compute_distance(
 //                 current_pos, target_pos);
-// 
+//
 //             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(),
 //                                  3000,
 //                                  "Position deviation %.2f m exceeds threshold "
 //                                  "%.2f m — triggering hover intervention",
 //                                  static_cast<double>(dist),
 //                                  position_deviation_threshold_m_);
-// 
+//
 //             // 觸發 hover 介入：重設目標為目前位置
 //             controller_->set_ned_target(
 //                 current_pos[0], current_pos[1], current_pos[2],
 //                 std::numeric_limits<float>::quiet_NaN());
 //         }
 //     }
-// 
+//
     // 驅動控制命令發布
     controller_->publish_control_commands();
 
@@ -309,7 +384,6 @@ void BasicControllerNode::control_loop_cb()
 
 void BasicControllerNode::state_publish_cb()
 {
-    // 尚未收到里程計資料時不發布
     if (!has_odometry_data_)
     {
         return;
@@ -320,12 +394,19 @@ void BasicControllerNode::state_publish_cb()
         return;
     }
 
+    const px4_msgs::msg::VehicleGlobalPosition* gps_ptr =
+        has_gps_data_ ? &latest_gps_ : nullptr;
+
+    const px4_msgs::msg::BatteryStatus* battery_ptr =
+        has_battery_data_ ? &latest_battery_ : nullptr;
+
     // --- 發布 AgentState ---
     {
         taiphoon_agent::msg::AgentState state_msg;
         safety::StatePublisher::fill_agent_state(
             state_msg, latest_odometry_,
-            controller_->get_flight_state(), true);
+            controller_->get_flight_state(), true,
+            gps_ptr, battery_ptr);
         agent_state_pub_->publish(state_msg);
     }
 
@@ -361,7 +442,6 @@ void BasicControllerNode::ned_target_cb(
 void BasicControllerNode::on_agent_command(
     const utils::ParsedCommand& cmd)
 {
-    // L1-02：檢查控制器是否有效
     if (controller_ == nullptr)
     {
         RCLCPP_WARN(this->get_logger(),
@@ -376,7 +456,6 @@ void BasicControllerNode::on_agent_command(
 
     bool result = false;
 
-    // 將高階命令轉譯為 BasicController 的呼叫
     switch (cmd.command)
     {
         case utils::AgentCommand::MODE_RTL:
@@ -433,7 +512,6 @@ void BasicControllerNode::on_agent_command(
 
         case utils::AgentCommand::TAKEOFF:
             {
-                // 有命令參數時使用命令指定的高度，否則使用 YAML 設定值
                 float alt = cmd.has_param
                     ? cmd.param_value
                     : static_cast<float>(target_altitude_m_);

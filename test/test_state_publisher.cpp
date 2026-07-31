@@ -1,24 +1,27 @@
 /**
  * @file test_state_publisher.cpp
- * @brief StatePublisher 單元測試
+ * @brief StatePublisher 單元測試（含 GPS 與電池擴充測試）
  * @author Taiphoon Agent Team
  * @date 2026-07-29
  *
- * 測試 StatePublisher 的 PX4 odometry → AgentState/AgentAttitude 轉譯邏輯。
+ * 測試 StatePublisher 的 PX4 odometry / GPS / Battery → AgentState/AgentAttitude 轉譯邏輯。
  * 需在 colcon 環境中編譯執行：colcon test --packages-select taiphoon_agent
  */
 
 #include <gtest/gtest.h>
+#include <cmath>
 
 #include "safety/StatePublisher.hpp"
 #include "taiphoon_agent/msg/agent_state.hpp"
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
+#include "px4_msgs/msg/vehicle_global_position.hpp"
+#include "px4_msgs/msg/battery_status.hpp"
 #include "controllers/BasicController.hpp"
 
 using taiphoon::safety::StatePublisher;
 
-// ==================== fill_agent_state 測試 ====================
+// ==================== fill_agent_state 既有測試 ====================
 
 TEST(StatePublisherTest, FillAgentState_PositionNED)
 {
@@ -41,7 +44,6 @@ TEST(StatePublisherTest, FillAgentState_FlightModeMapping)
 {
     px4_msgs::msg::VehicleOdometry odom;
 
-    // IDLE → 0
     {
         taiphoon_agent::msg::AgentState state;
         StatePublisher::fill_agent_state(
@@ -51,7 +53,6 @@ TEST(StatePublisherTest, FillAgentState_FlightModeMapping)
                   static_cast<uint8_t>(taiphoon::controllers::FlightState::IDLE));
     }
 
-    // HOVER → static_cast<uint8_t>(HOVER)
     {
         taiphoon_agent::msg::AgentState state;
         StatePublisher::fill_agent_state(
@@ -61,7 +62,6 @@ TEST(StatePublisherTest, FillAgentState_FlightModeMapping)
                   static_cast<uint8_t>(taiphoon::controllers::FlightState::HOVER));
     }
 
-    // MOVING → static_cast<uint8_t>(MOVING)
     {
         taiphoon_agent::msg::AgentState state;
         StatePublisher::fill_agent_state(
@@ -71,7 +71,6 @@ TEST(StatePublisherTest, FillAgentState_FlightModeMapping)
                   static_cast<uint8_t>(taiphoon::controllers::FlightState::MOVING));
     }
 
-    // ERROR → static_cast<uint8_t>(ERROR)
     {
         taiphoon_agent::msg::AgentState state;
         StatePublisher::fill_agent_state(
@@ -91,7 +90,7 @@ TEST(StatePublisherTest, FillAgentState_BatteryDefault)
         state, odom,
         taiphoon::controllers::FlightState::HOVER, true);
 
-    // 預設電量應為 1.0（PX4 odometry 不含電量資訊）
+    // 無 battery 資料時，battery_remaining 預設為 1.0
     EXPECT_FLOAT_EQ(state.battery_remaining, 1.0F);
 }
 
@@ -114,7 +113,6 @@ TEST(StatePublisherTest, FillAgentState_OnlineFlag)
 
 TEST(StatePublisherTest, FillAgentState_StampIsSet)
 {
-    // 模擬 PX4 時間戳 (微秒): 1,700,000,000 us = 1700 秒
     px4_msgs::msg::VehicleOdometry odom;
     odom.timestamp = 1700000000ULL;
 
@@ -123,12 +121,161 @@ TEST(StatePublisherTest, FillAgentState_StampIsSet)
         state, odom,
         taiphoon::controllers::FlightState::HOVER, true);
 
-    // stamp.sec = 1700000000 / 1000000 = 1700
     EXPECT_EQ(state.stamp.sec, 1700);
     EXPECT_EQ(state.stamp.nanosec, 0U);
 }
 
-// ==================== fill_agent_attitude 測試 ====================
+// ==================== GPS 擴充測試 ====================
+
+TEST(StatePublisherTest, FillAgentState_GpsFromGlobalPosition)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+
+    px4_msgs::msg::VehicleGlobalPosition gps;
+    gps.lat = 25.03996592258936;
+    gps.lon = 121.51195163336611;
+    gps.alt = 50.0F;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::HOVER,
+        true, &gps, nullptr);
+
+    EXPECT_FLOAT_EQ(state.position_global[0], static_cast<float>(gps.lat));
+    EXPECT_FLOAT_EQ(state.position_global[1], static_cast<float>(gps.lon));
+    EXPECT_FLOAT_EQ(state.position_global[2], gps.alt);
+}
+
+TEST(StatePublisherTest, FillAgentState_GpsNullptr)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::HOVER,
+        true, nullptr, nullptr);
+
+    EXPECT_TRUE(std::isnan(state.position_global[0]));
+    EXPECT_TRUE(std::isnan(state.position_global[1]));
+    EXPECT_TRUE(std::isnan(state.position_global[2]));
+}
+
+// ==================== Battery 擴充測試 ====================
+
+TEST(StatePublisherTest, FillAgentState_BatteryFromBatteryStatus)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+
+    px4_msgs::msg::BatteryStatus battery;
+    battery.voltage_v = 11.6F;
+    battery.current_a = 5.2F;
+    battery.remaining = 0.85F;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::HOVER,
+        true, nullptr, &battery);
+
+    EXPECT_FLOAT_EQ(state.battery_voltage_v, 11.6F);
+    EXPECT_FLOAT_EQ(state.battery_current_a, 5.2F);
+    EXPECT_FLOAT_EQ(state.battery_remaining, 0.85F);
+}
+
+TEST(StatePublisherTest, FillAgentState_BatteryNullptr)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::HOVER,
+        true, nullptr, nullptr);
+
+    // Battery nullptr → remaining=1.0, voltage/current=NaN
+    EXPECT_FLOAT_EQ(state.battery_remaining, 1.0F);
+    EXPECT_TRUE(std::isnan(state.battery_voltage_v));
+    EXPECT_TRUE(std::isnan(state.battery_current_a));
+}
+
+// ==================== 完整整合測試 ====================
+
+TEST(StatePublisherTest, FillAgentState_AllPresent)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+    odom.position[0] = 10.0F;
+    odom.position[1] = -5.0F;
+    odom.position[2] = 3.0F;
+
+    px4_msgs::msg::VehicleGlobalPosition gps;
+    gps.lat = 25.04;
+    gps.lon = 121.51;
+    gps.alt = 123.4F;
+
+    px4_msgs::msg::BatteryStatus battery;
+    battery.voltage_v = 12.3F;
+    battery.current_a = 2.1F;
+    battery.remaining = 0.72F;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::HOVER,
+        true, &gps, &battery);
+
+    // NED 不受影響
+    EXPECT_FLOAT_EQ(state.position_ned[0], 10.0F);
+    EXPECT_FLOAT_EQ(state.position_ned[1], -5.0F);
+    EXPECT_FLOAT_EQ(state.position_ned[2], 3.0F);
+
+    // GPS
+    EXPECT_FLOAT_EQ(state.position_global[0], static_cast<float>(gps.lat));
+    EXPECT_FLOAT_EQ(state.position_global[1], static_cast<float>(gps.lon));
+    EXPECT_FLOAT_EQ(state.position_global[2], gps.alt);
+
+    // Battery
+    EXPECT_FLOAT_EQ(state.battery_voltage_v, 12.3F);
+    EXPECT_FLOAT_EQ(state.battery_current_a, 2.1F);
+    EXPECT_FLOAT_EQ(state.battery_remaining, 0.72F);
+
+    // Flight mode + online
+    EXPECT_EQ(state.flight_mode,
+              static_cast<uint8_t>(taiphoon::controllers::FlightState::HOVER));
+    EXPECT_TRUE(state.online);
+}
+
+TEST(StatePublisherTest, FillAgentState_BackwardCompat)
+{
+    // 使用舊簽名（4 args），新欄位應有預設值
+    px4_msgs::msg::VehicleOdometry odom;
+    odom.position[0] = 7.0F;
+    odom.position[1] = 8.0F;
+    odom.position[2] = 9.0F;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::MOVING, true);
+
+    EXPECT_FLOAT_EQ(state.position_ned[0], 7.0F);
+    EXPECT_FLOAT_EQ(state.position_ned[1], 8.0F);
+    EXPECT_FLOAT_EQ(state.position_ned[2], 9.0F);
+    EXPECT_EQ(state.flight_mode,
+              static_cast<uint8_t>(taiphoon::controllers::FlightState::MOVING));
+    EXPECT_TRUE(state.online);
+
+    // 新欄位預設值
+    EXPECT_TRUE(std::isnan(state.position_global[0]));
+    EXPECT_TRUE(std::isnan(state.position_global[1]));
+    EXPECT_TRUE(std::isnan(state.position_global[2]));
+    EXPECT_FLOAT_EQ(state.battery_remaining, 1.0F);
+    EXPECT_TRUE(std::isnan(state.battery_voltage_v));
+    EXPECT_TRUE(std::isnan(state.battery_current_a));
+}
+
+// ==================== fill_agent_attitude 既有測試 ====================
 
 TEST(StatePublisherTest, FillAgentAttitude_Quaternion)
 {
@@ -141,23 +288,20 @@ TEST(StatePublisherTest, FillAgentAttitude_Quaternion)
     taiphoon_agent::msg::AgentAttitude att;
     StatePublisher::fill_agent_attitude(att, odom);
 
-    EXPECT_FLOAT_EQ(att.q[0], 0.707F); // w
-    EXPECT_FLOAT_EQ(att.q[1], 0.0F);   // x
-    EXPECT_FLOAT_EQ(att.q[2], 0.707F); // y
-    EXPECT_FLOAT_EQ(att.q[3], 0.0F);   // z
+    EXPECT_FLOAT_EQ(att.q[0], 0.707F);
+    EXPECT_FLOAT_EQ(att.q[1], 0.0F);
+    EXPECT_FLOAT_EQ(att.q[2], 0.707F);
+    EXPECT_FLOAT_EQ(att.q[3], 0.0F);
 }
 
 TEST(StatePublisherTest, FillAgentAttitude_StampIsSet)
 {
-    // 模擬 PX4 時間戳 (微秒): 2,500,000,500 us = 2500 秒 + 500000 奈秒
     px4_msgs::msg::VehicleOdometry odom;
     odom.timestamp = 2500000500ULL;
 
     taiphoon_agent::msg::AgentAttitude att;
     StatePublisher::fill_agent_attitude(att, odom);
 
-    // stamp.sec = 2500000500 / 1000000 = 2500
-    // stamp.nanosec = (2500000500 % 1000000) * 1000 = 500 * 1000 = 500000
     EXPECT_EQ(att.stamp.sec, 2500);
     EXPECT_EQ(att.stamp.nanosec, 500000U);
 }

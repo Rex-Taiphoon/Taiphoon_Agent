@@ -16,6 +16,8 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
+#include "px4_msgs/msg/vehicle_global_position.hpp"
+#include "px4_msgs/msg/battery_status.hpp"
 
 #include "controllers/BasicController.hpp"
 #include "controllers/AgentCommandHandler.hpp"
@@ -40,7 +42,7 @@ constexpr double DEFAULT_POSITION_DEVIATION_THRESHOLD_M = 2.0;
  * @brief BasicController ROS2 節點類別
  *
  * 負責：
- * 1. 訂閱 PX4 里程計主題以獲取位置資訊
+ * 1. 訂閱 PX4 里程計、GPS 與電池主題以獲取完整狀態資訊
  * 2. 以固定頻率驅動 BasicController 發布控制命令
  * 3. 發布 Agent 對外狀態（AgentState、AgentAttitude）
  * 4. 位置安全監控：偏差超標時自動觸發 hover
@@ -59,6 +61,20 @@ private:
      * @param msg 里程計訊息
      */
     void odometry_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
+
+    /**
+     * @brief PX4 全域 GPS 位置回呼
+     *
+     * @param msg GPS 位置訊息
+     */
+    void gps_cb(const px4_msgs::msg::VehicleGlobalPosition::SharedPtr msg);
+
+    /**
+     * @brief PX4 電池狀態回呼
+     *
+     * @param msg 電池狀態訊息
+     */
+    void battery_cb(const px4_msgs::msg::BatteryStatus::SharedPtr msg);
 
     /**
      * @brief NED 目標位置回呼
@@ -108,6 +124,20 @@ private:
     bool initialize_odometry_subscriber();
 
     /**
+     * @brief 初始化 GPS 訂閱者
+     *
+     * @return true 初始化成功
+     */
+    bool initialize_gps_subscriber();
+
+    /**
+     * @brief 初始化電池狀態訂閱者
+     *
+     * @return true 初始化成功
+     */
+    bool initialize_battery_subscriber();
+
+    /**
      * @brief 初始化 NED 目標訂閱者
      *
      * @return true 初始化成功
@@ -139,6 +169,14 @@ private:
 
     rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr
         odometry_sub_;
+
+    /// PX4 全域 GPS 位置訂閱者
+    rclcpp::Subscription<px4_msgs::msg::VehicleGlobalPosition>::SharedPtr
+        gps_sub_;
+
+    /// PX4 電池狀態訂閱者
+    rclcpp::Subscription<px4_msgs::msg::BatteryStatus>::SharedPtr
+        battery_sub_;
 
     /// NED 目標位置訂閱者 (來自 formation_node)
     rclcpp::Subscription<taiphoon_agent::msg::NedTarget>::SharedPtr
@@ -172,13 +210,25 @@ private:
     rclcpp::TimerBase::SharedPtr control_loop_timer_;
     rclcpp::TimerBase::SharedPtr state_publish_timer_;
 
-    // ==================== 里程計快取 ====================
+    // ==================== PX4 資料快取 ====================
 
-    /// 最新里程計訊息快取（用於狀態發布）
+    /// 最新里程計訊息快取
     px4_msgs::msg::VehicleOdometry latest_odometry_;
+
+    /// 最新 GPS 位置訊息快取
+    px4_msgs::msg::VehicleGlobalPosition latest_gps_;
+
+    /// 最新電池狀態訊息快取
+    px4_msgs::msg::BatteryStatus latest_battery_;
 
     /// 是否已收到第一筆里程計資料
     bool has_odometry_data_{false};
+
+    /// 是否已收到第一筆 GPS 資料
+    bool has_gps_data_{false};
+
+    /// 是否已收到第一筆電池資料
+    bool has_battery_data_{false};
 
     // ==================== 狀態旗標 ====================
 
