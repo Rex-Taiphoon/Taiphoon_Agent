@@ -270,8 +270,8 @@ void MissionPlanner::all_agent_command_cb(
             break;
 
         default:
-            RCLCPP_WARN(this->get_logger(),
-                        "Unknown formation command: %s", msg->data.c_str());
+            // 非編隊命令（如 MODE_OFFBOARD、ARM、TAKEOFF）由
+            // AgentCommandHandler 處理，此處靜默忽略
             break;
     }
 }
