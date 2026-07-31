@@ -18,6 +18,7 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 - 一個 Taiphoon_Agent 只直接控制一台 PX4 或 ArduPilot；多機協作應透過 Agent 對 Agent 指令，不應跨越此邊界直接控多台飛控。
 - 外部可見 topic 應盡量精簡，優先降低網路與頻寬負擔。
 - 若飛控命名空間為 `/fmu1`，則對外 Agent topic 使用 `/fmu1_agent/...`；所有 Agent 共用控制命令使用 `/fmu_all_agent`。
+- Taiphoon_Agent產生的Node與Topic需要記錄在`docs/gcs-interface-spec.md`，並且保持最新狀態
 
 ## Engineering defaults
 
