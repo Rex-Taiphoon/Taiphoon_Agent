@@ -456,7 +456,7 @@ src/
   ├── utils/          - 共用工具（CommandTypes, math_utils）
   ├── main.cpp        - BasicController 進入點
   └── main_formation.cpp - FormationNode 進入點
-msg/              - 自訂 ROS2 訊息定義（NedTarget.msg）
+msg/              - 自訂 ROS2 訊息定義（AgentState.msg, NedTarget.msg）
 config/           - YAML 設定檔（basic_controller.yaml）
 launch/           - ROS2 Launch 檔案
 AutoTest/         - 自動測試腳本與紀錄
@@ -473,20 +473,6 @@ IDLE -> OFFBOARD_INIT -> OFFBOARD_ACTIVE -> ARMED -> TAKEOFF -> HOVER
                                                          \-> LAND
 ```
 
-## 自訂 ROS2 訊息
-
-```msg
-# NedTarget.msg
-float32 x     # NED X（前向為正，公尺）
-float32 y     # NED Y（右向為正，公尺）
-float32 z     # NED Z（向下為正，高度取負值，公尺）
-float32 yaw   # 目標航向角（度，NaN = 不控制偏航）
-```
-
-FormationNode 以 5Hz 發布此訊息至 `/fmu{N}_agent/ned_target`，
-BasicController 訂閱後據此執行位置控制。
-
----
 
 ## 建置與開發
 
@@ -548,6 +534,9 @@ ros2 topic list
 
 # 檢視特定 namespace 的里程計
 ros2 topic echo /fmu1/fmu/out/vehicle_odometry
+
+# 檢視 Agent 狀態（GPS / 電池 / 飛行模式）
+ros2 topic echo /fmu1_agent/state
 
 # 檢視 NED 目標（formation_node 輸出）
 ros2 topic echo /fmu1_agent/ned_target
