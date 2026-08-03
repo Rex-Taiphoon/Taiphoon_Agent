@@ -121,52 +121,40 @@ if(BUILD_TESTING)
   target_link_libraries(test_state_publisher ${cpp_typesupport_target})
 
   # PositionSafetyMonitor 測試 (純邏輯，獨立編譯)
-  add_executable(test_position_safety_monitor
-    src/safety/position_safety_monitor_test.cpp
+  ament_add_gtest(test_position_safety_monitor
+    test/position_safety_monitor_test.cpp
   )
 
   target_include_directories(test_position_safety_monitor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  add_test(NAME test_position_safety_monitor
-    COMMAND test_position_safety_monitor)
-
   # FormationCalculator 測試 (純邏輯，獨立編譯)
-  add_executable(test_formation_calculator
-    src/formation/formation_calculator_test.cpp
+  ament_add_gtest(test_formation_calculator
+    test/formation_calculator_test.cpp
   )
 
   target_include_directories(test_formation_calculator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  add_test(NAME test_formation_calculator
-    COMMAND test_formation_calculator)
-
   # PeerMatcher 測試 (純邏輯，獨立編譯)
-  add_executable(test_peer_matcher
-    src/formation/peer_matcher_test.cpp
+  ament_add_gtest(test_peer_matcher
+    test/peer_matcher_test.cpp
   )
 
   target_include_directories(test_peer_matcher PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  add_test(NAME test_peer_matcher
-    COMMAND test_peer_matcher)
-
   # TrajectoryPlanner 測試 (純邏輯，獨立編譯)
-  add_executable(test_trajectory_planner
-    src/trajectory/trajectory_planner_test.cpp
+  ament_add_gtest(test_trajectory_planner
+    test/trajectory_planner_test.cpp
   )
 
   target_include_directories(test_trajectory_planner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-
-  add_test(NAME test_trajectory_planner
-    COMMAND test_trajectory_planner)
 endif()
 
 ament_package()
