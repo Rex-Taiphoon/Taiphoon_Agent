@@ -309,7 +309,9 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 | **水平直列** | 沿 Y 軸（右向）等間距排列 | ✅ 自動收縮間距 |
 | **垂直直列** | 沿 Z 軸（向下）等間距排列 | ✅ 自動收縮間距 |
 
-> 編隊運算使用 **質心（centroid）** 作為基準點。當某台無人機離線（超過 2 秒未回傳里程計），
+> 編隊運算使用 **質心（centroid）** 作為基準點；質心以 GPS 將所有機體位置換算到
+> 共同參考系後計算，避免各機 HOME 位置不同造成圓心偏移。
+> 當某台無人機離線（`/fmu<N>_agent` 節點消失，或超過 2 秒未收到其 `/fmu<N>_agent/state`），
 > 所有線上機體會自動重新計算編隊位置，無需手動干預。
 
 ---
@@ -401,6 +403,7 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `agent_namespace` | string | fmu1_agent | 自身命令命名空間（用於推算索引） |
 | `formation_update_rate_hz` | double | 5.0 | 編隊控制迴圈更新頻率（Hz） |
 | `peer_scan_interval_s` | double | 3.0 | 同儕無人機狀態掃描間隔（秒） |
+| `peer_timeout_s` | double | 2.0 | 同儕 state 逾時判定離線的秒數 |
 
 範例：停用自動 Offboard 並設定起飛高度 5m：
 

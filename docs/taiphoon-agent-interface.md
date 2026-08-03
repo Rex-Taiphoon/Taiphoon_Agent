@@ -249,8 +249,14 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 | `mission_planner` | `/{peer_namespace}/state` | 取得同儕位置以計算編隊目標 |
 | `trajectory_controller` | `/{peer_namespace}/state` | 取得同儕位置以檢查路徑碰撞 |
 
-> **同儕發現機制**：透過 ROS2 node 名稱掃描 (`ros2 node list`) 自動發現線上 Agent，
-> 避免依賴 topic 殘留判斷線上狀態。掃描週期為 3 秒（`peer_scan_interval_s`）。
+> **同儕發現與離線判定機制**：透過 ROS2 node 名稱掃描自動發現線上 Agent，
+> 只辨識 `/fmu<N>_agent/...` 節點（相容模式另含 `/fmu<N>/basic_controller_node`）。
+> 離線判定以 `/fmu<N>_agent` 節點存在性為主軸，並以「超過
+> `peer_timeout_s`（預設 2 秒）未收到該 Agent 的 `/fmu<N>_agent/state`」作為
+> 加速器（避免等待 DDS 節點清除延遲）。掃描週期為 3 秒（`peer_scan_interval_s`）。
+>
+> 機群之間一律只訂閱 `/fmu<N>_agent/state` 等 Agent 對外 topic，
+> 不直接訂閱其他無人機的 PX4 原生 topic（`/fmu<N>/fmu/out/*`）。
 
 ---
 

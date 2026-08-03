@@ -2,13 +2,16 @@
 
 ## Project Overview
 
-Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中樞，負責：
-- 與 PX4 或 ArduPilot 飛控橋接通訊。
-- 執行自主飛行任務，例如避障、追蹤、編隊與定位。
-- 整合視覺與其他感測器的邊緣運算。
-- 處理即時影像串流與對地面站的資料轉發。
+Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測器中樞。一個 Agent 容器對應一台飛控（PX4 或 ArduPilot），多機協作透過 Agent 對 Agent 指令進行，Agent 之間不直接控制彼此的飛控。
 
-這個專案的核心不是單一演算法，而是「飛控通訊 + 任務控制 + 感測融合 + 影像資料流」的整合執行平台。
+主要職責：
+- 飛控橋接：與飛控通訊並執行飛行指令。
+- 任務控制：執行避障、追蹤、編隊、定位等自主飛行任務。
+- 軌跡規劃與安全監控：規劃飛行軌跡，監控飛行狀態並在異常時介入。
+- 感測整合：整合機載感測器資料，對外發布一致的 Agent 狀態。
+- 影像串流：處理即時影像並轉發給地面站。
+
+這個專案的核心是「飛控通訊 + 任務控制 + 感測融合 + 影像資料流」的整合執行平台，所有資料鏈皆基於 ROS2。
 
 ## Repository structure
 
@@ -22,8 +25,6 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 │ └── entrypoint.sh # 容器啟動進入點
 │
 ├── docs/ # 開發文件
-│ ├── adr/ # Architecture Decision Records
-│ ├── spec/ # 模組介面與訊息規格
 │ └── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
 │
 ├── build/ # 建置中間檔案
@@ -40,32 +41,40 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 └── README.md # 快速上手說明
 ```
 
+## Topic & interface conventions
 
-## Non-obvious constraints
+- 外部可見的 ROS2 topic 應盡量精簡，優先降低網路與頻寬負擔；非必要資訊請留在內部命名空間。
+- 若飛控命名空間為 `/fmu1`：
+  - 對外 Agent topic 一律使用 `/fmu1_agent/...`。
+  - 所有 Agent 共用控制命令使用 `/fmu_all_agent/...`。
+- Taiphoon_Agent 產生的 Node 與 Topic 必須同步記錄在 `docs/taiphoon-agent-interface.md`，
+  並保持最新狀態（新增／刪除任何 Node/Topic 時都要更新）。
 
-- 預設控制目標為四旋翼機。
-- 所有服務必須可部署於 Docker，避免實作直接綁定單一宿主環境。
-- 與無人機、地面站及其他 Agent 的資料鏈必須基於 ROS2。
-- 一個 Taiphoon_Agent 只直接控制一台 PX4 或 ArduPilot；多機協作應透過 Agent 對 Agent 指令，不應跨越此邊界直接控多台飛控。
-- 外部可見 topic 應盡量精簡，優先降低網路與頻寬負擔。
-- 若飛控命名空間為 `/fmu1`，則對外 Agent topic 使用 `/fmu1_agent/...`；所有 Agent 共用控制命令使用 `/fmu_all_agent`。
-- Taiphoon_Agent產生的Node與Topic需要記錄在`docs/taiphoon-agent-interface.md`，並且保持最新狀態
-
-## Engineering defaults
-
-- 主要實作語言為 C++。
-- 只有在 C++ 不適合，或需要大量依賴外部生態時，才引入 Python、C。
-- 所有中文註解、文件與回覆都使用繁體中文。
-- 功能開發先規劃再動手；先定義介面、資料流、失效情境與驗證方式，再修改程式。
-- 模組之間應維持低耦合，避免把飛控橋接、任務邏輯、感測融合、串流流程寫成互相纏繞的單體。
-- 命名、排版與其他程式風格規範請遵循 `CODE_CONSTRAINT.md`，不要在此檔重複描述。
-
-## Boundaries(邊界條件、禁止事項)
-
+## Boundaries(邊界條件)
+**Always:**
 - 所有變更僅限於 Taiphoon_Agent 專案本身，除非任務明確要求，不要修改外部依賴或替換既有基礎架構。
-- Git commit message 使用 `模組: 更改項目` 格式，內容簡短明確，不得超過 100 字。
-- 若是大型或高風險單一功能修改，優先使用獨立分支；分支命名格式為 `xxx-dev`，且名稱長度不超過 20 字元。
-- 禁止自行建構Docker，如果必須構建，必須停止任務並且提供指令讓使用者自行構建。
+- 主要實作語言以C++為主、必要時才引入 Python/C
+- 所有中文註解、文件與回覆都使用繁體中文。
+- 命名、排版與其他程式風格規範請遵循 `CODE_CONSTRAINT.md`，不要在此檔重複描述。
+- 與無人機、地面站及其他 Agent 的資料鏈一律基於 ROS2（Humble），不繞過 DDS 通訊層。
+- 多機協作一律透過 Agent ↔ Agent 指令，不讓單一 Agent 直接控多台飛控。
+- 功能開發先規劃再動手：在修改程式之前，先寫下介面、資料流、失效情境與驗證方式。
+- 維持模組低耦合：避免把飛控橋接、任務邏輯、感測融合、影像串流寫成互相纏繞的單體模組。
+- 開發過程中任何單元測試應該在`test/`中實作
+- `README.md`應該保持最新狀態
+
+**Ask first:**
+- 使用Git commit與push時，應確認提交的內容，使用 `模組: 更改項目` 格式，內容簡短明確。
+- 修改一個功能時，如果會影響到其他功能的運行邏輯，請告知風險並由開發者決定是否繼續。
+- 修改現有模組邊界時
+- 當有出現檔案或資料夾刪除行為時
+
+**Never:**
+- 自行建構Docker，例如`docker build`或`docker compose build`，如果必須構建，必須停止任務並且提供指令讓使用者自行構建。
+- 自行提交Git
+- 在任何指令中使用 `--force`等強制命令
+- 嘗試繞過平台的安全機制或人工審核流程；遇到需要確認的操作時，一律交給人類開發者決定。
+- 單元測試禁止出現在`src/`原始碼中
 
 ## Build & Verification(測試與驗證)
 
@@ -101,9 +110,3 @@ docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && col
 docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
 docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --all"
 ```
-
-## Working style for agents
-
-- 優先先理解目前任務影響哪一層：飛控橋接、任務控制、感測融合、影像串流、或多機協作。
-- 避免一次同時改動多個子系統，除非任務本身就是跨模組重構。
-- 完成修改後，先說明變更內容、影響模組、驗證方式與未處理風險，再進入下一步。

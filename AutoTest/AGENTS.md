@@ -42,8 +42,6 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 2. `ARM` → 解鎖
 3. `TAKEOFF 8.0` → 起飛至 8 公尺
 
-每步之間已有 `sleep`。需要其他命令（如 `LAND`、`MOVE_LEFT 5.0`）時，以 `docker exec fmu1_agent bash -c "ros2 topic pub --wait-matching-subscriptions 3 --once /fmu_all_agent/command std_msgs/msg/String 'data: <CMD>'"` 發布，命令格式請查閱 `docs/taiphoon-agent-interface.md`。
-
 ### launch_all.sh
 
 管理 N 台 PX4 SITL 容器（`drone1` ~ `droneN`），不啟動也不停止 Agent 容器。
