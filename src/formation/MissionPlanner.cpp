@@ -32,20 +32,25 @@ MissionPlanner::MissionPlanner()
                                     DEFAULT_FORMATION_RATE_HZ);
     this->declare_parameter<double>("peer_scan_interval_s",
                                     DEFAULT_PEER_SCAN_INTERVAL_S);
+    this->declare_parameter<double>("peer_timeout_s",
+                                    DEFAULT_PEER_TIMEOUT_S);
 
     agent_namespace_ = this->get_parameter("agent_namespace").as_string();
     formation_update_rate_hz_ =
         this->get_parameter("formation_update_rate_hz").as_double();
     peer_scan_interval_s_ =
         this->get_parameter("peer_scan_interval_s").as_double();
+    peer_timeout_s_ =
+        this->get_parameter("peer_timeout_s").as_double();
 
     self_index_ = compute_self_index();
 
     RCLCPP_INFO(this->get_logger(),
                 "MissionPlanner: agent_namespace=%s, self_index=%d, "
-                "formation_rate=%.1f Hz, peer_scan=%.1f s",
+                "formation_rate=%.1f Hz, peer_scan=%.1f s, peer_timeout=%.1f s",
                 agent_namespace_.c_str(), self_index_,
-                formation_update_rate_hz_, peer_scan_interval_s_);
+                formation_update_rate_hz_, peer_scan_interval_s_,
+                peer_timeout_s_);
 
     // --- 初始化各組件 ---
     if (!initialize_command_subscriber())
@@ -157,8 +162,8 @@ void MissionPlanner::initial_peer_discovery()
 
 void MissionPlanner::scan_peers_cb()
 {
-    // 使用 node 名稱取代 topic 名稱進行同儕發現
-    // node 在程序崩潰時立即從 ROS2 graph 消失，不像 topic 有 discovery 快取殘留
+    // 使用 node 名稱進行同儕發現：agent 節點（/fmu<N>_agent/... 主模式、
+    // /fmu<N>/basic_controller_node 相容模式）存在性即為離線判定依據
     auto node_names = this->get_node_names();
 
     // 過濾出 agent 節點索引 (不含自身)
@@ -171,6 +176,8 @@ void MissionPlanner::scan_peers_cb()
     required_indices.insert(self_idx);
 
     // 處理新發現的同儕 (訂閱其 AgentState)
+    // 訂閱建立後不因 node 暫時消失而刪除，避免 DDS graph 滯留造成
+    // 線上旗標反覆震盪；離線僅以 online 旗標反映
     for (int idx : required_indices)
     {
         // 如果已經訂閱過，跳過
@@ -194,27 +201,30 @@ void MissionPlanner::scan_peers_cb()
         {
             peer_subs_[idx] = sub;
             peers_[idx] = formation::PeerPosition();  // 初始化位置
+            peer_liveness_[idx] = PeerLiveness();
             RCLCPP_INFO(this->get_logger(),
                         "Discovered agent %d on %s", idx, topic.c_str());
         }
     }
 
-    // 檢查離線同儕：已訂閱但 node 已不存在
-    std::vector<int> stale_indices;
-    for (const auto& entry : peer_subs_)
-    {
-        if (required_indices.find(entry.first) == required_indices.end())
-        {
-            stale_indices.push_back(entry.first);
-        }
-    }
+    // 更新各同儕的節點存在性（不刪除 peers_ / 訂閱）
+    update_peer_liveness(required_indices);
+}
 
-    for (int idx : stale_indices)
+void MissionPlanner::update_peer_liveness(
+    const std::set<int>& required_indices)
+{
+    for (auto& entry : peer_liveness_)
     {
-        RCLCPP_INFO(this->get_logger(),
-                    "Agent %d went offline, removing subscription", idx);
-        peer_subs_.erase(idx);
-        peers_.erase(idx);
+        bool present =
+            required_indices.find(entry.first) != required_indices.end();
+        if (!present && entry.second.node_present)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "Agent %d went offline (fmu%d_agent node not found)",
+                        entry.first, entry.first);
+        }
+        entry.second.node_present = present;
     }
 }
 
@@ -288,13 +298,59 @@ void MissionPlanner::peer_state_cb(
     {
         // 尚未註冊（應不會發生，因為訂閱是在發現時建立的）
         peers_[agent_index] = formation::PeerPosition();
+        peer_liveness_[agent_index] = PeerLiveness();
         it = peers_.find(agent_index);
     }
 
     it->second.position_ned[0] = msg->position_ned[0];
     it->second.position_ned[1] = msg->position_ned[1];
     it->second.position_ned[2] = msg->position_ned[2];
-    it->second.online = msg->online;
+    it->second.position_global[0] = msg->position_global[0];
+    it->second.position_global[1] = msg->position_global[1];
+    it->second.position_global[2] = msg->position_global[2];
+
+    // online 旗標由 sweep_peer_online_status() 統一計算，
+    // 這裡只記錄原始資訊（到達時間與發送端 online 旗標）
+    peer_liveness_[agent_index].last_state_arrival =
+        std::chrono::steady_clock::now();
+    peer_liveness_[agent_index].last_msg_online = msg->online;
+}
+
+void MissionPlanner::sweep_peer_online_status()
+{
+    auto now = std::chrono::steady_clock::now();
+
+    for (auto& entry : peers_)
+    {
+        bool node_present = false;
+        bool last_msg_online = false;
+        std::chrono::steady_clock::time_point last_arrival{};
+
+        auto liveness_it = peer_liveness_.find(entry.first);
+        if (liveness_it != peer_liveness_.end())
+        {
+            node_present = liveness_it->second.node_present;
+            last_msg_online = liveness_it->second.last_msg_online;
+            last_arrival = liveness_it->second.last_state_arrival;
+        }
+
+        bool was_online = entry.second.online;
+        bool is_fresh = !formation::FormationCalculator::is_peer_stale(
+            last_arrival, now, peer_timeout_s_);
+        entry.second.online = node_present && last_msg_online && is_fresh;
+
+        if (was_online && !entry.second.online)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "Agent %d marked offline (state timeout or node lost)",
+                        entry.first);
+        }
+        else if (!was_online && entry.second.online)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "Agent %d back online", entry.first);
+        }
+    }
 }
 
 // =============================================================================
@@ -317,6 +373,20 @@ void MissionPlanner::formation_loop_cb()
     // 沒有啟用編隊則不發布
     if (formation_type_ == formation::FormationType::NONE) return;
 
+    // 先更新各同儕的線上狀態（節點存在 + state 時效）
+    sweep_peer_online_status();
+
+    // 自身 state 逾時或離線時暫停發布（安全護欄：不對失聯飛控下指令）
+    int self_key = compute_self_index() + 1;  // 1-based，對應 peers_ key
+    auto self_it = peers_.find(self_key);
+    if (self_it == peers_.end() || !self_it->second.online)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                             "Self state stale or offline, skip formation "
+                             "target publish");
+        return;
+    }
+
     // 取得排序後的同儕位置
     auto sorted_peers = build_sorted_peers();
 
@@ -329,8 +399,47 @@ void MissionPlanner::formation_loop_cb()
         return;
     }
 
-    // 計算質心
-    auto centroid = formation::FormationCalculator::compute_centroid(sorted_peers);
+    // 計算質心（GPS 共同參考系：所有線上位置換算到自身 local frame，
+    // 避免各機 HOME 不同造成全球座標下圓心偏移）
+    // 任一同儕 GPS 無效時退回原算法（直接混算 local 位置）
+    std::vector<formation::PeerPosition> ref_peers = sorted_peers;
+    bool is_gps_valid = true;
+    for (const auto& peer : sorted_peers)
+    {
+        if (!peer.online) continue;
+        if (std::isnan(peer.position_global[0]) ||
+            std::isnan(peer.position_global[1]))
+        {
+            is_gps_valid = false;
+            break;
+        }
+    }
+
+    if (is_gps_valid)
+    {
+        const auto& own_ned = self_it->second.position_ned;
+        const auto& own_global = self_it->second.position_global;
+        for (size_t i = 0; i < ref_peers.size(); ++i)
+        {
+            if (!ref_peers[i].online) continue;
+            std::array<float, 3> common_position{};
+            if (formation::FormationCalculator::compute_common_frame_position(
+                    own_ned, own_global, ref_peers[i].position_global,
+                    common_position))
+            {
+                ref_peers[i].position_ned = common_position;
+            }
+        }
+    }
+    else
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Peer GPS invalid, fallback to raw local-frame centroid");
+    }
+
+    auto centroid =
+        formation::FormationCalculator::compute_centroid(ref_peers);
 
     // 組建編隊參數
     formation::FormationParams params;
@@ -339,7 +448,6 @@ void MissionPlanner::formation_loop_cb()
 
     // 動態計算 effective_self_index：自身在所有 online agent 中的排序位置
     // 避免因中間 agent 離線導致 self_index 不連續（如 0, 2）
-    int self_key = compute_self_index() + 1;  // 1-based，對應 peers_ key
     std::vector<int> alive_keys;
     for (const auto& entry : peers_)
     {

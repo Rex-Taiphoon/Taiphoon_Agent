@@ -9,7 +9,8 @@
  * 2. 訂閱同儕的 AgentState topic 取得位置
  * 3. 接收 /fmu_all_agent/command 編隊命令
  * 4. 計算自身目標 NED 位置並發布至 /{namespace}/ned_target
- * 5. 動態重算 effective_self_index，支援任意 agent 離線重編隊
+ * 5. 以 /fmu<N>_agent 節點存在性 + state 時效判定同儕離線，
+ *    動態重算 effective_self_index，支援任意 agent 離線重編隊
  */
 
 #pragma once
@@ -18,7 +19,9 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <set>
 #include <limits>
+#include <chrono>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -36,8 +39,17 @@ namespace nodes
 
 constexpr double DEFAULT_FORMATION_RATE_HZ = 5.0;
 constexpr double DEFAULT_PEER_SCAN_INTERVAL_S = 3.0;
+constexpr double DEFAULT_PEER_TIMEOUT_S = 2.0;
 constexpr float POSITION_CHANGE_THRESHOLD_M = 0.2F;
 constexpr float YAW_CHANGE_THRESHOLD_DEG = 1.0F;
+
+/// 同儕存活狀態（節點存在性 + state 時效），與幾何位置分離
+struct PeerLiveness
+{
+    std::chrono::steady_clock::time_point last_state_arrival{};
+    bool node_present{false};      ///< /fmu<N>_agent 節點存在（graph 掃描）
+    bool last_msg_online{false};   ///< 最近一筆 AgentState 的 online 旗標
+};
 
 /**
  * @brief 任務規劃層節點
@@ -78,6 +90,18 @@ private:
      */
     void scan_peers_cb();
 
+    /**
+     * @brief 依 graph 掃描結果更新各同儕的節點存在性（含離線日誌）
+     *
+     * @param required_indices 本次掃描發現的 agent 索引集合（含自身）
+     */
+    void update_peer_liveness(const std::set<int>& required_indices);
+
+    /**
+     * @brief 以「節點存在 && state 未逾時」更新 peers_ 的 online 旗標
+     */
+    void sweep_peer_online_status();
+
     // ==================== 初始化 ====================
 
     /**
@@ -112,6 +136,7 @@ private:
     std::string agent_namespace_{"fmu1_agent"};
     double formation_update_rate_hz_{DEFAULT_FORMATION_RATE_HZ};
     double peer_scan_interval_s_{DEFAULT_PEER_SCAN_INTERVAL_S};
+    double peer_timeout_s_{DEFAULT_PEER_TIMEOUT_S};
     int self_index_{0};
 
     // ==================== 編隊狀態 ====================
@@ -126,6 +151,9 @@ private:
     /// 同儕訂閱者: agent_index → Subscription
     std::map<int, rclcpp::Subscription<taiphoon_agent::msg::AgentState>::SharedPtr>
         peer_subs_;
+
+    /// 同儕存活狀態: agent_index → PeerLiveness
+    std::map<int, PeerLiveness> peer_liveness_;
 
     // ==================== 發布/訂閱 ====================
 

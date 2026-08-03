@@ -5,7 +5,8 @@
  * @date 2026-07-29
  *
  * 提供靜態方法：
- * 1. 判斷 node 名稱是否為 /fmu<N>/... 格式
+ * 1. 判斷 node 名稱是否為 agent 節點（/fmu<N>_agent/... 主模式，
+ *    /fmu<N>/basic_controller_node 相容模式）— agent 節點存在性即為離線判定依據
  * 2. 從 node/topic 名稱擷取 agent 索引數字
  * 3. 過濾 node 列表（含自身），供同儕發現使用
  * 4. 判斷 topic 名稱是否為 /fmu*_agent/state（向後相容）
@@ -45,36 +46,58 @@ public:
     /**
      * @brief 檢查 node 名稱是否為 agent 節點
      *
-     * 符合格式：/fmu<數字>/...
+     * 主模式：/fmu<數字>_agent/<節點名>（一機一 agent 架構，
+     *         如 "/fmu2_agent/mission_planner"、"trajectory_controller"）
+     * 相容模式：/fmu<數字>/basic_controller_node（單容器 launch 部署）
      *
-     * @param node_name 完整 node 名稱 (例如 "/fmu3/basic_controller_node")
-     * @return true 符合格式
+     * 機間離線判定以 agent 節點存在性為依據，因此只辨識 agent 命名空間
+     * 節點與 basic_controller_node，不將其他 /fmu<數字>/ 節點視為 agent。
+     *
+     * @param node_name 完整 node 名稱 (例如 "/fmu2_agent/mission_planner")
+     * @return true 符合 agent 節點格式
      */
     static bool is_agent_node(const std::string& node_name)
     {
-        // 格式：開頭為 "/fmu<數字>/"
-        if (node_name.size() < 6) return false;  // 最短 "/fmu1/"
+        // 最短 "/fmu1/" 為 7 字元
+        if (node_name.size() < 7) return false;
         if (node_name[0] != '/') return false;
         if (node_name.substr(1, 3) != "fmu") return false;
 
         // fmu 後必須是數字
         size_t digit_start = 4;
-        if (digit_start >= node_name.size()) return false;
         if (!std::isdigit(static_cast<unsigned char>(node_name[digit_start])))
             return false;
 
-        // 至少一個數字後必須是 "/"
-        size_t slash_pos = node_name.find('/', digit_start);
-        if (slash_pos == std::string::npos) return false;
-
-        // 確認 fmu 和 / 之間全是數字
-        for (size_t i = digit_start; i < slash_pos; ++i)
+        // 掃描連續數字
+        size_t pos = digit_start;
+        while (pos < node_name.size() &&
+               std::isdigit(static_cast<unsigned char>(node_name[pos])))
         {
-            if (!std::isdigit(static_cast<unsigned char>(node_name[i])))
+            ++pos;
+        }
+        if (pos == digit_start || pos >= node_name.size()) return false;
+
+        // 主模式：/fmu<數字>_agent/<節點名>
+        if (node_name[pos] == '_')
+        {
+            const std::string agent_suffix = "_agent/";
+            if (node_name.compare(pos, agent_suffix.size(), agent_suffix) != 0)
+            {
                 return false;
+            }
+            // "_agent/" 之後必須有節點名
+            return pos + agent_suffix.size() < node_name.size();
         }
 
-        return true;
+        // 相容模式：/fmu<數字>/basic_controller_node（完整節點名，無後綴）
+        if (node_name[pos] == '/')
+        {
+            const std::string legacy_node = "/basic_controller_node";
+            return node_name.compare(pos, legacy_node.size(), legacy_node) == 0 &&
+                   node_name.size() == pos + legacy_node.size();
+        }
+
+        return false;
     }
 
     /**

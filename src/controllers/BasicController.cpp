@@ -494,7 +494,7 @@ bool BasicController::rotate_yaw(float degrees)
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
-                degrees, target_yaw_rad_ * 180.0F / DEG_TO_RAD, target_system_);
+                degrees, target_yaw_rad_ / DEG_TO_RAD, target_system_);
     return true;
 }
 

@@ -13,6 +13,7 @@
 #include <vector>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <limits>
 #include <cstdint>
 
@@ -35,6 +36,12 @@ struct PeerPosition
 {
     std::array<float, 3> position_ned{0.0F, 0.0F, 0.0F};
     bool online{false};
+    /// 全域 GPS 座標 [lat(deg), lon(deg), alt(m AMSL)]，無效時為 NaN。
+    /// 置於 online 之後以維持既有聚合初始化（{position_ned, online}）相容。
+    std::array<float, 3> position_global{
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::quiet_NaN()};
 };
 
 /// 編隊參數
@@ -45,6 +52,8 @@ struct FormationParams
 };
 
 constexpr float PI = 3.14159265358979323846F;
+/// 等距圓柱投影：緯度每 1 度對應的北向距離（公尺）
+constexpr float METERS_PER_DEG_LAT = 111320.0F;
 
 /**
  * @brief 編隊計算器
@@ -103,6 +112,99 @@ public:
         }
 
         return centroid;
+    }
+
+    /**
+     * @brief 計算自身全域座標到同儕全域座標的 NED 偏移（公尺）
+     *
+     * 使用等距圓柱投影（equirectangular approximation），適用於
+     * 機群間距僅數公尺的編隊場景。Z 軸換算：NED 向下為正，
+     * 同儕高度高於自身時偏移為負。
+     *
+     * @param own_global  自身全域座標 [lat, lon, alt]
+     * @param peer_global 同儕全域座標 [lat, lon, alt]
+     * @return std::array<float, 3> NED 偏移 (x=北, y=東, z=下)
+     */
+    static std::array<float, 3> gps_offset_meters(
+        const std::array<float, 3>& own_global,
+        const std::array<float, 3>& peer_global)
+    {
+        std::array<float, 3> offset{0.0F, 0.0F, 0.0F};
+
+        // 緯度/經度任一無效則僅回傳零偏移（由呼叫端決定是否退回原算法）
+        if (!std::isnan(own_global[0]) && !std::isnan(own_global[1]) &&
+            !std::isnan(peer_global[0]) && !std::isnan(peer_global[1]))
+        {
+            float cos_lat = std::cos(own_global[0] * PI / 180.0F);
+            offset[0] = (peer_global[0] - own_global[0]) * METERS_PER_DEG_LAT;
+            offset[1] = (peer_global[1] - own_global[1]) *
+                        METERS_PER_DEG_LAT * cos_lat;
+        }
+
+        // 高度有效時才換算 Z（AMSL 差為負的 NED Z 偏移）
+        if (!std::isnan(own_global[2]) && !std::isnan(peer_global[2]))
+        {
+            offset[2] = own_global[2] - peer_global[2];
+        }
+
+        return offset;
+    }
+
+    /**
+     * @brief 將同儕位置換算到自身 local frame（共同參考系）
+     *
+     * 各機 position_ned 以自身 HOME 為原點，直接混算質心會造成
+     * 編隊圓心在全球座標下偏移；以 GPS 差補正後，所有位置都在
+     * 自身 local frame 中可比：common_j = own_ned + gps_offset。
+     *
+     * @param own_position_ned 自身目前 NED 位置（公尺）
+     * @param own_global       自身全域座標 [lat, lon, alt]
+     * @param peer_global      同儕全域座標 [lat, lon, alt]
+     * @param[out] out_common  換算後的同儕位置（自身 local frame）
+     * @return true 換算成功（緯度/經度皆有效）；false 時 out_common 未定義
+     */
+    static bool compute_common_frame_position(
+        const std::array<float, 3>& own_position_ned,
+        const std::array<float, 3>& own_global,
+        const std::array<float, 3>& peer_global,
+        std::array<float, 3>& out_common)
+    {
+        if (std::isnan(own_global[0]) || std::isnan(own_global[1]) ||
+            std::isnan(peer_global[0]) || std::isnan(peer_global[1]))
+        {
+            return false;
+        }
+
+        auto offset = gps_offset_meters(own_global, peer_global);
+        out_common[0] = own_position_ned[0] + offset[0];
+        out_common[1] = own_position_ned[1] + offset[1];
+        out_common[2] = own_position_ned[2] + offset[2];
+        return true;
+    }
+
+    /**
+     * @brief 判斷同儕 state 是否已逾時（離線加速器）
+     *
+     * 超過 timeout_s 未收到 AgentState 即視為逾時。從未收到過
+     * （time_point 預設值）亦視為逾時。
+     *
+     * @param last_arrival 最後一次收到 state 的時間（steady_clock）
+     * @param now          目前時間（steady_clock）
+     * @param timeout_s    逾時秒數
+     * @return true 表示已逾時（離線）
+     */
+    static bool is_peer_stale(
+        std::chrono::steady_clock::time_point last_arrival,
+        std::chrono::steady_clock::time_point now,
+        double timeout_s)
+    {
+        if (last_arrival == std::chrono::steady_clock::time_point{})
+        {
+            return true;
+        }
+        double elapsed_s =
+            std::chrono::duration<double>(now - last_arrival).count();
+        return elapsed_s > timeout_s;
     }
 
     /**
