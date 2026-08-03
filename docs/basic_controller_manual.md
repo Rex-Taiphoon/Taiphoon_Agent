@@ -175,7 +175,7 @@ ros2 run taiphoon_agent formation_node --ros-args \
 
 ```bash
 # 終端 1：啟動 4 台模擬器
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 4 --net Taiphoon_Net
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_Net
 
 # 終端 2：啟動 Taiphoon_Agent
 docker compose exec taiphoon-agt bash

@@ -1,6 +1,0 @@
-/fmu1/basic_controller_node
-/fmu1/formation_node
-/fmu2/basic_controller_node
-/fmu2/formation_node
-/fmu3/basic_controller_node
-/fmu3/formation_node

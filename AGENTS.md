@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## Project identity
+## Project Overview
 
 Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中樞，負責：
 - 與 PX4 或 ArduPilot 飛控橋接通訊。
@@ -18,7 +18,7 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 - 一個 Taiphoon_Agent 只直接控制一台 PX4 或 ArduPilot；多機協作應透過 Agent 對 Agent 指令，不應跨越此邊界直接控多台飛控。
 - 外部可見 topic 應盡量精簡，優先降低網路與頻寬負擔。
 - 若飛控命名空間為 `/fmu1`，則對外 Agent topic 使用 `/fmu1_agent/...`；所有 Agent 共用控制命令使用 `/fmu_all_agent`。
-- Taiphoon_Agent產生的Node與Topic需要記錄在`docs/gcs-interface-spec.md`，並且保持最新狀態
+- Taiphoon_Agent產生的Node與Topic需要記錄在`docs/taiphoon-agent-interface.md`，並且保持最新狀態
 
 ## Engineering defaults
 
@@ -44,11 +44,10 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 - 驗證必須對照驗收標準；若未達標，需留下失敗條件、重現方式與下一輪修正重點。
 - 預設多機模擬初始隊形為一字型排列。
 - 模擬起始 GPS 位置為 `(25.03996592258936, 121.51195163336611)`。
-- 多機測試需啟動 3 台 PX4 模擬器進行驗證。
+- 多機測試需啟動 4 台 PX4 模擬器進行驗證。
 
 ## Working style for agents
 
 - 優先先理解目前任務影響哪一層：飛控橋接、任務控制、感測融合、影像串流、或多機協作。
 - 避免一次同時改動多個子系統，除非任務本身就是跨模組重構。
 - 完成修改後，先說明變更內容、影響模組、驗證方式與未處理風險，再進入下一步。
-- 若需要更細的開發流程、審查流程、測試劇本或文件更新規範，請查閱 `docs/development-workflow.md`，不要把完整流程塞回主 AGENTS.md。

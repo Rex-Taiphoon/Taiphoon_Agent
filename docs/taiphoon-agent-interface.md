@@ -211,13 +211,14 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 | `/{agent_namespace}/state` | Agent 狀態（位置、飛行模式、電量） | `taiphoon_agent/AgentState` | 10 Hz (預設) | reliable (10) |
 | `/{agent_namespace}/attitude` | Agent 姿態（四元數） | `taiphoon_agent/AgentAttitude` | 10 Hz (預設) | reliable (10) |
 
-**實際範例**（3 機部署）：
+**實際範例**（4 機部署）：
 
 | 無人機 | state Topic | attitude Topic |
 |--------|------------|----------------|
 | fmu1 | `/fmu1_agent/state` | `/fmu1_agent/attitude` |
 | fmu2 | `/fmu2_agent/state` | `/fmu2_agent/attitude` |
 | fmu3 | `/fmu3_agent/state` | `/fmu3_agent/attitude` |
+| fmu4 | `/fmu4_agent/state` | `/fmu4_agent/attitude` |
 
 #### 4.2.2 命令下達（GCS → Agent）
 
@@ -355,143 +356,6 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 | 命令 Topic (`/command`) | reliable | volatile | 10 |
 | 控制流 Topic (`/ned_target`, `/waypoints`) | reliable (pub) / best_effort (sub) | volatile | 10 |
 | 障礙物 Topic (`/obstacles`) | best_effort | volatile | 10 |
-
----
-
-## 8. 多機部署注意事項
-
-### 8.1 預設配置
-
-- 多機測試啟動 **3 台** PX4 模擬器。
-- 模擬起始 GPS 位置：`(25.03996592258936, 121.51195163336611)`。
-- 初始隊形：**一字型排列**。
-- `mission_planner` 僅在 `drone_count > 1` 時啟動。
-
-### 8.2 Topic 矩陣（3 機範例）
-
-| 無人機 | state | attitude | command | ned_target | waypoints |
-|--------|-------|----------|---------|------------|-----------|
-| fmu1 | `/fmu1_agent/state` | `/fmu1_agent/attitude` | `/fmu1_agent/command` | `/fmu1_agent/ned_target` | `/fmu1_agent/waypoints` |
-| fmu2 | `/fmu2_agent/state` | `/fmu2_agent/attitude` | `/fmu2_agent/command` | `/fmu2_agent/ned_target` | `/fmu2_agent/waypoints` |
-| fmu3 | `/fmu3_agent/state` | `/fmu3_agent/attitude` | `/fmu3_agent/command` | `/fmu3_agent/ned_target` | `/fmu3_agent/waypoints` |
-
-**廣播命令**：`/fmu_all_agent/command`（所有 Agent 都會收到）
-
-### 8.3 節點執行檔對照
-
-```bash
-# 啟動單機 basic_controller
-ros2 run taiphoon_agent basic_controller --ros-args \
-  -p agent_namespace:=fmu1_agent \
-  -p target_system:=1
-
-# 啟動 mission_planner（多機時）
-ros2 run taiphoon_agent mission_planner --ros-args \
-  -p agent_namespace:=fmu1_agent
-
-# 啟動 trajectory_controller
-ros2 run taiphoon_agent trajectory_controller --ros-args \
-  -p agent_namespace:=fmu1_agent
-
-# 或使用 launch 一次啟動所有節點（3 機）
-ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=3
-```
-
----
-
-## 9. Launch 參數
-
-### 9.1 basic_controller.launch.py
-
-| 參數 | 型別 | 預設值 | 說明 |
-|------|------|--------|------|
-| `drone_count` | `int` | `3` | 無人機數量 |
-
-### 9.2 basic_controller_node 參數
-
-| 參數 | 型別 | 預設值 | 說明 |
-|------|------|--------|------|
-| `agent_namespace` | `string` | `"fmu1"` | Agent 命名空間（basic_controller_node 使用 `fmu{N}`，其他節點使用 `fmu{N}_agent`） |
-| `target_system` | `int` | `1` | PX4 MAVLink 系統 ID |
-| `target_altitude_m` | `double` | `3.0` | 目標起飛高度（公尺） |
-| `hover_duration_s` | `double` | `3.0` | 停懸持續時間（秒） |
-| `startup_delay_s` | `double` | `0.0` | 啟動延遲（秒，多機錯開用） |
-| `auto_start_sequence` | `bool` | `true` | 是否自動執行起飛-停懸序列 |
-| `state_publish_rate_hz` | `double` | `10.0` | 狀態發布頻率（Hz） |
-| `position_deviation_threshold_m` | `double` | `2.0` | 位置偏差安全閾值（公尺） |
-
-### 9.3 mission_planner 參數
-
-| 參數 | 型別 | 預設值 | 說明 |
-|------|------|--------|------|
-| `agent_namespace` | `string` | `"fmu1_agent"` | Agent 命名空間 |
-| `formation_update_rate_hz` | `double` | `5.0` | 編隊更新頻率（Hz） |
-| `peer_scan_interval_s` | `double` | `3.0` | 同儕掃描間隔（秒） |
-
-### 9.4 trajectory_controller 參數
-
-| 參數 | 型別 | 預設值 | 說明 |
-|------|------|--------|------|
-| `agent_namespace` | `string` | `"fmu1_agent"` | Agent 命名空間 |
-| `trajectory_update_rate_hz` | `double` | `10.0` | 軌跡更新頻率（Hz） |
-| `waypoint_spacing_m` | `double` | `1.0` | waypoint 間距（公尺） |
-| `flight_speed_mps` | `double` | `5.0` | 飛行速度（公尺/秒） |
-| `safety_margin_m` | `double` | `3.0` | 安全邊界（公尺） |
-
----
-
-## 附錄 A：GCS 開發快速入門
-
-### A.1 最小監控實作（Python）
-
-```python
-import rclpy
-from rclpy.node import Node
-from taiphoon_agent.msg import AgentState, AgentAttitude
-
-class GCSMonitor(Node):
-    def __init__(self):
-        super().__init__('gcs_monitor')
-        # 訂閱所有 Agent 狀態
-        for i in range(1, 4):
-            ns = f'fmu{i}_agent'
-            self.create_subscription(AgentState, f'/{ns}/state',
-                lambda m, n=i: self.state_cb(m, n), 10)
-            self.create_subscription(AgentAttitude, f'/{ns}/attitude',
-                lambda m, n=i: self.attitude_cb(m, n), 10)
-
-    def state_cb(self, msg, agent_id):
-        self.get_logger().info(f'[{agent_id}] pos=({msg.position_ned[0]:.1f}, '
-            f'{msg.position_ned[1]:.1f}, {msg.position_ned[2]:.1f}) '
-            f'mode={msg.flight_mode} batt={msg.battery_remaining:.0%}')
-
-    def attitude_cb(self, msg, agent_id):
-        pass  # 實作姿態顯示
-```
-
-### A.2 最小命令實作（Python）
-
-```python
-from std_msgs.msg import String
-
-class GCSCommander(Node):
-    def __init__(self):
-        super().__init__('gcs_commander')
-        self.pubs = {}
-        for i in range(1, 4):
-            self.pubs[i] = self.create_publisher(
-                String, f'/fmu{i}_agent/command', 10)
-        self.all_pub = self.create_publisher(
-            String, '/fmu_all_agent/command', 10)
-
-    def send_agent_cmd(self, agent_id, cmd_str):
-        msg = String(data=cmd_str)
-        self.pubs[agent_id].publish(msg)
-
-    def broadcast_cmd(self, cmd_str):
-        msg = String(data=cmd_str)
-        self.all_pub.publish(msg)
-```
 
 ---
 

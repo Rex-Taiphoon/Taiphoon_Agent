@@ -6,7 +6,7 @@
 @date 2026-07-28
 
 Usage:
-  ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=3
+  ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=4
 
 Each node subscribes to:
   - /<agent_namespace>/command     (individual agent commands)
@@ -30,7 +30,7 @@ def launch_nodes(context, *args, **kwargs):
     try:
         drone_count = int(drone_count_str)
     except (ValueError, TypeError):
-        drone_count = 3
+        drone_count = 4
 
     nodes = []
     for i in range(1, drone_count + 1):
@@ -80,7 +80,7 @@ def launch_nodes(context, *args, **kwargs):
 def generate_launch_description():
     drone_count_arg = DeclareLaunchArgument(
         "drone_count",
-        default_value="3",
+        default_value="4",
         description="number of UAV instances to launch"
     )
 

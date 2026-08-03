@@ -6,7 +6,7 @@
 # 使用前請先啟動 Agent 容器：docker compose up -d
 #
 # 使用方式：
-#   bash launch_all.sh --count 3 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]
+#   bash launch_all.sh --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]
 #
 # 參數：
 #   --count N      無人機數量（預設 3）
@@ -20,7 +20,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---- 預設值 ----
-COUNT=3
+COUNT=4
 NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 AGENT_CONTAINER="fmu1_agent"
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "未知參數：$1"
-            echo "使用方式：$0 --count 3 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
+            echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
             exit 1
             ;;
     esac

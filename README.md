@@ -21,7 +21,7 @@ docker network create Taiphoon_Net
 docker compose up -d fmu1_agent
 
 # 5. 啟動模擬器
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4
 
 # 6. 編譯 Taiphoon_Agent
 docker compose exec fmu1_agent bash -c \
@@ -65,25 +65,22 @@ source /home/taiphoon/Taiphoon_Agent/install/setup.bash
 ### 1. 模擬器管理
 
 ```bash
-# 啟動三台模擬器（預設）
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3
-
-# 啟動四台模擬器
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 4
+# 啟動四台模擬器（預設）
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4
 
 # 指定 Docker 網路
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3 --net Taiphoon_Net
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_Net
 
 # 使用 CycloneDDS 啟動
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 3 --net Taiphoon_Net --rmw cyclonedds
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_Net --rmw cyclonedds
 
 # 關閉所有模擬器
-bash skills/px4-sitl-launcher/scripts/stop_all.sh
+bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 ```
 
 | 參數 | 說明 | 預設值 |
 |------|------|--------|
-| `--count N` | 無人機數量 | 3 |
+| `--count N` | 無人機數量 | 4 |
 | `--net NAME` | Docker 網路名稱 | Taiphoon_Net |
 | `--rmw TYPE` | DDS 中介軟體（fastrtps / cyclonedds） | fastrtps |
 
@@ -109,7 +106,7 @@ Launch 參數：
 
 | 參數 | 類型 | 預設值 | 說明 |
 |------|------|--------|------|
-| `drone_count` | int | 3 | 無人機數量；>1 時自動啟動每台對應的 **FormationNode** |
+| `drone_count` | int | 4 | 無人機數量；>1 時自動啟動每台對應的 **FormationNode** |
 
 當 `drone_count > 1` 時，Launch 檔案會為每台無人機建立兩個節點：
 - **BasicController** — 單機飛行控制（狀態機：IDLE → OFFBOARD → ARMED → TAKEOFF → HOVER → ...）
@@ -258,7 +255,7 @@ docker exec fmu1_agent bash -c "
 
 ```bash
 # 終端 1：啟動 4 台模擬器
-bash skills/px4-sitl-launcher/scripts/launch_all.sh --count 4 --net Taiphoon_Net
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_Net
 ```
 
 ```bash
@@ -401,9 +398,9 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 
 | 參數 | 類型 | 預設值 | 說明 |
 |------|------|--------|------|
-| `drone_count` | double | 3.0 | 總無人機數量（影響編隊角度分配） |
 | `agent_namespace` | string | fmu1_agent | 自身命令命名空間（用於推算索引） |
 | `formation_update_rate_hz` | double | 5.0 | 編隊控制迴圈更新頻率（Hz） |
+| `peer_scan_interval_s` | double | 3.0 | 同儕無人機狀態掃描間隔（秒） |
 
 範例：停用自動 Offboard 並設定起飛高度 5m：
 
@@ -461,7 +458,6 @@ config/           - YAML 設定檔（basic_controller.yaml）
 launch/           - ROS2 Launch 檔案
 AutoTest/         - 自動測試腳本與紀錄
 docker/           - Dockerfile 與 entrypoint
-skills/           - Codex Agent 技能定義
 ```
 
 狀態機流程：

@@ -107,7 +107,7 @@ float32 battery_current_a     # 電池電流 (A)，無資料時為 NaN
 
 ### 文件更新
 
-- `docs/gcs-interface-spec.md`：更新 AgentState 欄位表，加入 `position_global`、`battery_voltage_v`、`battery_current_a`
+- `docs/taiphoon-agent-interface.md`：更新 AgentState 欄位表，加入 `position_global`、`battery_voltage_v`、`battery_current_a`
 - 版本號從 1.0 → 1.1
 
 ## Out of Scope

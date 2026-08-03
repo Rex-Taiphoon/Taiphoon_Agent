@@ -1,3 +1,0 @@
-interface:
-  display_name: "uXRCE-DDS Agent 工具 (Docker)"
-  short_description: "以 Docker 管理 MicroXRCEAgent 容器，支援 RMW 切換與埠號設定"
