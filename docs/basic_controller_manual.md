@@ -158,8 +158,9 @@ ros2 run taiphoon_agent formation_node --ros-args \
 3. 透過 `/fmu_all_agent/command` 發送 `FORMATION_CIRCLE R H`，
    所有 FormationNode 同時收到命令，各自計算目標位置
 4. 若某無人機離線（`/fmu<N>_agent` 節點消失，或超過 2 秒未收到其
-   `/fmu<N>_agent/state`），MissionPlanner 自動從編隊中排除，重新計算質心與角度分配
-5. 透過 `FORMATION_CANCEL` 取消編隊，各機恢復懸停
+   `/fmu<N>_agent/state`），MissionPlanner 自動從編隊中排除，重新計算質心快照與角度分配
+5. 若線上機體少於 2 台，編隊自動取消並原地懸停（不自動恢復）
+6. 透過 `FORMATION_CANCEL` 取消編隊，各機恢復懸停
 
 ## 啟動驗證流程（快速測試）
 
@@ -224,7 +225,7 @@ ros2 topic list
 - MissionPlanner 以 `/fmu<N>_agent` 節點存在性判定離線，並以 `peer_timeout_s`
   （預設 2 秒）state 靜默作為加速器；確認節點消失或逾時後應出現
   "Agent N marked offline" 日誌
-- 可觀察控制台日誌確認是否有 "No peers online" 警告
+- 若線上機體少於 2 台，編隊會自動取消，日誌出現 "Formation cancelled (online < 2)"
 
 ### 問題：建置失敗
 - 確認 `px4_msgs` 已安裝：`sudo apt install ros-humble-px4-msgs`
