@@ -454,7 +454,6 @@ src/
   ├── main.cpp        - BasicController 進入點
   └── main_formation.cpp - FormationNode 進入點
 msg/              - 自訂 ROS2 訊息定義（AgentState.msg, NedTarget.msg）
-config/           - YAML 設定檔（basic_controller.yaml）
 launch/           - ROS2 Launch 檔案
 AutoTest/         - 自動測試腳本與紀錄
 docker/           - Dockerfile 與 entrypoint

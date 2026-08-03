@@ -125,17 +125,6 @@ source install/setup.bash
 
 可透過以下方式修改起飛高度與停懸時間：
 
-### YAML 設定檔
-
-編輯 `config/basic_controller.yaml`：
-
-```yaml
-basic_controller_node:
-  ros__parameters:
-    target_altitude_m: 5.0    # 改為 5 公尺
-    hover_duration_s: 10.0    # 改為 10 秒
-```
-
 ### 命令列參數
 
 ```bash

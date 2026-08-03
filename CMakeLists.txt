@@ -96,7 +96,7 @@ install(TARGETS basic_controller mission_planner trajectory_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY config launch
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 

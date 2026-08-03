@@ -10,6 +10,39 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 
 這個專案的核心不是單一演算法，而是「飛控通訊 + 任務控制 + 感測融合 + 影像資料流」的整合執行平台。
 
+## Repository structure
+
+```TAIPHOON_AGENT/
+├── src/ # 核心原始碼
+├── msg/ # 自定義 ROS2 訊息定義（.msg / .srv / .action）
+├── launch/ # ROS2 launch 啟動文件
+├── test/ # 單元測試原始碼（.cpp）
+│
+├── docker/ # Docker 相關腳本
+│ └── entrypoint.sh # 容器啟動進入點
+│
+├── docs/ # 開發文件
+│ ├── adr/ # Architecture Decision Records
+│ ├── spec/ # 模組介面與訊息規格
+│ └── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
+│
+├── config/ # 參數與設定檔（runtime config）
+│
+├── build/ # 建置中間檔案（colcon build 產生，勿手動修改）
+├── install/ # 安裝輸出目錄（colcon install 產生，勿手動修改）
+├── log/ # 建置與測試紀錄（colcon log 產生，勿手動修改）
+│
+├── docker-compose.yml # 多容器服務定義
+├── Dockerfile # 映像建置定義
+├── CMakeLists.txt # CMake 建置設定
+├── package.xml # ROS2 套件元資料
+├── CODE_CONSTRAINT.md # 命名、排版與程式風格規範
+├── CONTEXT.md # 專案背景與決策脈絡
+├── AGENTS.md # AI Agent 操作指引（本文件）
+└── README.md # 快速上手說明
+```
+
+
 ## Non-obvious constraints
 
 - 預設控制目標為四旋翼機。
@@ -24,27 +57,52 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 
 - 主要實作語言為 C++。
 - 只有在 C++ 不適合，或需要大量依賴外部生態時，才引入 Python、C。
-- 所有中文註解、文件與回覆都使用繁體中文，避免中國用語。
+- 所有中文註解、文件與回覆都使用繁體中文。
 - 功能開發先規劃再動手；先定義介面、資料流、失效情境與驗證方式，再修改程式。
 - 模組之間應維持低耦合，避免把飛控橋接、任務邏輯、感測融合、串流流程寫成互相纏繞的單體。
 - 命名、排版與其他程式風格規範請遵循 `CODE_CONSTRAINT.md`，不要在此檔重複描述。
 
-## Change boundaries
+## Boundaries(邊界條件、禁止事項)
 
 - 所有變更僅限於 Taiphoon_Agent 專案本身，除非任務明確要求，不要修改外部依賴或替換既有基礎架構。
-- 牽涉核心行為的修改，提交前應先整理影響範圍與回退方式。
 - Git commit message 使用 `模組: 更改項目` 格式，內容簡短明確，不得超過 100 字。
 - 若是大型或高風險單一功能修改，優先使用獨立分支；分支命名格式為 `xxx-dev`，且名稱長度不超過 20 字元。
+- 禁止自行建構Docker，如果必須構建，必須停止任務並且提供指令讓使用者自行構建。
 
-## Verification
+## Build & Verification(測試與驗證)
 
-- 第一階段驗證以 PX4 模擬為主。
-- 為降低模擬負擔，預設不要開 Gazebo；以 PX4 模擬搭配 QGC 觀測即可。
-- 每次測試都要留下可追溯紀錄（存放於 `AutoTest/` 目錄）。
-- 驗證必須對照驗收標準；若未達標，需留下失敗條件、重現方式與下一輪修正重點。
-- 預設多機模擬初始隊形為一字型排列。
-- 模擬起始 GPS 位置為 `(25.03996592258936, 121.51195163336611)`。
-- 多機測試需啟動 4 台 PX4 模擬器進行驗證。
+### 環境需求
+所有測試必須在 Docker 開發容器內執行。
+禁止在 host 主機上直接執行 ROS2 指令。
+
+請先啟動環境：
+```bash
+docker compose up -d fmu1_agent
+```
+
+### 建置驗證
+在執行任何測試之前，必須先完成 workspace 建置：
+```bash
+docker compose exec fmu1_agent colcon build
+```
+
+如果只修改單一套件，請使用局部建置：
+```bash
+docker compose exec fmu1_agent colcon build --packages-select taiphoon_agent
+```
+
+### 單元測試（Unit Tests）
+修改單一套件後，請執行該套件的測試：
+```bash
+docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test --packages-select taiphoon_agent"
+docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
+```
+
+僅在修改共用介面或核心模組時，才執行完整測試：
+```bash
+docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
+docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --all"
+```
 
 ## Working style for agents
 
