@@ -2,7 +2,6 @@
 build/
 devel/
 install/
-skills/
 
 # 編譯中間檔
 *.o
@@ -43,3 +42,9 @@ __pycache__/
 
 # macOS 系統檔案
 .DS_Store
+
+# 暫存與規劃文件（僅本機保留，不納入版本控制）
+.scratch/
+docs/adr/
+docs/spec/
+docs/agents/

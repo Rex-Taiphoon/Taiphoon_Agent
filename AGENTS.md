@@ -14,7 +14,7 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 
 ```TAIPHOON_AGENT/
 ├── src/ # 核心原始碼
-├── msg/ # 自定義 ROS2 訊息定義（.msg / .srv / .action）
+├── msg/ # 自定義 ROS2 訊息
 ├── launch/ # ROS2 launch 啟動文件
 ├── test/ # 單元測試原始碼（.cpp）
 │
@@ -26,11 +26,9 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 │ ├── spec/ # 模組介面與訊息規格
 │ └── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
 │
-├── config/ # 參數與設定檔（runtime config）
-│
-├── build/ # 建置中間檔案（colcon build 產生，勿手動修改）
-├── install/ # 安裝輸出目錄（colcon install 產生，勿手動修改）
-├── log/ # 建置與測試紀錄（colcon log 產生，勿手動修改）
+├── build/ # 建置中間檔案
+├── install/ # 安裝輸出目錄
+├── log/ # 建置與測試紀錄
 │
 ├── docker-compose.yml # 多容器服務定義
 ├── Dockerfile # 映像建置定義
@@ -38,7 +36,7 @@ Taiphoon_Agent 是部署在 Linux 主機上的無人載具任務與感測器中�
 ├── package.xml # ROS2 套件元資料
 ├── CODE_CONSTRAINT.md # 命名、排版與程式風格規範
 ├── CONTEXT.md # 專案背景與決策脈絡
-├── AGENTS.md # AI Agent 操作指引（本文件）
+├── AGENTS.md # AI Agent 操作指引
 └── README.md # 快速上手說明
 ```
 
