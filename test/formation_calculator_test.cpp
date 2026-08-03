@@ -333,3 +333,122 @@ TEST(FormationCalculatorTest, PeerStaleBoundary)
     // 剛收到（0 毫秒前）→ 未逾時
     EXPECT_FALSE(FormationCalculator::is_peer_stale(now, now, 2.0));
 }
+
+// ==================== 編隊質心快照測試 ====================
+
+TEST(FormationCalculatorTest, ComputeReferenceCentroidGpsCorrected)
+{
+    // 四機 HOME 東向錯位 0/3/6/9m；自身 = fmu1（local 原點 = 自身 HOME）
+    std::array<float, 3> own_ned = {0.0F, 0.0F, -8.0F};
+    std::array<float, 3> own_global = {
+        static_cast<float>(TEST_BASE_LAT),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+
+    auto make_east_global = [&](float east_m) -> std::array<float, 3>
+    {
+        return {
+            own_global[0],
+            own_global[1] + east_m /
+                static_cast<float>(lon_per_deg(TEST_BASE_LAT)),
+            100.0F};
+    };
+
+    std::vector<PeerPosition> peers = {
+        {{0.0F, 0.0F, -8.0F}, true, own_global},
+        {{0.0F, 0.0F, -8.0F}, true, make_east_global(3.0F)},
+        {{0.0F, 0.0F, -8.0F}, true, make_east_global(6.0F)},
+        {{0.0F, 0.0F, -8.0F}, true, make_east_global(9.0F)},
+    };
+
+    auto ref = FormationCalculator::compute_reference_centroid(
+        peers, own_ned, own_global);
+
+    EXPECT_TRUE(ref.gps_based);
+    EXPECT_NEAR(ref.centroid[0], 0.0F, 1e-3F);
+    // 共同參考系質心 = 自身位置 + 東向偏移平均（0+3+6+9)/4 = 4.5m
+    EXPECT_NEAR(ref.centroid[1], 4.5F, 0.5F);
+    EXPECT_NEAR(ref.centroid[2], -8.0F, 1e-3F);
+}
+
+TEST(FormationCalculatorTest, ComputeReferenceCentroidSameHome)
+{
+    // 同 HOME（各機 HOME 相同）：GPS 換算退化為原混框行為（直接平均 local 位置）
+    std::array<float, 3> own_ned = {0.0F, 0.0F, -8.0F};
+    std::array<float, 3> own_global = {
+        static_cast<float>(TEST_BASE_LAT),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+
+    // 同儕 local 位置與 GPS 一致（GPS = 自身 GPS + local 偏移）
+    std::array<float, 3> peer2_global = {
+        own_global[0] + 10.0F / 111320.0F,
+        own_global[1], 100.0F};
+    std::array<float, 3> peer3_global = {
+        own_global[0],
+        own_global[1] + 10.0F /
+            static_cast<float>(lon_per_deg(TEST_BASE_LAT)),
+        100.0F};
+
+    std::vector<PeerPosition> peers = {
+        {{0.0F, 0.0F, -8.0F}, true, own_global},
+        {{10.0F, 0.0F, -8.0F}, true, peer2_global},
+        {{0.0F, 10.0F, -8.0F}, true, peer3_global},
+    };
+
+    auto ref = FormationCalculator::compute_reference_centroid(
+        peers, own_ned, own_global);
+
+    EXPECT_TRUE(ref.gps_based);
+    // 容差 0.5m：float32 緯度/經度量化誤差
+    EXPECT_NEAR(ref.centroid[0], 10.0F / 3.0F, 0.5F);
+    EXPECT_NEAR(ref.centroid[1], 10.0F / 3.0F, 0.5F);
+    EXPECT_NEAR(ref.centroid[2], -8.0F, 1e-3F);
+}
+
+TEST(FormationCalculatorTest, ComputeReferenceCentroidGpsInvalidFallback)
+{
+    // 任一同儕 GPS 無效 → 退回原混框算法（gps_based=false）
+    std::array<float, 3> own_ned = {0.0F, 0.0F, -8.0F};
+    std::array<float, 3> own_global = {
+        static_cast<float>(TEST_BASE_LAT),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+    std::array<float, 3> nan_global = {
+        std::numeric_limits<float>::quiet_NaN(),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+
+    std::vector<PeerPosition> peers = {
+        {{0.0F, 0.0F, -8.0F}, true, own_global},
+        {{10.0F, 4.0F, -8.0F}, true, nan_global},
+    };
+
+    auto ref = FormationCalculator::compute_reference_centroid(
+        peers, own_ned, own_global);
+
+    EXPECT_FALSE(ref.gps_based);
+    EXPECT_NEAR(ref.centroid[0], 5.0F, 1e-4F);
+    EXPECT_NEAR(ref.centroid[1], 2.0F, 1e-4F);
+    EXPECT_NEAR(ref.centroid[2], -8.0F, 1e-4F);
+}
+
+TEST(FormationCalculatorTest, ComputeReferenceCentroidSkipsOffline)
+{
+    // 離線同儕不參與快照；自身 GPS 有效即可 GPS-based
+    std::array<float, 3> own_ned = {0.0F, 0.0F, -8.0F};
+    std::array<float, 3> own_global = {
+        static_cast<float>(TEST_BASE_LAT),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+    std::array<float, 3> nan_global = {
+        std::numeric_limits<float>::quiet_NaN(),
+        static_cast<float>(TEST_BASE_LON), 100.0F};
+
+    std::vector<PeerPosition> peers = {
+        {{0.0F, 0.0F, -8.0F}, true, own_global},
+        {{10.0F, 10.0F, -8.0F}, false, nan_global},
+    };
+
+    auto ref = FormationCalculator::compute_reference_centroid(
+        peers, own_ned, own_global);
+
+    EXPECT_TRUE(ref.gps_based);
+    EXPECT_NEAR(ref.centroid[0], 0.0F, 1e-6F);
+    EXPECT_NEAR(ref.centroid[1], 0.0F, 1e-6F);
+}

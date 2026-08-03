@@ -51,6 +51,13 @@ struct FormationParams
     float param2{0.0F};  ///< 高度 (CIRCLE 與 HORI_LINEAR)
 };
 
+/// 編隊質心快照結果
+struct ReferenceCentroid
+{
+    std::array<float, 3> centroid{0.0F, 0.0F, 0.0F};
+    bool gps_based{false};  ///< 是否以 GPS 共同參考系計算（false = 原混框算法）
+};
+
 constexpr float PI = 3.14159265358979323846F;
 /// 等距圓柱投影：緯度每 1 度對應的北向距離（公尺）
 constexpr float METERS_PER_DEG_LAT = 111320.0F;
@@ -205,6 +212,64 @@ public:
         double elapsed_s =
             std::chrono::duration<double>(now - last_arrival).count();
         return elapsed_s > timeout_s;
+    }
+
+    /**
+     * @brief 計算編隊質心快照（指令當下或成員變化時呼叫）
+     *
+     * 以 GPS 共同參考系將所有線上同儕位置換算到自身 local frame 後取平均，
+     * 作為編隊的固定參考點；任一同儕 GPS 無效時退回原混框算法（直接平均
+     * 各機 local 位置）並回傳 gps_based=false。
+     *
+     * @param peers            同儕位置列表（含自身，含 online 旗標）
+     * @param own_position_ned 自身目前 NED 位置（公尺）
+     * @param own_global       自身全域座標 [lat, lon, alt]
+     * @return ReferenceCentroid 快照質心與計算方式
+     */
+    static ReferenceCentroid compute_reference_centroid(
+        const std::vector<PeerPosition>& peers,
+        const std::array<float, 3>& own_position_ned,
+        const std::array<float, 3>& own_global)
+    {
+        ReferenceCentroid result;
+
+        // 檢查所有線上同儕的 GPS 是否有效
+        bool is_gps_valid = true;
+        for (const auto& peer : peers)
+        {
+            if (!peer.online) continue;
+            if (std::isnan(peer.position_global[0]) ||
+                std::isnan(peer.position_global[1]))
+            {
+                is_gps_valid = false;
+                break;
+            }
+        }
+
+        if (is_gps_valid)
+        {
+            std::vector<PeerPosition> ref_peers = peers;
+            for (auto& peer : ref_peers)
+            {
+                if (!peer.online) continue;
+                std::array<float, 3> common_position{};
+                if (compute_common_frame_position(
+                        own_position_ned, own_global,
+                        peer.position_global, common_position))
+                {
+                    peer.position_ned = common_position;
+                }
+            }
+            result.centroid = compute_centroid(ref_peers);
+            result.gps_based = true;
+        }
+        else
+        {
+            result.centroid = compute_centroid(peers);
+            result.gps_based = false;
+        }
+
+        return result;
     }
 
     /**

@@ -11,6 +11,8 @@
  * 4. 計算自身目標 NED 位置並發布至 /{namespace}/ned_target
  * 5. 以 /fmu<N>_agent 節點存在性 + state 時效判定同儕離線，
  *    動態重算 effective_self_index，支援任意 agent 離線重編隊
+ * 6. 編隊質心以指令當下快照為固定參考，成員集合變化時重算；
+ *    線上少於 2 台時自動取消編隊
  */
 
 #pragma once
@@ -22,6 +24,7 @@
 #include <set>
 #include <limits>
 #include <chrono>
+#include <array>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -102,6 +105,16 @@ private:
      */
     void sweep_peer_online_status();
 
+    /**
+     * @brief 以目前線上同儕位置重算編隊質心快照（指令當下/成員變化時）
+     */
+    void snapshot_centroid();
+
+    /**
+     * @brief 線上少於 2 台時取消編隊：發布原地懸停目標並清空編隊狀態
+     */
+    void cancel_formation_for_low_members();
+
     // ==================== 初始化 ====================
 
     /**
@@ -154,6 +167,12 @@ private:
 
     /// 同儕存活狀態: agent_index → PeerLiveness
     std::map<int, PeerLiveness> peer_liveness_;
+
+    /// 編隊質心快照（自身 local frame，指令當下/成員變化時更新）
+    std::array<float, 3> formation_centroid_{0.0F, 0.0F, 0.0F};
+
+    /// 快照時的線上 agent 索引集合（含自身）
+    std::set<int> snapshot_online_set_;
 
     // ==================== 發布/訂閱 ====================
 

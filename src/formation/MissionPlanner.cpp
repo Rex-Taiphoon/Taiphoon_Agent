@@ -250,6 +250,7 @@ void MissionPlanner::all_agent_command_cb(
             formation_type_ = formation::FormationType::CIRCLE;
             formation_param1_ = parsed.param_value;  // 半徑
             formation_param2_ = parsed.param2;        // 高度
+            snapshot_centroid();
             RCLCPP_INFO(this->get_logger(),
                         "FORMATION_CIRCLE: radius=%.2f, altitude=%.2f",
                         formation_param1_, formation_param2_);
@@ -259,6 +260,7 @@ void MissionPlanner::all_agent_command_cb(
             formation_type_ = formation::FormationType::HORI_LINEAR;
             formation_param1_ = parsed.param_value;  // 間距
             formation_param2_ = parsed.param2;        // 高度
+            snapshot_centroid();
             RCLCPP_INFO(this->get_logger(),
                         "FORMATION_HORI_LINEAR: spacing=%.2f, altitude=%.2f",
                         formation_param1_, formation_param2_);
@@ -267,6 +269,7 @@ void MissionPlanner::all_agent_command_cb(
         case utils::AgentCommand::FORMATION_VERT_LINEAR:
             formation_type_ = formation::FormationType::VERT_LINEAR;
             formation_param1_ = parsed.param_value;  // 間距
+            snapshot_centroid();
             RCLCPP_INFO(this->get_logger(),
                         "FORMATION_VERT_LINEAR: spacing=%.2f",
                         formation_param1_);
@@ -276,6 +279,7 @@ void MissionPlanner::all_agent_command_cb(
             formation_type_ = formation::FormationType::NONE;
             formation_param1_ = 0.0F;
             formation_param2_ = 0.0F;
+            snapshot_online_set_.clear();
             RCLCPP_INFO(this->get_logger(), "FORMATION_CANCEL");
             break;
 
@@ -353,6 +357,90 @@ void MissionPlanner::sweep_peer_online_status()
     }
 }
 
+void MissionPlanner::snapshot_centroid()
+{
+    // 先以最新時效更新線上旗標，快照才反映當下成員集合
+    sweep_peer_online_status();
+
+    int self_key = compute_self_index() + 1;  // 1-based，對應 peers_ key
+    auto self_it = peers_.find(self_key);
+
+    // 記錄快照時的線上索引集合（含自身）
+    snapshot_online_set_.clear();
+    for (const auto& entry : peers_)
+    {
+        if (entry.second.online)
+        {
+            snapshot_online_set_.insert(entry.first);
+        }
+    }
+
+    if (self_it == peers_.end())
+    {
+        // 自身尚無記錄：無法以 GPS 換算，退回原點
+        formation_centroid_ = {0.0F, 0.0F, 0.0F};
+        RCLCPP_WARN(this->get_logger(),
+                    "Snapshot centroid: self entry missing, using (0,0,0)");
+        return;
+    }
+
+    auto sorted_peers = build_sorted_peers();
+    auto reference = formation::FormationCalculator::compute_reference_centroid(
+        sorted_peers, self_it->second.position_ned,
+        self_it->second.position_global);
+    formation_centroid_ = reference.centroid;
+
+    if (!reference.gps_based)
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Snapshot centroid without GPS correction (raw local frames)");
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "Formation centroid snapshot: (%.2f, %.2f, %.2f), %zu online",
+                static_cast<double>(formation_centroid_[0]),
+                static_cast<double>(formation_centroid_[1]),
+                static_cast<double>(formation_centroid_[2]),
+                snapshot_online_set_.size());
+}
+
+void MissionPlanner::cancel_formation_for_low_members()
+{
+    RCLCPP_WARN(this->get_logger(),
+                "Formation cancelled (online < 2)");
+
+    // 發布一次「自身目前位置」目標，使無人機原地懸停，
+    // 避免 BasicController 繼續追最後一個編隊目標
+    int self_key = compute_self_index() + 1;  // 1-based，對應 peers_ key
+    auto self_it = peers_.find(self_key);
+    if (self_it != peers_.end())
+    {
+        auto ned_msg = taiphoon_agent::msg::NedTarget();
+        ned_msg.x = self_it->second.position_ned[0];
+        ned_msg.y = self_it->second.position_ned[1];
+        ned_msg.z = self_it->second.position_ned[2];
+        ned_msg.yaw = std::numeric_limits<float>::quiet_NaN();
+
+        ned_target_pub_->publish(ned_msg);
+        last_published_target_ = {
+            ned_msg.x, ned_msg.y, ned_msg.z, ned_msg.yaw};
+
+        RCLCPP_INFO(this->get_logger(),
+                    "Published hold target at current position "
+                    "(%.2f, %.2f, %.2f)",
+                    static_cast<double>(ned_msg.x),
+                    static_cast<double>(ned_msg.y),
+                    static_cast<double>(ned_msg.z));
+    }
+
+    // 直接取消編隊（不自動恢復，需重新廣播編隊指令）
+    formation_type_ = formation::FormationType::NONE;
+    formation_param1_ = 0.0F;
+    formation_param2_ = 0.0F;
+    snapshot_online_set_.clear();
+}
+
 // =============================================================================
 // 編隊控制迴圈
 // =============================================================================
@@ -387,59 +475,32 @@ void MissionPlanner::formation_loop_cb()
         return;
     }
 
-    // 取得排序後的同儕位置
-    auto sorted_peers = build_sorted_peers();
-
-    // 檢查是否有任何線上無人機
-    size_t online_count = formation::FormationCalculator::count_online(sorted_peers);
-    if (online_count == 0)
+    // 目前線上索引集合（含自身）
+    std::set<int> current_online_set;
+    for (const auto& entry : peers_)
     {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                             "No peers online, skipping formation update");
+        if (entry.second.online)
+        {
+            current_online_set.insert(entry.first);
+        }
+    }
+
+    // 線上少於 2 台：直接取消編隊並原地懸停，避免單機追隨自我參考目標直飛
+    if (current_online_set.size() < 2)
+    {
+        cancel_formation_for_low_members();
         return;
     }
 
-    // 計算質心（GPS 共同參考系：所有線上位置換算到自身 local frame，
-    // 避免各機 HOME 不同造成全球座標下圓心偏移）
-    // 任一同儕 GPS 無效時退回原算法（直接混算 local 位置）
-    std::vector<formation::PeerPosition> ref_peers = sorted_peers;
-    bool is_gps_valid = true;
-    for (const auto& peer : sorted_peers)
+    // 成員集合變化（離線/加入）→ 以目前位置重算質心快照
+    if (current_online_set != snapshot_online_set_)
     {
-        if (!peer.online) continue;
-        if (std::isnan(peer.position_global[0]) ||
-            std::isnan(peer.position_global[1]))
-        {
-            is_gps_valid = false;
-            break;
-        }
+        RCLCPP_INFO(this->get_logger(),
+                    "Re-snapshot centroid (members changed)");
+        snapshot_centroid();
     }
 
-    if (is_gps_valid)
-    {
-        const auto& own_ned = self_it->second.position_ned;
-        const auto& own_global = self_it->second.position_global;
-        for (size_t i = 0; i < ref_peers.size(); ++i)
-        {
-            if (!ref_peers[i].online) continue;
-            std::array<float, 3> common_position{};
-            if (formation::FormationCalculator::compute_common_frame_position(
-                    own_ned, own_global, ref_peers[i].position_global,
-                    common_position))
-            {
-                ref_peers[i].position_ned = common_position;
-            }
-        }
-    }
-    else
-    {
-        RCLCPP_WARN_THROTTLE(
-            this->get_logger(), *this->get_clock(), 5000,
-            "Peer GPS invalid, fallback to raw local-frame centroid");
-    }
-
-    auto centroid =
-        formation::FormationCalculator::compute_centroid(ref_peers);
+    size_t online_count = current_online_set.size();
 
     // 組建編隊參數
     formation::FormationParams params;
@@ -448,16 +509,8 @@ void MissionPlanner::formation_loop_cb()
 
     // 動態計算 effective_self_index：自身在所有 online agent 中的排序位置
     // 避免因中間 agent 離線導致 self_index 不連續（如 0, 2）
-    std::vector<int> alive_keys;
-    for (const auto& entry : peers_)
-    {
-        if (entry.second.online)
-        {
-            alive_keys.push_back(entry.first);
-        }
-    }
-    std::sort(alive_keys.begin(), alive_keys.end());
-
+    std::vector<int> alive_keys(current_online_set.begin(),
+                                current_online_set.end());
     size_t effective_self_index = 0;
     for (size_t i = 0; i < alive_keys.size(); ++i)
     {
@@ -470,7 +523,7 @@ void MissionPlanner::formation_loop_cb()
 
     // 計算自身目標位置
     auto target = formation::FormationCalculator::compute_formation_target(
-        centroid, formation_type_, params,
+        formation_centroid_, formation_type_, params,
         effective_self_index, online_count);
 
     // 變化檢測：避免重複發布相同目標
