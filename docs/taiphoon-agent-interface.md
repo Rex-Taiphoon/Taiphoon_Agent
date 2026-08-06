@@ -1,10 +1,10 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.1
-> **更新日期**：2026-07-31
+> **版本**：1.2
+> **更新日期**：2026-08-06
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
-> 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、自訂訊息格式與命令協定，
+> 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、Service、自訂訊息格式與命令協定，
 > 供 GCS 開發團隊進行訂閱、發布與監控整合。
 
 ---
@@ -15,11 +15,12 @@
 2. [節點 (Node) 清單](#2-節點-node-清單)
 3. [自訂訊息 (Custom Message) 定義](#3-自訂訊息-custom-message-定義)
 4. [Topic 完整清單](#4-topic-完整清單)
-5. [命令協定 (Command Protocol)](#5-命令協定-command-protocol)
-6. [命名空間規則](#6-命名空間規則)
-7. [QoS 設定摘要](#7-qos-設定摘要)
-8. [多機部署注意事項](#8-多機部署注意事項)
-9. [Launch 參數](#9-launch-參數)
+5. [Service 完整清單](#5-service-完整清單)
+6. [命令協定 (Command Protocol)](#6-命令協定-command-protocol)
+7. [命名空間規則](#7-命名空間規則)
+8. [QoS 設定摘要](#8-qos-設定摘要)
+9. [多機部署注意事項](#9-多機部署注意事項)
+10. [Launch 參數](#10-launch-參數)
 
 ---
 
@@ -52,13 +53,14 @@
      └──────────────┘   └─────────────────┘
 ```
 
-每一台無人機對應一個 Taiphoon_Agent 實例，內含三個節點：
+每一台無人機對應一個 Taiphoon_Agent 實例，內含四個節點：
 
 | 節點 | 功能 | 必有 |
 |------|------|------|
 | `basic_controller_node` | 飛控橋接、狀態發布、命令轉譯 | ✅ |
 | `mission_planner` | 編隊計算、同儕發現、NED 目標輸出 | 多機時 |
 | `trajectory_controller` | 路徑規劃、碰撞檢查、waypoint 發布 | ✅ |
+| `agent_supervisor` | Agent 容器生命週期管理，提供失效模擬服務 | ✅ |
 
 ---
 
@@ -105,6 +107,18 @@
 **內部組件**：
 - `TrajectoryPlanner`：直線路徑生成與到達時間計算
 - `PeerMatcher`：同儕位置蒐集
+
+### 2.4 agent_supervisor
+
+| 屬性 | 值 |
+|------|-----|
+| **執行檔** | `agent_supervisor` |
+| **節點名稱** | `agent_supervisor` |
+| **命名空間** | `fmu{N}_agent`（例如 `fmu1_agent`） |
+| **描述** | Agent 容器生命週期管理節點，提供刻意模擬飛行電腦失效的 shutdown service。 |
+
+**對外介面**：
+- `/{agent_namespace}/shutdown`：詳見 [第 5 節](#5-service-完整清單)。
 
 ---
 
@@ -230,7 +244,7 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 > **GCS 設計建議**：
 > - 使用 `/{agent_namespace}/command` 對單一無人機下達移動、模式切換命令。
 > - 使用 `/fmu_all_agent/command` 發送編隊命令（FORMATION_*）或全體同步命令（如全體 RTL）。
-> - 命令格式詳見 [第 5 節](#5-命令協定-command-protocol)。
+> - 命令格式詳見 [第 6 節](#6-命令協定-command-protocol)。
 
 #### 4.2.3 內部控制流（Agent 內部通訊，GCS 可監控）
 
@@ -260,16 +274,57 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 
 ---
 
-## 5. 命令協定 (Command Protocol)
+## 5. Service 完整清單
 
-### 5.1 傳輸格式
+### 5.1 Agent shutdown service
+
+| Service | 提供節點 | 型別 | 說明 |
+|---------|----------|------|------|
+| `/{agent_namespace}/shutdown` | `agent_supervisor` | `std_srvs/srv/SetBool` | 僅接受 `request.data = true`；回應送出後以 SIGTERM 觸發 Agent 容器 PID 1 立即退出 |
+
+**契約與安全限制**：
+
+- `request.data` 必須為 `true`；`false` 不會觸發終止。
+- 接受請求後，服務回應先送出，接著以 SIGTERM 觸發 PID 1 的立即退出，刻意模擬飛行電腦失效。
+- 此服務不檢查飛行狀態、不執行 RTL 或 LAND；後續行為完全由 PX4 failsafe 決定。
+- 不提供也不允許 `/fmu_all_agent/shutdown` 廣播；shutdown 必須指定單一 Agent namespace。
+- 若 Compose 服務使用 `restart: no`，PID 1 終止後容器會保持停止，不會自動重新啟動。若使用自動重啟策略，容器可能重新啟動，服務也會再次出現，將無法保持失效狀態。
+
+**呼叫範例**：
+
+```bash
+ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+```
+
+**驗證服務與容器狀態**：
+
+```bash
+# 在 Agent 容器內確認服務存在與型別
+ros2 service list | grep -F /fmu1_agent/shutdown
+ros2 service type /fmu1_agent/shutdown
+```
+
+```bash
+# 在 Agent 容器內呼叫；回應送出後容器 PID 1 應立即終止
+ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+```
+
+```bash
+# 回到宿主機確認容器狀態與退出碼
+docker compose ps fmu1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+```
+
+## 6. 命令協定 (Command Protocol)
+
+### 6.1 傳輸格式
 
 - **Topic**：`/{agent_namespace}/command` 或 `/fmu_all_agent/command`
 - **型別**：`std_msgs/msg/String`
 - **編碼**：純文字 ASCII，不區分大小寫
 - **格式**：`<COMMAND> [param1] [param2] [param3] [param4]`
 
-### 5.2 支援的命令
+### 6.2 支援的命令
 
 #### 模式切換命令
 
@@ -324,7 +379,7 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 | `MOVE_LEFT` | `LEFT` |
 | `MOVE_RIGHT` | `RIGHT` |
 
-### 5.3 命令使用範例
+### 6.3 命令使用範例
 
 ```bash
 # 讓 fmu1 起飛至 5 公尺
@@ -343,7 +398,7 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 
 ---
 
-## 6. 命名空間規則
+## 7. 命名空間規則
 
 | 命名空間 | 用途 | 範例 |
 |----------|------|------|
@@ -355,19 +410,21 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 - 一個 Taiphoon_Agent 只控制一台 PX4（`fmu{N}`）。
 - 所有 Agent 對外 Topic 使用 `/{agent_namespace}/...` 前綴。
 - 廣播命令固定使用 `/fmu_all_agent/command`。
+- Shutdown service 僅使用 `/{agent_namespace}/shutdown`，不提供 `/fmu_all_agent/shutdown`。
 
 ---
 
-## 7. QoS 設定摘要
+## 8. QoS 設定摘要
 
-| Topic 類型 | Reliability | Durability | Depth |
+| 介面類型 | Reliability | Durability | Depth |
 |-----------|-------------|------------|-------|
 | PX4 飛控 Topic | best_effort | volatile | 10 |
 | Agent 狀態 Topic (`/state`, `/attitude`) | reliable | volatile | 10 |
 | 命令 Topic (`/command`) | reliable | volatile | 10 |
+| Shutdown Service (`/shutdown`) | reliable | volatile | 10 |
 | 控制流 Topic (`/ned_target`, `/waypoints`) | reliable (pub) / best_effort (sub) | volatile | 10 |
 | 障礙物 Topic (`/obstacles`) | best_effort | volatile | 10 |
 
 ---
 
-> **文件維護**：此文件由 Taiphoon_Agent 團隊維護，每次新增或修改 Topic/Node 時應同步更新。
+> **文件維護**：此文件由 Taiphoon_Agent 團隊維護，每次新增或修改 Topic/Service/Node 時應同步更新。

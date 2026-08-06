@@ -25,7 +25,9 @@ x-agent-defaults: &agent-defaults
     - taiphoon_net
   stdin_open: true
   tty: true
-  restart: unless-stopped
+  # 遠端 shutdown 會終止容器 PID 1；禁止自動重啟，避免關閉後立即復活。
+  # 若需要重新啟動 Agent，請由部署端再次執行 docker compose up -d。
+  restart: "no"
   deploy:
     resources:
       limits:

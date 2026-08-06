@@ -98,6 +98,36 @@ ros2 run taiphoon_agent formation_node --ros-args \
 
 > 命令不區分大小寫。MOVE_UP / MOVE_DOWN / YAW / MOVE_POINT 需在飛行狀態（HOVER / TAKEOFF / MOVING）下執行。
 
+## Agent 容器失效模擬（高風險）
+
+`agent_supervisor` 提供單一 Agent 的 `/{agent_namespace}/shutdown` service，型別為
+`std_srvs/srv/SetBool`。`request.data` 必須為 `true`；服務回應送出後會立即終止 Agent
+容器 PID 1（SIGTERM 觸發立即退出），刻意模擬飛行電腦失效。
+
+此操作不檢查飛行狀態、不執行 RTL/LAND，也不允許 `/fmu_all_agent/shutdown` 廣播。後續行為
+完全由 PX4 failsafe 決定。
+
+```bash
+# 在 Agent 容器內確認 service
+ros2 service list | grep -F /fmu1_agent/shutdown
+ros2 service type /fmu1_agent/shutdown
+```
+
+確認完成後，在另一個終端執行；回應送出後容器會終止：
+
+```bash
+docker compose exec fmu1_agent bash -c \
+  'ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
+```
+
+若 Compose 服務設定為 `restart: no`，PID 1 終止後容器會保持停止；若設定自動重啟策略，
+容器可能重新啟動，無法保持失效狀態。回到宿主機的另一個終端確認容器狀態：
+
+```bash
+docker compose ps fmu1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+```
+
 ## 依賴套件
 
 - ROS2 Humble

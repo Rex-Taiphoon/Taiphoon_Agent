@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -55,6 +56,21 @@ ament_target_dependencies(basic_controller
 
 target_link_libraries(basic_controller ${cpp_typesupport_target})
 
+# --- AgentSupervisor 執行檔 ---
+add_executable(agent_supervisor
+  src/main_agent_supervisor.cpp
+  src/nodes/AgentSupervisor.cpp
+)
+
+target_include_directories(agent_supervisor PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+ament_target_dependencies(agent_supervisor
+  rclcpp
+  std_srvs
+)
+
 # --- MissionPlanner 執行檔 ---
 add_executable(mission_planner
   src/formation/main_mission_planner.cpp
@@ -92,7 +108,7 @@ ament_target_dependencies(trajectory_controller
 target_link_libraries(trajectory_controller ${cpp_typesupport_target})
 
 # --- 安裝 ---
-install(TARGETS basic_controller mission_planner trajectory_controller
+install(TARGETS basic_controller agent_supervisor mission_planner trajectory_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -119,6 +135,21 @@ if(BUILD_TESTING)
   )
 
   target_link_libraries(test_state_publisher ${cpp_typesupport_target})
+
+  # AgentSupervisor service 測試
+  ament_add_gtest(test_agent_supervisor
+    test/agent_supervisor_test.cpp
+    src/nodes/AgentSupervisor.cpp
+  )
+
+  target_include_directories(test_agent_supervisor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  ament_target_dependencies(test_agent_supervisor
+    rclcpp
+    std_srvs
+  )
 
   # PositionSafetyMonitor 測試 (純邏輯，獨立編譯)
   ament_add_gtest(test_position_safety_monitor

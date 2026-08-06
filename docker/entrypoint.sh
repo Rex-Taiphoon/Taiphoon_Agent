@@ -11,7 +11,7 @@
 #   3. 等待 PX4 odometry topic 出現
 #   4. 若 topic 就緒 → 啟動 Taiphoon_Agent 節點
 #   5. 若 MicroXRCEAgent crash 則自動重啟，持續等待 topic
-#   6. 始終保留互動 shell 供手動除錯
+#   6. 持續維持 PID 1，直到收到外部 shutdown 訊號
 # =============================================================================
 
 # ---- 預設環境變數 ----
@@ -24,6 +24,16 @@ ODOMETRY_TOPIC="${ODOMETRY_TOPIC:-/fmu1/fmu/out/vehicle_odometry}"
 
 # 從 namespace 提取 fmu{N} 部分作為 ROS2 namespace
 FMU_NS="${AGENT_NAMESPACE%_agent}"
+
+# PID 1 必須自行處理 SIGTERM；否則容器內的 Bash 可能只忽略訊號，
+# 導致遠端 shutdown service 回覆成功但容器仍持續執行。
+shutdown_agent() {
+    echo "[Entrypoint] 收到 shutdown 訊號，立即結束 Agent 容器"
+    trap - TERM INT
+    exit 0
+}
+
+trap shutdown_agent TERM INT
 
 echo "============================================"
 echo " Taiphoon_Agent Docker 容器啟動"
@@ -68,6 +78,21 @@ if ! kill -0 ${UXRCE_PID} 2>/dev/null; then
     echo "[Entrypoint] 錯誤：MicroXRCEAgent 啟動失敗，容器仍會保留 shell"
 else
     echo "[Entrypoint] MicroXRCEAgent 已啟動 (PID=${UXRCE_PID})"
+fi
+
+# ---- 啟動 AgentSupervisor（必須早於等待 PX4，確保可遠端關閉）----
+echo "[Entrypoint] 啟動 AgentSupervisor（service=/${AGENT_NAMESPACE}/shutdown）..."
+ros2 run taiphoon_agent agent_supervisor \
+    --ros-args -r __ns:=/${AGENT_NAMESPACE} \
+    -p agent_namespace:=${AGENT_NAMESPACE} \
+    &
+SUPERVISOR_PID=$!
+sleep 1
+if ! kill -0 "${SUPERVISOR_PID}" 2>/dev/null; then
+    echo "[Entrypoint] 錯誤：AgentSupervisor 啟動失敗，無法提供遠端關閉服務"
+    exit 1
+else
+    echo "[Entrypoint] AgentSupervisor 已啟動 (PID=${SUPERVISOR_PID})"
 fi
 
 # ---- Step 5: 等待 odometry topic（無限期，含 Agent 自動重啟）----
@@ -136,16 +161,25 @@ if [ "${ODOMETRY_READY}" = true ]; then
     TC_PID=$!
     echo "[Entrypoint] TrajectoryController 已啟動 (PID=${TC_PID})"
 
-    echo "[Entrypoint] 全部節點已啟動 (BC=${BC_PID}, MP=${MP_PID}, TC=${TC_PID})"
+    echo "[Entrypoint] 全部節點已啟動 (SUP=${SUPERVISOR_PID}, BC=${BC_PID}, MP=${MP_PID}, TC=${TC_PID})"
 else
     echo "[Entrypoint] 略過節點啟動（odometry 未就緒）"
 fi
 
 echo "============================================"
 
-# ---- 始終保留互動 shell ----
-if [ $# -eq 0 ]; then
-    exec bash
-else
-    exec "$@"
+# ---- 持續維持 PID 1，避免 detached Container 因 stdin/EOF 自行退出 ----
+#
+# 不在此處啟動互動 bash：docker compose up -d 沒有互動 stdin，bash 會因 EOF
+# 立即結束，連帶讓 PID 1 結束 Container。地面站或開發者仍可透過
+# `docker compose exec` 開啟除錯 shell。持續迴圈也讓 PID 1 保留 shutdown_agent
+# 的 SIGTERM handler，只有外部 shutdown Service 才能讓此腳本退出。
+if [ $# -gt 0 ]; then
+    "$@" &
+    COMMAND_PID=$!
+    echo "[Entrypoint] 外部命令已啟動 (PID=${COMMAND_PID})，命令結束後 Container 仍保持運行"
 fi
+
+while true; do
+    sleep 1
+done

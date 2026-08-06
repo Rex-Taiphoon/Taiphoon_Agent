@@ -185,6 +185,40 @@ ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_RTL'
 ---
 ---
 
+## 操作手冊 — Agent 容器失效模擬
+
+`agent_supervisor` 提供單一 Agent 的 shutdown service，可刻意模擬飛行電腦失效：
+
+```bash
+ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+```
+
+> **高風險操作**：`data` 必須為 `true`。服務接受請求並送出回應後，會以 SIGTERM 觸發 Agent 容器 PID 1 立即退出；不檢查飛行狀態、不執行 RTL/LAND，也不提供 `/fmu_all_agent/shutdown` 廣播。後續行為完全由 PX4 failsafe 決定。
+
+若 Compose 服務設定為 `restart: no`，PID 1 終止後容器會保持停止，不會自動重新啟動；若使用自動重啟策略，容器可能重新啟動，無法保持失效狀態。
+
+服務與容器狀態驗證：
+
+```bash
+# 在 Agent 容器內確認 service
+ros2 service list | grep -F /fmu1_agent/shutdown
+ros2 service type /fmu1_agent/shutdown
+```
+
+```bash
+# 確認完成後，在另一個終端執行；回應送出後容器會終止
+docker compose exec fmu1_agent bash -c \
+  'ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
+```
+
+```bash
+# 回到宿主機的另一個終端執行
+docker compose ps fmu1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+```
+
+---
+
 ## 操作手冊 — 全體控制起飛（CycloneDDS）
 
 在宿主機直接執行完整起飛流程，適用於已啟動 SITL 模擬與 Agent 容器的環境：
