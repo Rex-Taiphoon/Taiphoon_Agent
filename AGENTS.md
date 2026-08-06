@@ -37,9 +37,18 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 ├── package.xml # ROS2 套件元資料
 ├── CODE_CONSTRAINT.md # 命名、排版與程式風格規範
 ├── CONTEXT.md # 專案背景與決策脈絡
+├── CHARACTERS.md # 工程協作角色與跨模組決策規約
 ├── AGENTS.md # AI Agent 操作指引
 └── README.md # 快速上手說明
 ```
+
+## Engineering characters
+
+- `CHARACTERS.md` 定義 Taiphoon_Agent 的工程協作角色、任務啟用方式與跨模組變更 Gate。
+- 每個任務開始時先指定一個主角色；跨模組或安全關鍵工作再指定協作角色。
+- `CHARACTERS.md` 不取代根目錄或子目錄的 `AGENTS.md`：角色文件負責協作責任，`AGENTS.md` 負責專案與模組技術規範。
+- `CONTEXT.md` 僅負責領域詞彙與架構語言，不作為實作規格或角色規約使用。
+- 規則衝突時，安全與人類確認要求優先，其次是本文件與對應子目錄 `AGENTS.md`，再依 `CHARACTERS.md` 補充跨模組協作行為。
 
 ## Topic & interface conventions
 
@@ -62,6 +71,7 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 維持模組低耦合：避免把飛控橋接、任務邏輯、感測融合、影像串流寫成互相纏繞的單體模組。
 - 開發過程中任何單元測試應該在`test/`中實作
 - `README.md`應該保持最新狀態
+- 當`msg/`資料更新時，必須同步更新一份`msg/`裡面的介面檔案(.msg/.srv/.action)到與專案目錄同級的`Taiphoon_Agent_Interfaces`資料夾，包含`taiphoon-agent-interface.md`
 
 **Ask first:**
 - 使用Git commit與push時，應確認提交的內容，使用 `模組: 更改項目` 格式，內容簡短明確。
