@@ -402,11 +402,12 @@ void BasicControllerNode::state_publish_cb()
 
     // --- 發布 AgentState ---
     {
+        auto observation = controller_->get_flight_state_observation();
         taiphoon_agent::msg::AgentState state_msg;
         safety::StatePublisher::fill_agent_state(
             state_msg, latest_odometry_,
             controller_->get_flight_state(), true,
-            gps_ptr, battery_ptr);
+            gps_ptr, battery_ptr, &observation);
         agent_state_pub_->publish(state_msg);
     }
 

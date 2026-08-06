@@ -18,6 +18,7 @@
 #include "px4_msgs/msg/vehicle_global_position.hpp"
 #include "px4_msgs/msg/battery_status.hpp"
 #include "controllers/BasicController.hpp"
+#include "controllers/FlightStateResolver.hpp"
 
 using taiphoon::safety::StatePublisher;
 
@@ -109,6 +110,29 @@ TEST(StatePublisherTest, FillAgentState_OnlineFlag)
 
     EXPECT_TRUE(state_online.online);
     EXPECT_FALSE(state_offline.online);
+}
+
+TEST(StatePublisherTest, FillAgentState_Px4FlightObservation)
+{
+    px4_msgs::msg::VehicleOdometry odom;
+    taiphoon::controllers::FlightStateObservation observation;
+    observation.is_px4_state_valid = true;
+    observation.is_armed = false;
+    observation.is_landed = true;
+    observation.px4_nav_state = 14U;
+
+    taiphoon_agent::msg::AgentState state;
+    StatePublisher::fill_agent_state(
+        state, odom,
+        taiphoon::controllers::FlightState::TAKEOFF,
+        true, nullptr, nullptr, &observation);
+
+    EXPECT_EQ(state.flight_mode,
+              static_cast<uint8_t>(taiphoon::controllers::FlightState::IDLE));
+    EXPECT_FALSE(state.armed);
+    EXPECT_TRUE(state.landed);
+    EXPECT_EQ(state.px4_nav_state, 14U);
+    EXPECT_TRUE(state.px4_state_valid);
 }
 
 TEST(StatePublisherTest, FillAgentState_StampIsSet)
@@ -246,9 +270,9 @@ TEST(StatePublisherTest, FillAgentState_AllPresent)
     EXPECT_TRUE(state.online);
 }
 
-TEST(StatePublisherTest, FillAgentState_BackwardCompat)
+TEST(StatePublisherTest, FillAgentState_DefaultObservationValues)
 {
-    // 使用舊簽名（4 args），新欄位應有預設值
+    // 未提供 PX4 飛行觀測資料時，新增欄位應明確標示為無效。
     px4_msgs::msg::VehicleOdometry odom;
     odom.position[0] = 7.0F;
     odom.position[1] = 8.0F;
@@ -266,13 +290,17 @@ TEST(StatePublisherTest, FillAgentState_BackwardCompat)
               static_cast<uint8_t>(taiphoon::controllers::FlightState::MOVING));
     EXPECT_TRUE(state.online);
 
-    // 新欄位預設值
+    // GPS、電池與 PX4 飛行狀態預設值
     EXPECT_TRUE(std::isnan(state.position_global[0]));
     EXPECT_TRUE(std::isnan(state.position_global[1]));
     EXPECT_TRUE(std::isnan(state.position_global[2]));
     EXPECT_FLOAT_EQ(state.battery_remaining, 1.0F);
     EXPECT_TRUE(std::isnan(state.battery_voltage_v));
     EXPECT_TRUE(std::isnan(state.battery_current_a));
+    EXPECT_FALSE(state.armed);
+    EXPECT_FALSE(state.landed);
+    EXPECT_EQ(state.px4_nav_state, 0U);
+    EXPECT_FALSE(state.px4_state_valid);
 }
 
 // ==================== fill_agent_attitude 既有測試 ====================

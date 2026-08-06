@@ -11,6 +11,8 @@
 #include <memory>
 #include <atomic>
 #include <array>
+#include <cstdint>
+#include <limits>
 
 #include "rclcpp/rclcpp.hpp"
 #include "px4_msgs/msg/offboard_control_mode.hpp"
@@ -19,29 +21,16 @@
 #include "px4_msgs/msg/vehicle_odometry.hpp"
 #include "px4_msgs/msg/vehicle_status.hpp"
 #include "px4_msgs/msg/vehicle_command_ack.hpp"
+#include "px4_msgs/msg/vehicle_land_detected.hpp"
 
 #include "core/IBasicFlightController.hpp"
+#include "controllers/FlightState.hpp"
+#include "controllers/FlightStateResolver.hpp"
 
 namespace taiphoon
 {
 namespace controllers
 {
-
-/// 飛行狀態機
-enum class FlightState : uint8_t
-{
-    IDLE = 0,
-    OFFBOARD_INIT,   ///< 等待 Offboard 模式啟用
-    OFFBOARD_ACTIVE, ///< Offboard 已啟用，等待解鎖命令
-    ARMED,
-    TAKEOFF,
-    HOVER,
-    RTL,             ///< 返航 (PX4 自動降落並上鎖)
-    LAND,            ///< 降落模式
-    MOVING,          ///< 水平移動中
-    POST_RTL,        ///< RTL 降落後自動偵測，停止 Offboard 並切換 Hold
-    ERROR
-};
 
 /// 暖機心跳時間 (毫秒)
 constexpr int HEARTBEAT_WARMUP_MS = 2000;
@@ -55,9 +44,6 @@ constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
 /// 高度日誌記錄間隔 (控制週期數)
 constexpr int ALTITUDE_LOG_INTERVAL = 20;
 
-/// 高度到達比例 (0.95 = 95% 視為到達，已廢棄：達成判斷由外部節點負責)
-// constexpr float ALTITUDE_ARRIVAL_RATIO = 0.95F;
-
 /// 垂直移動最低高度限制 (公尺)
 constexpr float ALTITUDE_MIN_M = 1.0F;
 
@@ -69,6 +55,9 @@ constexpr int DEFAULT_QOS_DEPTH = 10;
 
 /// 預設目標系統 ID
 constexpr uint8_t DEFAULT_TARGET_SYSTEM = 1;
+
+/// PX4 飛行狀態資料逾時時間（毫秒）
+constexpr int PX4_STATE_TIMEOUT_MS = 2000;
 
 /**
  * @brief 基礎飛行控制器
@@ -123,8 +112,15 @@ public:
     /** @brief 取得目前飛行狀態字串 */
     const char* get_state() const override;
 
-    /** @brief 取得目前飛行狀態枚舉值 */
+    /** @brief 取得目前命令意圖的任務階段 */
     FlightState get_flight_state() const;
+
+    /**
+     * @brief 取得最新 PX4 飛行狀態觀測資料
+     *
+     * @return 包含有效性、解鎖、落地與原生導航模式的觀測資料
+     */
+    FlightStateObservation get_flight_state_observation() const;
 
     // ==================== 高階命令新增方法 ====================
 
@@ -293,6 +289,15 @@ private:
      */
     bool create_vehicle_status_subscriber();
 
+    /**
+     * @brief 建立 VehicleLandDetected Subscriber
+     *
+     * 訂閱 fmu/out/vehicle_land_detected，用於監控實際落地狀態
+     *
+     * @return true 建立成功
+     */
+    bool create_vehicle_land_detected_subscriber();
+
     // ==================== 狀態機處理 (單一職責) ====================
 
     /**
@@ -453,6 +458,19 @@ private:
     void vehicle_status_cb(
         const px4_msgs::msg::VehicleStatus::SharedPtr msg);
 
+    /**
+     * @brief VehicleLandDetected 回呼（監控實際落地狀態）
+     *
+     * @param msg VehicleLandDetected 訊息
+     */
+    void vehicle_land_detected_cb(
+        const px4_msgs::msg::VehicleLandDetected::SharedPtr msg);
+
+    /**
+     * @brief 依 PX4 觀測資料更新已完成或逾時的命令意圖
+     */
+    void update_command_state_from_observation();
+
     // ==================== 成員變數 ====================
 
     /// ROS2 節點指標
@@ -471,6 +489,8 @@ private:
         vehicle_command_ack_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr
         vehicle_status_sub_;
+    rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr
+        vehicle_land_detected_sub_;
 
     /// PX4 MAVLink 系統 ID (fmu1=1, fmu2=2, ...)
     uint8_t target_system_{DEFAULT_TARGET_SYSTEM};
@@ -484,7 +504,7 @@ private:
     /// 停留持續時間 (秒)
     std::atomic<float> hover_duration_s_{0.0F};
 
-    /// 目前飛行狀態
+    /// 目前命令意圖的任務階段
     std::atomic<FlightState> flight_state_{FlightState::IDLE};
 
     /// 初始化完成旗標
@@ -501,8 +521,20 @@ private:
     std::atomic<bool> offboard_cmd_echo_received_{false};
     std::atomic<bool> arm_cmd_echo_received_{false};
 
-    /// 車輛解鎖狀態 (1=DISARMED, 2=ARMED, 參閱 px4_msgs/VehicleStatus)
+    /// 車輛解鎖狀態（參閱 px4_msgs/VehicleStatus）
     std::atomic<uint8_t> arming_state_{0};
+
+    /// PX4 原生導航模式（VehicleStatus.nav_state）
+    std::atomic<uint8_t> px4_nav_state_{0};
+
+    /// PX4 實際落地狀態（VehicleLandDetected.landed）
+    std::atomic<bool> is_landed_{false};
+
+    /// 最新 VehicleStatus 回呼時間（ROS 時鐘奈秒）
+    std::atomic<int64_t> last_vehicle_status_ns_{0};
+
+    /// 最新 VehicleLandDetected 回呼時間（ROS 時鐘奈秒）
+    std::atomic<int64_t> last_land_detected_ns_{0};
 
     /// RTL 命令已發送旗標
     bool rtl_cmd_sent_{false};
@@ -531,4 +563,3 @@ private:
 
 }  // namespace controllers
 }  // namespace taiphoon
-

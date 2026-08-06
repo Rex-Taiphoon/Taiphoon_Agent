@@ -67,7 +67,8 @@ bool BasicController::initialize()
 
     // --- 依序建立各 Subscriber (單一職責) ---
     if (!create_vehicle_command_ack_subscriber() ||
-        !create_vehicle_status_subscriber())
+        !create_vehicle_status_subscriber() ||
+        !create_vehicle_land_detected_subscriber())
     {
         RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
                      "Subscriber creation failed");
@@ -93,6 +94,7 @@ void BasicController::shutdown()
     vehicle_command_pub_.reset();
     vehicle_command_ack_sub_.reset();
     vehicle_status_sub_.reset();
+    vehicle_land_detected_sub_.reset();
 
     is_initialized_.store(false);
     flight_state_.store(FlightState::IDLE);
@@ -278,6 +280,49 @@ const char* BasicController::get_state() const
 FlightState BasicController::get_flight_state() const
 {
     return flight_state_.load();
+}
+
+FlightStateObservation BasicController::get_flight_state_observation() const
+{
+    FlightStateObservation observation;
+    if (node_ == nullptr)
+    {
+        return observation;
+    }
+
+    int64_t now_ns = node_->now().nanoseconds();
+    int64_t status_ns = last_vehicle_status_ns_.load();
+    int64_t landed_ns = last_land_detected_ns_.load();
+    constexpr int64_t PX4_STATE_TIMEOUT_NS =
+        static_cast<int64_t>(PX4_STATE_TIMEOUT_MS) * 1000000LL;
+
+    bool has_recent_status = status_ns > 0 && now_ns >= status_ns &&
+        now_ns - status_ns <= PX4_STATE_TIMEOUT_NS;
+    bool has_recent_land_detection = landed_ns > 0 && now_ns >= landed_ns &&
+        now_ns - landed_ns <= PX4_STATE_TIMEOUT_NS;
+
+    observation.is_px4_state_valid =
+        has_recent_status && has_recent_land_detection;
+    observation.is_armed = arming_state_.load() ==
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+    observation.is_landed = is_landed_.load();
+    observation.px4_nav_state = px4_nav_state_.load();
+    observation.current_altitude_m = current_altitude_m_.load();
+    observation.target_altitude_m = target_altitude_m_.load();
+
+    float delta_x = current_position_ned_[0] - target_position_ned_[0];
+    float delta_y = current_position_ned_[1] - target_position_ned_[1];
+    float delta_z = current_position_ned_[2] - target_position_ned_[2];
+    observation.target_distance_m = std::sqrt(
+        delta_x * delta_x + delta_y * delta_y + delta_z * delta_z);
+
+    if (flight_state_.load() == FlightState::TAKEOFF)
+    {
+        observation.takeoff_elapsed_s =
+            (node_->now() - takeoff_start_time_).seconds();
+    }
+
+    return observation;
 }
 
 
@@ -627,6 +672,22 @@ bool BasicController::create_vehicle_status_subscriber()
     return true;
 }
 
+bool BasicController::create_vehicle_land_detected_subscriber()
+{
+    vehicle_land_detected_sub_ =
+        node_->create_subscription<px4_msgs::msg::VehicleLandDetected>(
+            "fmu/out/vehicle_land_detected", rclcpp::QoS(DEFAULT_QOS_DEPTH).best_effort(),
+            std::bind(&BasicController::vehicle_land_detected_cb, this,
+                      std::placeholders::_1));
+    if (vehicle_land_detected_sub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Failed to create VehicleLandDetected subscriber");
+        return false;
+    }
+    return true;
+}
+
 
 // =============================================================================
 // 控制命令發布 (主要計時器回呼)
@@ -636,6 +697,8 @@ void BasicController::publish_control_commands()
 {
     if (!is_initialized_.load()) return;
     if (offboard_control_mode_pub_ == nullptr || trajectory_setpoint_pub_ == nullptr) return;
+
+    update_command_state_from_observation();
 
     // L1-02: POST_RTL 狀態停止發佈 Offboard 控制命令
     bool should_publish_offboard = true;
@@ -1088,6 +1151,43 @@ void BasicController::vehicle_status_cb(const px4_msgs::msg::VehicleStatus::Shar
         return;
     }
     arming_state_.store(msg->arming_state);
+    px4_nav_state_.store(msg->nav_state);
+    last_vehicle_status_ns_.store(node_->now().nanoseconds());
+}
+
+void BasicController::vehicle_land_detected_cb(
+    const px4_msgs::msg::VehicleLandDetected::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "vehicle_land_detected_cb received nullptr");
+        return;
+    }
+    is_landed_.store(msg->landed);
+    last_land_detected_ns_.store(node_->now().nanoseconds());
+}
+
+void BasicController::update_command_state_from_observation()
+{
+    FlightState command_intent = flight_state_.load();
+    auto resolution = FlightStateResolver::resolve(
+        get_flight_state_observation(), command_intent);
+
+    if (!resolution.should_transition_to_hover)
+    {
+        return;
+    }
+
+    if (resolution.should_hold_current_position)
+    {
+        target_position_ned_ = current_position_ned_;
+        target_altitude_m_.store(-target_position_ned_[2]);
+    }
+
+    flight_state_.store(FlightState::HOVER);
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "PX4 observation completed command intent, transitioning to HOVER");
 }
 
 }  // namespace controllers

@@ -17,7 +17,7 @@
 #include "px4_msgs/msg/vehicle_odometry.hpp"
 #include "px4_msgs/msg/vehicle_global_position.hpp"
 #include "px4_msgs/msg/battery_status.hpp"
-#include "controllers/BasicController.hpp"
+#include "controllers/FlightStateResolver.hpp"
 
 namespace taiphoon
 {
@@ -43,6 +43,7 @@ public:
      * @param[in]  online        Agent 是否在線
      * @param[in]  gps           PX4 全域位置（可為 nullptr）
      * @param[in]  battery       PX4 電池狀態（可為 nullptr）
+     * @param[in]  observation   PX4 飛行狀態觀測資料（可為 nullptr）
      */
     static void fill_agent_state(
         taiphoon_agent::msg::AgentState& state,
@@ -50,7 +51,8 @@ public:
         controllers::FlightState flight_state,
         bool online,
         const px4_msgs::msg::VehicleGlobalPosition* gps = nullptr,
-        const px4_msgs::msg::BatteryStatus* battery = nullptr)
+        const px4_msgs::msg::BatteryStatus* battery = nullptr,
+        const controllers::FlightStateObservation* observation = nullptr)
     {
         // 時間戳記
         state.stamp.sec = static_cast<int32_t>(odom.timestamp / 1000000ULL);
@@ -79,8 +81,25 @@ public:
                 std::numeric_limits<float>::quiet_NaN();
         }
 
-        // 飛行模式
-        state.flight_mode = static_cast<uint8_t>(flight_state);
+        // PX4 飛行狀態與校正後的任務階段
+        if (observation != nullptr)
+        {
+            auto resolution = controllers::FlightStateResolver::resolve(
+                *observation, flight_state);
+            state.flight_mode = static_cast<uint8_t>(resolution.effective_state);
+            state.armed = observation->is_armed;
+            state.landed = observation->is_landed;
+            state.px4_nav_state = observation->px4_nav_state;
+            state.px4_state_valid = observation->is_px4_state_valid;
+        }
+        else
+        {
+            state.flight_mode = static_cast<uint8_t>(flight_state);
+            state.armed = false;
+            state.landed = false;
+            state.px4_nav_state = 0U;
+            state.px4_state_valid = false;
+        }
 
         // 電池狀態
         if (battery != nullptr)

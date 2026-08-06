@@ -1,6 +1,6 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.2
+> **版本**：1.3
 > **更新日期**：2026-08-06
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
@@ -128,18 +128,28 @@
 
 ### 3.1 AgentState (`taiphoon_agent/msg/AgentState`)
 
-Agent 對外狀態，由 `basic_controller_node` 發布。
+Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 PX4 實際觀測結果校正後的
+任務階段，不代表最近收到的命令意圖。位置資訊由既有的 `position_ned` 與
+`position_global` 提供，不另外複製 PX4 Position 欄位。
 
 | 欄位 | 型別 | 說明 |
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 訊息時間戳 |
 | `position_ned` | `float32[3]` | NED 座標位置（前向/右向/向下，公尺） |
 | `position_global` | `float32[3]` | 全域 GPS 座標 [lat(deg), lon(deg), alt(m AMSL)]，來自 PX4 VehicleGlobalPosition |
-| `flight_mode` | `uint8` | 飛行狀態（對應 FlightState 枚舉，見下表） |
+| `flight_mode` | `uint8` | 經 PX4 觀測校正後的任務階段（對應 FlightState 枚舉，見下表），不是命令意圖 |
 | `battery_remaining` | `float32` | 剩餘電量比例（0.0 ~ 1.0），來自 PX4 BatteryStatus |
 | `battery_voltage_v` | `float32` | 電池電壓（V），來自 PX4 BatteryStatus |
 | `battery_current_a` | `float32` | 電池電流（A），來自 PX4 BatteryStatus |
 | `online` | `bool` | Agent 是否在線 |
+| `armed` | `bool` | PX4 實際解鎖狀態 |
+| `landed` | `bool` | PX4 實際落地狀態 |
+| `px4_nav_state` | `uint8` | PX4 `VehicleStatus.nav_state` 原始值；Manual、Position、Offboard 等 PX4 原生模式由此欄位表示 |
+| `px4_state_valid` | `bool` | PX4 狀態欄位是否有效；只有此值為 `true` 時，`armed`、`landed` 與 `px4_nav_state` 才可信 |
+
+> **PX4 模式判讀**：`px4_nav_state` 不經 Agent 重新編碼，原樣對應 PX4
+> `VehicleStatus.nav_state`。GCS 應先確認 `px4_state_valid=true`，再依相同版本
+> `px4_msgs` 的 `VehicleStatus` 常數判讀 Manual、Position、Offboard 等原生導航模式。
 
 **FlightState 枚舉對照表**：
 

@@ -44,6 +44,10 @@ bash AutoTest/quick_takeoff.sh
 - macOS / Linux（Windows 需 WSL2）
 - 至少 8GB 可用記憶體
 
+> **AgentState 介面相容性**：`taiphoon_agent/msg/AgentState` 是 Agent 與 GCS 共用的
+> ROS2 message。欄位有異動時，Agent 與 GCS 都必須重新建置，並使用同一版本的
+> message 定義，否則 DDS 型別可能不相容而無法正確交換狀態。
+
 ---
 
 ## 操作手冊 — 基本控制

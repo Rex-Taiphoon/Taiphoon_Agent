@@ -136,6 +136,15 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_state_publisher ${cpp_typesupport_target})
 
+  # FlightStateResolver 測試（純邏輯，獨立編譯）
+  ament_add_gtest(test_flight_state_resolver
+    test/flight_state_resolver_test.cpp
+  )
+
+  target_include_directories(test_flight_state_resolver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # AgentSupervisor service 測試
   ament_add_gtest(test_agent_supervisor
     test/agent_supervisor_test.cpp
