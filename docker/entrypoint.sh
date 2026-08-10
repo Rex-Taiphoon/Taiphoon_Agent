@@ -8,8 +8,8 @@
 # 啟動流程:
 #   1. Source ROS2、px4_msgs 與 Taiphoon_Agent 工作空間
 #   2. 背景啟動 MicroXRCEAgent (uXRCE-DDS 橋接)
-#   3. 等待 PX4 odometry topic 出現
-#   4. 若 topic 就緒 → 啟動 Taiphoon_Agent 節點
+#   3. 建置共享 workspace（以 lock 序列化）
+#   4. 啟動 Taiphoon_Agent 節點，不等待 PX4 data 才建立 subscriptions
 #   5. 若 MicroXRCEAgent crash 則自動重啟，持續等待 topic
 #   6. 持續維持 PID 1，直到收到外部 shutdown 訊號
 # =============================================================================
@@ -20,10 +20,30 @@ TAIPHOON_WS="${TAIPHOON_WS:-/home/taiphoon/Taiphoon_Agent}"
 UXRCE_PORT="${UXRCE_PORT:-8888}"
 TARGET_SYSTEM="${TARGET_SYSTEM:-1}"
 AGENT_NAMESPACE="${AGENT_NAMESPACE:-fmu1_agent}"
-ODOMETRY_TOPIC="${ODOMETRY_TOPIC:-/fmu1/fmu/out/vehicle_odometry}"
+
+# ---- EGO-Swarm 部署參數（僅傳入 Node 已宣告參數）----
+EGO_SWARM_PLANNING_RATE_HZ="${EGO_SWARM_PLANNING_RATE_HZ:-10.0}"
+EGO_SWARM_FORMATION_MIN_DISTANCE_M="${EGO_SWARM_FORMATION_MIN_DISTANCE_M:-3.0}"
+EGO_SWARM_KNOT_INTERVAL_S="${EGO_SWARM_KNOT_INTERVAL_S:-1.0}"
+EGO_SWARM_CANDIDATE_OFFSET_M="${EGO_SWARM_CANDIDATE_OFFSET_M:-3.0}"
+EGO_SWARM_OBSTACLE_CLEARANCE_M="${EGO_SWARM_OBSTACLE_CLEARANCE_M:-1.0}"
+EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M="${EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M:-3.0}"
+
+# ---- 可選 PointCloud2 障礙物模擬器（僅傳入 Node 已宣告參數）----
+ENABLE_OBSTACLE_CLOUD_SIMULATOR="${ENABLE_OBSTACLE_CLOUD_SIMULATOR:-false}"
+OBSTACLE_CLOUD_CONFIG="${OBSTACLE_CLOUD_CONFIG:-${TAIPHOON_WS}/config/obstacles/default.yaml}"
+OBSTACLE_CLOUD_PUBLISH_RATE_HZ="${OBSTACLE_CLOUD_PUBLISH_RATE_HZ:-15.0}"
+OBSTACLE_CLOUD_MODE="${OBSTACLE_CLOUD_MODE:-sensor_emulation}"
+OBSTACLE_CLOUD_RANGE_M="${OBSTACLE_CLOUD_RANGE_M:-20.0}"
+OBSTACLE_CLOUD_HORIZONTAL_FOV_DEG="${OBSTACLE_CLOUD_HORIZONTAL_FOV_DEG:-270.0}"
+OBSTACLE_CLOUD_VERTICAL_FOV_DEG="${OBSTACLE_CLOUD_VERTICAL_FOV_DEG:-90.0}"
+OBSTACLE_CLOUD_NOISE_STD_M="${OBSTACLE_CLOUD_NOISE_STD_M:-0.02}"
+OBSTACLE_CLOUD_DROPOUT_RATIO="${OBSTACLE_CLOUD_DROPOUT_RATIO:-0.05}"
+OBSTACLE_CLOUD_SAMPLE_SPACING_M="${OBSTACLE_CLOUD_SAMPLE_SPACING_M:-0.5}"
 
 # 從 namespace 提取 fmu{N} 部分作為 ROS2 namespace
 FMU_NS="${AGENT_NAMESPACE%_agent}"
+BUILD_LOCK_FILE="${TAIPHOON_WS}/log/.taiphoon_agent_build.lock"
 
 # PID 1 必須自行處理 SIGTERM；否則容器內的 Bash 可能只忽略訊號，
 # 導致遠端 shutdown service 回覆成功但容器仍持續執行。
@@ -35,11 +55,49 @@ shutdown_agent() {
 
 trap shutdown_agent TERM INT
 
+build_agent_workspace() {
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "[Entrypoint] 錯誤：找不到 flock，無法序列化共享 workspace build"
+        return 1
+    fi
+
+    if ! mkdir -p "${TAIPHOON_WS}/log"; then
+        echo "[Entrypoint] 錯誤：無法建立 build lock 目錄：${TAIPHOON_WS}/log"
+        return 1
+    fi
+
+    (
+        if ! exec 9>"${BUILD_LOCK_FILE}"; then
+            echo "[Entrypoint] 錯誤：無法建立 build lock：${BUILD_LOCK_FILE}"
+            exit 1
+        fi
+
+        echo "[Entrypoint] 等待共享 workspace build lock..."
+        if ! flock 9; then
+            echo "[Entrypoint] 錯誤：無法取得共享 workspace build lock"
+            exit 1
+        fi
+
+        echo "[Entrypoint] 開始建置 taiphoon_agent（已取得共享 lock）..."
+        colcon build --symlink-install \
+            --packages-select taiphoon_agent \
+            --event-handlers console_direct+
+    )
+}
+
 echo "============================================"
 echo " Taiphoon_Agent Docker 容器啟動"
 echo "   UXRCE_PORT=${UXRCE_PORT}"
 echo "   TARGET_SYSTEM=${TARGET_SYSTEM}"
 echo "   AGENT_NAMESPACE=${AGENT_NAMESPACE}"
+echo "   EGO_SWARM_PLANNING_RATE_HZ=${EGO_SWARM_PLANNING_RATE_HZ}"
+echo "   EGO_SWARM_FORMATION_MIN_DISTANCE_M=${EGO_SWARM_FORMATION_MIN_DISTANCE_M}"
+echo "   EGO_SWARM_KNOT_INTERVAL_S=${EGO_SWARM_KNOT_INTERVAL_S}"
+echo "   EGO_SWARM_CANDIDATE_OFFSET_M=${EGO_SWARM_CANDIDATE_OFFSET_M}"
+echo "   EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M=${EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M}"
+echo "   EGO_SWARM_OBSTACLE_CLEARANCE_M=${EGO_SWARM_OBSTACLE_CLEARANCE_M}"
+echo "   ENABLE_OBSTACLE_CLOUD_SIMULATOR=${ENABLE_OBSTACLE_CLOUD_SIMULATOR}"
+echo "   OBSTACLE_CLOUD_CONFIG=${OBSTACLE_CLOUD_CONFIG}"
 echo "============================================"
 
 # ---- Step 1: Source ROS2 Humble ----
@@ -95,76 +153,48 @@ else
     echo "[Entrypoint] AgentSupervisor 已啟動 (PID=${SUPERVISOR_PID})"
 fi
 
-# ---- Step 5: 等待 odometry topic（無限期，含 Agent 自動重啟）----
-ODOMETRY_READY=false
-
-echo "[Entrypoint] 等待 odometry topic（含 vehicle_odometry），無限期等待..."
-ELAPSED=0
-while true; do
-    if ros2 topic list 2>/dev/null | grep -q "vehicle_odometry"; then
-        echo "[Entrypoint] Odometry topic 已就緒 (${ELAPSED}s)"
-        ODOMETRY_READY=true
-        break
-    fi
-    # MicroXRCEAgent crash 時自動重啟
-    if ! kill -0 ${UXRCE_PID} 2>/dev/null; then
-        echo "[Entrypoint] MicroXRCEAgent 已終止，正在重新啟動..."
-        MicroXRCEAgent udp4 -p "${UXRCE_PORT}" &
-        UXRCE_PID=$!
-        sleep 1
-        if kill -0 ${UXRCE_PID} 2>/dev/null; then
-            echo "[Entrypoint] MicroXRCEAgent 已重新啟動 (PID=${UXRCE_PID})"
-        else
-            echo "[Entrypoint] 錯誤：MicroXRCEAgent 重新啟動失敗，稍後重試"
-        fi
-    fi
-    # 每 15 秒印一次狀態
-    if [ $((ELAPSED % 15)) -eq 0 ] && [ ${ELAPSED} -gt 0 ]; then
-        echo "[Entrypoint] 持續等待 odometry topic... (${ELAPSED}s)"
-    fi
-    sleep 1
-    ELAPSED=$((ELAPSED + 1))
-done
-
-# ---- 確保 binary 與掛載原始碼同步 ----
-echo "[Entrypoint] 同步編譯 Taiphoon_Agent..."
-cd ${TAIPHOON_WS} && /bin/bash -c "source /opt/ros/humble/setup.bash && source ${PX4_UROS_WS}/install/setup.bash && colcon build --symlink-install 2>&1" | tail -3
-echo "[Entrypoint] 編譯完成"
-
-# ---- Step 6: 啟動 Taiphoon_Agent 節點 ----
-if [ "${ODOMETRY_READY}" = true ]; then
-    echo "[Entrypoint] 啟動 Taiphoon_Agent 節點（namespace=${AGENT_NAMESPACE}）..."
-
-    # BasicController: 飛控橋接 + 命令處理
-    ros2 run taiphoon_agent basic_controller \
-        --ros-args -r __ns:=/${FMU_NS} \
-        -p target_system:=${TARGET_SYSTEM} \
-        -p agent_namespace:=${AGENT_NAMESPACE} \
-        -p auto_start_sequence:=false \
-        &
-    BC_PID=$!
-    echo "[Entrypoint] BasicController 已啟動 (PID=${BC_PID})"
-
-    # MissionPlanner: 同儕發現 + 編隊計算
-    ros2 run taiphoon_agent mission_planner \
-        --ros-args -r __ns:=/${AGENT_NAMESPACE} \
-        -p agent_namespace:=${AGENT_NAMESPACE} \
-        &
-    MP_PID=$!
-    echo "[Entrypoint] MissionPlanner 已啟動 (PID=${MP_PID})"
-
-    # TrajectoryController: 路徑規劃 + 碰撞檢查
-    ros2 run taiphoon_agent trajectory_controller \
-        --ros-args -r __ns:=/${AGENT_NAMESPACE} \
-        -p agent_namespace:=${AGENT_NAMESPACE} \
-        &
-    TC_PID=$!
-    echo "[Entrypoint] TrajectoryController 已啟動 (PID=${TC_PID})"
-
-    echo "[Entrypoint] 全部節點已啟動 (SUP=${SUPERVISOR_PID}, BC=${BC_PID}, MP=${MP_PID}, TC=${TC_PID})"
-else
-    echo "[Entrypoint] 略過節點啟動（odometry 未就緒）"
+# ---- Step 5: 序列化建置，不以 PX4 topic 存在與否決定節點生命週期 ----
+if ! cd "${TAIPHOON_WS}"; then
+    echo "[Entrypoint] 錯誤：無法進入工作空間：${TAIPHOON_WS}"
+    exit 1
 fi
+
+if ! build_agent_workspace; then
+    echo "[Entrypoint] 錯誤：taiphoon_agent 建置失敗，略過節點啟動"
+    exit 1
+fi
+echo "[Entrypoint] taiphoon_agent 建置完成"
+
+# ---- Step 6: 啟動 Agent 節點；PX4 data 未到時由 Node 自行報告 not ready ----
+echo "[Entrypoint] 啟動 Agent 節點（namespace=${AGENT_NAMESPACE}）；不等待 PX4 odometry..."
+
+# BasicController、EGO-Swarm 與選配 PointCloud2 模擬器統一由單一 launch
+# manager 管理；entrypoint 不再另行 ros2 run BasicController。
+ros2 launch taiphoon_agent basic_controller.launch.py \
+    single_agent_mode:=true \
+    target_system:="${TARGET_SYSTEM}" \
+    agent_namespace:="${AGENT_NAMESPACE}" \
+    auto_start_sequence:=false \
+    planning_rate_hz:="${EGO_SWARM_PLANNING_RATE_HZ}" \
+    formation_min_distance_m:="${EGO_SWARM_FORMATION_MIN_DISTANCE_M}" \
+    knot_interval_s:="${EGO_SWARM_KNOT_INTERVAL_S}" \
+    candidate_offset_m:="${EGO_SWARM_CANDIDATE_OFFSET_M}" \
+    obstacle_clearance_m:="${EGO_SWARM_OBSTACLE_CLEARANCE_M}" \
+    peer_collision_min_distance_m:="${EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M}" \
+    enable_obstacle_cloud_simulator:="${ENABLE_OBSTACLE_CLOUD_SIMULATOR}" \
+    obstacle_config:="${OBSTACLE_CLOUD_CONFIG}" \
+    obstacle_publish_rate_hz:="${OBSTACLE_CLOUD_PUBLISH_RATE_HZ}" \
+    obstacle_mode:="${OBSTACLE_CLOUD_MODE}" \
+    obstacle_range_m:="${OBSTACLE_CLOUD_RANGE_M}" \
+    obstacle_horizontal_fov_deg:="${OBSTACLE_CLOUD_HORIZONTAL_FOV_DEG}" \
+    obstacle_vertical_fov_deg:="${OBSTACLE_CLOUD_VERTICAL_FOV_DEG}" \
+    obstacle_noise_std_m:="${OBSTACLE_CLOUD_NOISE_STD_M}" \
+    obstacle_dropout_ratio:="${OBSTACLE_CLOUD_DROPOUT_RATIO}" \
+    obstacle_sample_spacing_m:="${OBSTACLE_CLOUD_SAMPLE_SPACING_M}" \
+    &
+AGENT_LAUNCH_PID=$!
+echo "[Entrypoint] 單一 Agent launch manager 已啟動 (PID=${AGENT_LAUNCH_PID})"
+echo "[Entrypoint] 全部節點已交由單一 launch manager 管理 (SUP=${SUPERVISOR_PID}, LAUNCH=${AGENT_LAUNCH_PID})"
 
 echo "============================================"
 

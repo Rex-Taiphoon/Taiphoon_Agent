@@ -13,6 +13,8 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <mutex>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "px4_msgs/msg/offboard_control_mode.hpp"
@@ -58,6 +60,39 @@ constexpr uint8_t DEFAULT_TARGET_SYSTEM = 1;
 
 /// PX4 飛行狀態資料逾時時間（毫秒）
 constexpr int PX4_STATE_TIMEOUT_MS = 2000;
+
+/**
+ * @brief 可由軌跡規劃器提供的定時 B-spline 軌跡資料。
+ *
+ * 此型別刻意不依賴 AgentTrajectory ROS2 訊息，讓 BasicController 的
+ * 軌跡取樣 seam 可在訊息介面尚未產生時獨立編譯與測試。
+ * `order` 定義為 B-spline 多項式階數；例如 cubic 使用 order=3。
+ */
+struct TimedTrajectory
+{
+    rclcpp::Time stamp{static_cast<int64_t>(0), RCL_ROS_TIME};
+    rclcpp::Time start_time{static_cast<int64_t>(0), RCL_ROS_TIME};
+    uint32_t trajectory_id{0U};
+    uint32_t agent_index{0U};
+    uint32_t frame_revision{0U};
+    uint8_t order{0U};
+    float knot_interval_s{0.0F};
+    std::vector<std::array<float, 3>> control_points;
+    float duration_s{0.0F};
+    bool valid{false};
+};
+
+/**
+ * @brief 定時軌跡取樣結果。
+ */
+enum class TimedTrajectorySampleResult : uint8_t
+{
+    VALID = 0U,
+    NO_TRAJECTORY = 1U,
+    NOT_STARTED = 2U,
+    EXPIRED = 3U,
+    INVALID = 4U
+};
 
 /**
  * @brief 基礎飛行控制器
@@ -240,6 +275,38 @@ public:
     std::array<float, 3> get_target_position_ned() const;
 
     /**
+     * @brief 更新最新有效的定時軌跡。
+     *
+     * 收到非法軌跡時保留目前有效軌跡；收到座標版本變更時清除舊軌跡，
+     * 讓控制迴圈至少輸出一次目前位置 hold，避免在不同座標系間跳接。
+     * 新版本的第一筆軌跡會被當作版本同步訊號拒絕，後續同版本軌跡才會啟用。
+     *
+     * @param trajectory 規劃器輸出的定時軌跡
+     * @return true 表示軌跡已儲存並可供取樣
+     */
+    bool update_timed_trajectory(const TimedTrajectory& trajectory);
+
+    /**
+     * @brief 依指定 ROS 時間取樣目前有效的定時軌跡。
+     *
+     * 使用 uniform clamped B-spline 的 De Boor 演算法。duration_s 是
+     * 軌跡的有效時間窗，時間窗內不會因資料年齡增加任何安全半徑。
+     *
+     * @param sample_time 取樣時間
+     * @param position 輸出的 NED 位置
+     * @return 取樣結果；只有 VALID 時 position 才是軌跡取樣結果
+     */
+    TimedTrajectorySampleResult sample_timed_trajectory(
+        const rclcpp::Time& sample_time,
+        std::array<float, 3>& position) const;
+
+    /**
+     * @brief 檢查目前是否保留可取樣的定時軌跡。
+     * @return true 表示緩衝區內有最新有效軌跡
+     */
+    bool has_timed_trajectory() const;
+
+    /**
      * @brief 將目標重設為目前位置並進入 HOVER
      * @return true 控制器已初始化且保持目標設定成功
      */
@@ -349,7 +416,7 @@ private:
      *
      * 發送 RTL 命令，等待 PX4 完成降落並上鎖
      *
-     * @param msg TrajectorySetpoint 訊息 (停用位置設定)
+     * @param msg TrajectorySetpoint 訊息 (有限 hold 位置設定)
      */
     void handle_rtl_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
@@ -359,7 +426,7 @@ private:
      *
      * 發送 LAND 命令，等待 PX4 完成降落
      *
-     * @param msg TrajectorySetpoint 訊息 (停用位置設定)
+     * @param msg TrajectorySetpoint 訊息 (有限 hold 位置設定)
      */
     void handle_land_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
@@ -385,7 +452,7 @@ private:
     /**
      * @brief 處理 POST_RTL 狀態
      *
-     * RTL 降落完成後，停止 Offboard 控制，發送 Hold 模式命令
+     * RTL 降落完成後，停止 Offboard 控制，發送 Hold 模式命令；輸出仍維持有限 hold
      */
     void handle_post_rtl_state(
         px4_msgs::msg::TrajectorySetpoint& msg);
@@ -477,6 +544,19 @@ private:
      */
     void update_command_state_from_observation();
 
+    /**
+     * @brief 取得有限的目前／目標位置，供無有效控制時產生 hold setpoint。
+     * @return 優先目前位置，其次目標位置；兩者異常時回傳有限原點
+     */
+    std::array<float, 3> get_safe_hold_position() const;
+
+    /**
+     * @brief 驗證定時軌跡資料。
+     * @param trajectory 待驗證軌跡
+     * @return true 表示欄位與控制點皆為有限且可評估
+     */
+    static bool validate_timed_trajectory(const TimedTrajectory& trajectory);
+
     // ==================== 成員變數 ====================
 
     /// ROS2 節點指標
@@ -556,6 +636,12 @@ private:
     /// 目標位置 (NED 座標系) [x, y, z]，用於移動命令
     std::array<float, 3> target_position_ned_{0.0F, 0.0F, 0.0F};
 
+    /// 定時軌跡緩衝區；只有 BasicController 發布其取樣結果至 PX4
+    mutable std::mutex timed_trajectory_mutex_;
+    TimedTrajectory timed_trajectory_{};
+    bool has_timed_trajectory_{false};
+    bool has_frame_revision_{false};
+    uint32_t timed_trajectory_frame_revision_{0U};
 
     /// Offboard 控制已停止旗標 (RTL 落地後)
     bool has_offboard_stopped_{false};

@@ -11,6 +11,7 @@ find_package(px4_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 # 測試依賴 (僅在 BUILD_TESTING 啟用時)
@@ -25,6 +26,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AgentAttitude.msg"
   "msg/Waypoint.msg"
   "msg/WaypointSequence.msg"
+  "msg/AgentTrajectory.msg"
+  "msg/PlannerStatus.msg"
+  "msg/RelativeAgentObservation.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 
@@ -41,7 +45,6 @@ add_executable(basic_controller
   src/controllers/BasicController.cpp
   src/controllers/AgentCommandHandler.cpp
   src/nodes/basic_controller_node.cpp
-  src/safety/CollisionSafetyMonitor.cpp
 )
 
 target_include_directories(basic_controller PRIVATE
@@ -53,6 +56,7 @@ ament_target_dependencies(basic_controller
   px4_msgs
   std_msgs
   builtin_interfaces
+  sensor_msgs
 )
 
 target_link_libraries(basic_controller ${cpp_typesupport_target})
@@ -72,48 +76,53 @@ ament_target_dependencies(agent_supervisor
   std_srvs
 )
 
-# --- MissionPlanner 執行檔 ---
-add_executable(mission_planner
-  src/formation/main_mission_planner.cpp
-  src/formation/MissionPlanner.cpp
+# --- EGO-Swarm Planner 執行檔 ---
+add_executable(ego_swarm_planner
+  src/main_ego_swarm_planner.cpp
+  src/nodes/ego_swarm_planner_node.cpp
 )
 
-target_include_directories(mission_planner PRIVATE
+target_include_directories(ego_swarm_planner PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-ament_target_dependencies(mission_planner
+ament_target_dependencies(ego_swarm_planner
   rclcpp
   std_msgs
   builtin_interfaces
+  sensor_msgs
 )
 
-target_link_libraries(mission_planner ${cpp_typesupport_target})
+target_link_libraries(ego_swarm_planner ${cpp_typesupport_target})
 
-# --- TrajectoryController 執行檔 ---
-add_executable(trajectory_controller
-  src/trajectory/main_trajectory_controller.cpp
-  src/trajectory/TrajectoryController.cpp
+# --- PointCloud2 障礙物模擬器 ---
+add_executable(obstacle_cloud_simulator
+  src/main_obstacle_cloud_simulator.cpp
+  src/nodes/obstacle_cloud_simulator_node.cpp
+  src/perception/ObstacleCloudGenerator.cpp
+  src/perception/PointCloud2Adapter.cpp
 )
 
-target_include_directories(trajectory_controller PRIVATE
+target_include_directories(obstacle_cloud_simulator PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-ament_target_dependencies(trajectory_controller
+ament_target_dependencies(obstacle_cloud_simulator
   rclcpp
-  std_msgs
-  builtin_interfaces
+  sensor_msgs
 )
-
-target_link_libraries(trajectory_controller ${cpp_typesupport_target})
 
 # --- 安裝 ---
-install(TARGETS basic_controller agent_supervisor mission_planner trajectory_controller
+install(TARGETS basic_controller agent_supervisor ego_swarm_planner
+  obstacle_cloud_simulator
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -220,6 +229,40 @@ if(BUILD_TESTING)
 
   target_include_directories(test_trajectory_planner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # EGO-Swarm 核心測試
+  ament_add_gtest(test_ego_swarm_core
+    test/ego_swarm_core_test.cpp
+  )
+
+  target_include_directories(test_ego_swarm_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # PointCloud2 幾何資料測試
+  ament_add_gtest(test_obstacle_cloud
+    test/obstacle_cloud_test.cpp
+    src/perception/ObstacleCloudGenerator.cpp
+  )
+
+  target_include_directories(test_obstacle_cloud PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # BasicController 定時軌跡測試
+  ament_add_gtest(test_basic_controller_trajectory
+    test/basic_controller_trajectory_test.cpp
+    src/controllers/BasicController.cpp
+  )
+
+  target_include_directories(test_basic_controller_trajectory PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  ament_target_dependencies(test_basic_controller_trajectory
+    rclcpp
+    px4_msgs
   )
 endif()
 

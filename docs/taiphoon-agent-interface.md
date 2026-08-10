@@ -1,6 +1,6 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.4
+> **版本**：1.5
 > **更新日期**：2026-08-10
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
@@ -27,27 +27,30 @@
 ## 1. 系統架構總覽
 
 ```
-MissionPlanner ── NedTarget ──┬──▶ TrajectoryController
-                              │             │
-                              │             └──▶ /waypoints
-                              ▼                  （僅規劃／觀測）
-其他 AgentState ──▶ [防撞關卡] ──▶ BasicController ──▶ PX4
-                         ▲
-GCS 移動命令 ─────────────┘
+GCS 命令 ──▶ EgoSwarmPlanner ──▶ AgentTrajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
+                  ▲       ▲              │
+                  │       │              └──▶ /fmu_all_agent/swarm/agent_trajectories
+                  │       └── PointCloud2（局部障礙物）
+                  └── GPS common frame／編隊槽位／同儕未來軌跡
+
+ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 ```
 
-> `/{agent_namespace}/waypoints` 是軌跡規劃與觀測輸出，目前沒有接入
-> `BasicController` 或 PX4 控制鏈。BasicController 執行控制目標前的防撞關卡，才是
-> NED 目標送往 PX4 前的最終控制關卡。
+本文件依目前工作區的 Node、`.msg` 與 Launch 實作定義 ROS2 契約。EGO-Swarm 核心
+目前是 deterministic candidate baseline，透過固定候選 B-spline 進行成本與安全評估；
+不宣稱已完整重現原始 EGO-Swarm 的 nonlinear optimizer。
 
 每一台無人機對應一個 Taiphoon_Agent 實例，內含四個節點：
 
 | 節點 | 功能 | 必有 |
 |------|------|------|
-| `basic_controller_node` | 飛控橋接、狀態發布、命令轉譯 | ✅ |
-| `mission_planner` | 編隊計算、同儕發現、NED 目標輸出 | 多機時 |
-| `trajectory_controller` | 路徑規劃、碰撞檢查、waypoint 發布 | ✅ |
+| `basic_controller_node` | 飛控橋接、狀態發布、命令轉譯，以及 EGO-Swarm 軌跡取樣後發布 PX4 setpoint | ✅ |
+| `ego_swarm_planner` | GPS common frame、編隊槽位、PointCloud2 障礙物與同儕未來軌跡的 deterministic candidate baseline 局部規劃 | ✅ |
+| `obstacle_cloud_simulator` | 依 YAML 障礙物描述發布 PointCloud2 模擬資料 | 選配 |
 | `agent_supervisor` | Agent 容器生命週期管理，提供失效模擬服務 | ✅ |
+
+`mission_planner` 與 `trajectory_controller` 已由 EGO-Swarm 執行鏈取代；若舊程式仍
+存在，僅可作為純邏輯測試或過渡期間的非控制實作，不能再視為新的 PX4 控制資料流。
 
 ---
 
@@ -65,36 +68,70 @@ GCS 移動命令 ─────────────┘
 **內部組件**：
 - `BasicController`：PX4 Offboard 控制（arm/disarm/takeoff/land/move）
 - `AgentCommandHandler`：接收並解析高階命令字串
-- 防撞關卡：以同儕 AgentState 檢查三維安全距離，決定移動目標是否可交給 BasicController 執行
+- EGO-Swarm 軌跡執行器：取樣規劃器提供的軌跡，產生 PX4 `TrajectorySetpoint`
 - `PositionSafetyMonitor`：位置偏差安全監控
 - `StatePublisher`：填充 AgentState / AgentAttitude 訊息
 
-### 2.2 mission_planner
+`basic_controller_node` 是唯一允許發布 PX4 `TrajectorySetpoint` 的 Agent 節點。
+
+### 2.2 ego_swarm_planner
 
 | 屬性 | 值 |
 |------|-----|
-| **執行檔** | `mission_planner` |
-| **節點名稱** | `mission_planner` |
+| **執行檔** | `ego_swarm_planner` |
+| **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
-| **描述** | 任務規劃層。動態同儕發現、編隊計算、NED 目標發布。 |
-| **啟動條件** | `drone_count > 1` |
+| **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、GPS common frame、PointCloud2 與同儕未來軌跡，輸出本機軌跡。 |
+| **參數** | `agent_namespace`、`agent_index`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`candidate_offset_m` |
 
 **內部組件**：
-- `FormationCalculator`：編隊位置計算
-- `PeerMatcher`：同儕比對與匹配
+- `SwarmFrame`：共同 GPS／NED 座標框架
+- `FormationSlotPlanner`：虛擬編隊槽位計算
+- `LocalObstacleMap`：PointCloud2 局部障礙物資料處理
+- `PeerTrajectoryTable`：同儕未來軌跡保存
+- `EgoSwarmPlanner`：deterministic candidate baseline 局部軌跡成本與安全評估；不宣稱完整原始 EGO-Swarm nonlinear optimizer
 
-### 2.3 trajectory_controller
+**實際參數**：
+
+| 參數 | 型別 | Node 預設值 | 說明 |
+|------|------|-------------|------|
+| `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_index` | `int` | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
+| `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
+| `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
+| `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
+| `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
+| `knot_interval_s` | `double` | `1.0` | B-spline knot 間隔 |
+| `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
+
+### 2.3 obstacle_cloud_simulator
 
 | 屬性 | 值 |
 |------|-----|
-| **執行檔** | `trajectory_controller` |
-| **節點名稱** | `trajectory_controller` |
-| **命名空間** | `fmu{N}` |
-| **描述** | 軌跡控制層。路徑生成、碰撞檢查、waypoint 序列發布；輸出目前不直接控制 PX4。 |
+| **執行檔** | `obstacle_cloud_simulator` |
+| **節點名稱** | `obstacle_cloud_simulator` |
+| **命名空間** | 依啟動設定決定 |
+| **描述** | 讀取 YAML 幾何障礙物，產生 `sensor_msgs/msg/PointCloud2`，供 EGO-Swarm 局部障礙物地圖使用。 |
+| **參數** | `agent_namespace`、`config_file`、`publish_rate_hz`、`mode`、`range_m`、`horizontal_fov_deg`、`vertical_fov_deg`、`noise_std_m`、`dropout_ratio`、`sample_spacing_m` |
 
-**內部組件**：
-- `TrajectoryPlanner`：直線路徑生成與到達時間計算
-- `PeerMatcher`：同儕位置蒐集
+支援的目標場景類型為 `box`、`cylinder` 與 `wall`，並規劃支援 `ground_truth_map`
+與 `sensor_emulation` 兩種資料模式。輸出 Topic 固定為
+`/{agent_namespace}/perception/obstacles`。
+
+**實際參數**：
+
+| 參數 | 型別 | Node 預設值 | 說明 |
+|------|------|-------------|------|
+| `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
+| `config_file` | `string` | 空字串 | YAML 場景檔；Launch 預設使用 `config/obstacles/default.yaml` |
+| `publish_rate_hz` | `double` | `15.0` | PointCloud2 發布頻率 |
+| `mode` | `string` | `sensor_emulation` | `ground_truth_map` 或 `sensor_emulation` |
+| `range_m` | `double` | `20.0` | 感測範圍 |
+| `horizontal_fov_deg` | `double` | `270.0` | 水平視野 |
+| `vertical_fov_deg` | `double` | `90.0` | 垂直視野 |
+| `noise_std_m` | `double` | `0.02` | 感測位置雜訊標準差 |
+| `dropout_ratio` | `double` | `0.05` | 點雲 dropout 比例 |
+| `sample_spacing_m` | `double` | `0.5` | 障礙物表面採樣間距 |
 
 ### 2.4 agent_supervisor
 
@@ -168,7 +205,8 @@ Agent 姿態訊息，由 `basic_controller_node` 發布。
 
 ### 3.3 NedTarget (`taiphoon_agent/msg/NedTarget`)
 
-NED 絕對目標位置，由 `mission_planner` → `basic_controller_node` 與 `trajectory_controller`。
+既有 NED 絕對目標位置訊息。EGO-Swarm 取代舊任務／直線軌跡執行鏈後，僅作相容或
+純邏輯測試用途，不是新的 EGO-Swarm 未來軌跡契約。
 
 | 欄位 | 型別 | 說明 |
 |------|------|------|
@@ -188,12 +226,63 @@ NED 絕對目標位置，由 `mission_planner` → `basic_controller_node` 與 `
 
 ### 3.5 WaypointSequence (`taiphoon_agent/msg/WaypointSequence`)
 
-Waypoint 序列，由 `trajectory_controller` 發布。
+既有 waypoint 序列訊息。EGO-Swarm 取代 `trajectory_controller` 後，僅作純邏輯測試
+用途，不是 PX4 控制來源。
 
 | 欄位 | 型別 | 說明 |
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 訊息時間戳 |
 | `waypoints` | `Waypoint[]` | waypoint 序列 |
+
+### 3.6 AgentTrajectory (`taiphoon_agent/msg/AgentTrajectory`)
+
+EGO-Swarm Agent 未來軌跡訊息，供 BasicController 執行與同儕避碰。
+ROSIDL 對 `control_points` 產生 `std::vector<float>`；欄位採扁平化格式，
+每三個 float 依序表示一個 `swarm_ned` 控制點 `[x, y, z]`。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 發布時間 |
+| `start_time` | `builtin_interfaces/Time` | 軌跡起始時間 |
+| `trajectory_id` | `uint32` | 單調遞增的軌跡識別碼 |
+| `agent_index` | `uint32` | 發布者 Agent 索引 |
+| `frame_revision` | `uint32` | `swarm_ned` 座標版本 |
+| `order` | `uint8` | B-spline 階數 |
+| `knot_interval_s` | `float32` | knot 間隔（秒） |
+| `control_points` | `float32[]` | 扁平化 `swarm_ned` 控制點；每 3 個連續元素為一個 `[x, y, z]`，排列為 `[x0,y0,z0,x1,y1,z1,...]`，長度必須為 3 的倍數 |
+| `duration_s` | `float32` | 軌跡有效時間（秒） |
+| `frame_origin_global` | `float64[3]` | 共同座標原點 `[lat, lon, alt]` |
+| `valid` | `bool` | 軌跡是否可供同儕使用 |
+
+### 3.7 PlannerStatus (`taiphoon_agent/msg/PlannerStatus`)
+
+EGO-Swarm Planner 狀態與安全指標。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 狀態時間戳 |
+| `state` | `uint8` | 規劃器狀態 |
+| `trajectory_id` | `uint32` | 目前軌跡識別碼 |
+| `map_valid` | `bool` | 障礙物地圖是否有效 |
+| `localization_valid` | `bool` | 共同座標是否有效 |
+| `peer_data_valid` | `bool` | 同儕資料是否可用 |
+| `planning_time_ms` | `float32` | 最近一次規劃耗時 |
+| `min_obstacle_distance_m` | `float32` | 最近障礙物距離 |
+| `min_peer_distance_m` | `float32` | 最近同儕中心距離 |
+| `reason` | `string` | 降級或失敗原因 |
+
+### 3.8 RelativeAgentObservation (`taiphoon_agent/msg/RelativeAgentObservation`)
+
+未來相對定位 Adapter 使用的單一同儕觀測。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 觀測時間戳 |
+| `agent_index` | `uint32` | 同儕 Agent 索引 |
+| `relative_position_ned` | `float32[3]` | 相對 NED 位置（公尺） |
+| `relative_velocity_ned` | `float32[3]` | 相對 NED 速度（公尺／秒） |
+| `confidence` | `float32` | 觀測信心度（0.0 ~ 1.0） |
+| `valid` | `bool` | 觀測是否有效 |
 
 ---
 
@@ -251,47 +340,56 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 
 | Topic 模板 | 說明 | 型別 | QoS |
 |------------|------|------|-----|
-| `/{agent_namespace}/ned_target` | 編隊計算出的 NED 目標 | `taiphoon_agent/NedTarget` | reliable (10) |
-| `/{agent_namespace}/waypoints` | 軌跡控制器輸出的規劃／觀測 waypoint 序列；目前不是 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | reliable (10) |
-| `/{agent_namespace}/obstacles` | 障礙物資訊（預留介面，尚未實作） | `std_msgs/String` | best_effort (10) |
+| `/fmu_all_agent/swarm/agent_trajectories` | 各 Agent 發布的 EGO-Swarm 未來軌跡，供同儕規劃與 BasicController 取樣使用 | `taiphoon_agent/AgentTrajectory` | reliable (pub) / best_effort (sub), depth 10 |
+| `/{agent_namespace}/perception/obstacles` | 本機局部障礙物 PointCloud2 | `sensor_msgs/msg/PointCloud2` | best_effort (pub/sub), depth 10 |
+| `/{agent_namespace}/planning/mission_intent` | 本機任務意圖文字命令，供 EGO-Swarm Planner 設定目標 | `std_msgs/msg/String` | reliable (10) |
+| `/{agent_namespace}/planning/status` | 本機 EGO-Swarm 規劃狀態與診斷 | `taiphoon_agent/PlannerStatus` | reliable (10) |
+| `/{agent_namespace}/planning/trajectory` | 本機 EGO-Swarm 規劃結果 | `taiphoon_agent/AgentTrajectory` | reliable (10) |
+| `/{agent_namespace}/ned_target` | 舊 NED 目標介面；EGO-Swarm 取代後僅作相容或純邏輯測試用途 | `taiphoon_agent/NedTarget` | 既有介面 |
+| `/{agent_namespace}/waypoints` | 舊 waypoint 介面；EGO-Swarm 取代後僅作純邏輯測試用途，不能視為 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | 既有介面 |
 
 #### 4.2.4 跨 Agent 通訊（同儕發現）
 
-`mission_planner` 與 `trajectory_controller` 會動態訂閱其他 Agent 的 `/state` topic：
+EGO-Swarm 以 AgentState 取得同儕目前狀態與 GPS common frame 所需位置，並以同儕
+未來軌跡進行時間域避碰：
 
-| 訂閱者 | 訂閱 Topic | 用途 |
+| 角色 | Topic | 用途 |
 |--------|-----------|------|
-| `mission_planner` | `/{peer_namespace}/state` | 取得同儕位置以計算編隊目標 |
-| `trajectory_controller` | `/{peer_namespace}/state` | 取得同儕位置以檢查路徑碰撞 |
-| `basic_controller_node` | `/{peer_namespace}/state` | 在移動目標送往 PX4 前執行最終防撞判斷 |
+| `ego_swarm_planner`（訂閱） | `/{agent_namespace}/state`、`/{peer_namespace}/state` | 取得自身與同儕位置、GPS common frame 資料 |
+| `ego_swarm_planner`（訂閱） | `/{agent_namespace}/ned_target` | 接收既有 NED 目標相容輸入 |
+| `ego_swarm_planner`（訂閱） | `/{agent_namespace}/planning/mission_intent` | 接收本機任務意圖 |
+| `ego_swarm_planner`（訂閱） | `/fmu_all_agent/command` | 接收全體編隊與同步命令 |
+| `ego_swarm_planner`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
+| `ego_swarm_planner`（發布） | `/fmu_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
+| `ego_swarm_planner`（發布） | `/{agent_namespace}/planning/status`、`/{agent_namespace}/planning/trajectory` | 發布本機規劃狀態與軌跡 |
+| `obstacle_cloud_simulator`（發布） | `/{agent_namespace}/perception/obstacles` | 發布 PointCloud2 障礙物資料 |
+| `basic_controller_node`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取樣目前 Agent 的軌跡並發布 PX4 setpoint |
 
-> **同儕發現與離線判定機制**：透過 ROS2 node 名稱掃描自動發現線上 Agent，
-> 只辨識 `/fmu<N>_agent/...` 節點（相容模式另含 `/fmu<N>/basic_controller_node`）。
-> 離線判定以 `/fmu<N>_agent` 節點存在性為主軸，並以「超過
-> `peer_timeout_s`（預設 2 秒）未收到該 Agent 的 `/fmu<N>_agent/state`」作為
-> 加速器（避免等待 DDS 節點清除延遲）。掃描週期為 3 秒（`peer_scan_interval_s`）。
-> Agent 從 ROS2 discovery 消失時，MissionPlanner、TrajectoryController 與
-> BasicController 會將它移出活動同儕及防撞集合；該機後續由 PX4 failsafe
-> 處理，其餘 Agent 直接重新編隊。Agent 再次出現時會重新建立訂閱。
+> **同儕資料來源**：AgentState 維持 GCS 與 Agent 的目前狀態介面；EGO-Swarm 的
+> 未來軌跡透過 `/fmu_all_agent/swarm/agent_trajectories` 交換。EGO planner 每 3 秒
+> 掃描同儕 Agent，並以各 Agent 的 state Topic 建立同儕訂閱。
 >
 > 機群之間一律只訂閱 `/fmu<N>_agent/state` 等 Agent 對外 topic，
 > 不直接訂閱其他無人機的 PX4 原生 topic（`/fmu<N>/fmu/out/*`）。
 
-### 4.2.5 第一版觀測式防撞契約
+### 4.2.5 EGO-Swarm 編隊與避碰契約
 
-- 安全距離使用三維直線距離，任兩機必須維持至少 3 公尺。
-- BasicController 執行控制目標前的防撞關卡是送往 PX4 前的最終控制關卡，適用於編隊與一般移動目標。
-- 發現路徑衝突、仍存在的同儕狀態無效、位置資料無效，或各機 GPS 無法轉換成可比較的共同座標時，Agent 原地保持並保留待執行目標。
-- Agent 從 ROS2 discovery 消失後，不再參與防撞判斷；後續飛行交由該機 PX4 failsafe 處理。
-- 當資料恢復有效且目標重新符合安全距離後，Agent 自動續行，不要求 GCS 重新發布命令。
-- `/{agent_namespace}/waypoints` 目前只表示 TrajectoryController 的規劃結果，不會送入 PX4，也不能作為 PX4 已執行防撞路徑的證據。
-- 第一版只依賴最近觀測位置，不使用速度、加速度或同儕未來軌跡；高速相向、通訊延遲與制動距離不在預測模型內。
-- 本功能沿用既有 `AgentState` 與 `NedTarget`，不新增 Topic、自訂訊息或 GCS 命令。
-- `collision_safety_margin_m` 預設為 `3.0` 公尺，低於 `3.0` 的設定會被限制為
-  `3.0`；`collision_peer_timeout_s` 預設為 `2.0` 秒。參數由每個
-  `basic_controller_node` 個別載入。
-- TrajectoryController 的 `safety_margin_m` 與 `peer_timeout_s` 預設同樣為
-  `3.0` 公尺與 `2.0` 秒；`safety_margin_m` 低於 `3.0` 時也會被限制為 `3.0`。
+- GCS 命令先由 `ego_swarm_planner` 轉換為本機任務意圖與虛擬編隊槽位；規劃器輸出
+  未來軌跡，再由 `basic_controller_node` 取樣成 PX4 `TrajectorySetpoint`。
+- 目前 EGO-Swarm 核心是 deterministic candidate baseline：建立固定候選 B-spline，
+  依目標、平滑、障礙物與同儕距離成本選擇安全候選；不宣稱完整原始 EGO-Swarm
+  nonlinear optimizer。
+- GPS common frame 是多機編隊的共同座標基準。GPS-only 可以正常執行編隊；PX4
+  odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
+- 同儕避碰的距離定義為機體中心到機體中心的三維直線距離，不加計機體半徑。
+- 最小距離不得在文件或實作中硬編碼為 3 公尺；Launch 與 entrypoint 以
+  `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
+  1.5 m、2 m 或 3 m 等值。
+- 短暫缺少同儕未來軌跡時，使用最後一份有效軌跡，且不依資料年齡擴張安全半徑。
+- PointCloud2 應以共同 `swarm_ned` 座標供局部障礙物地圖使用；YAML 障礙物描述
+  用於建立 `box`、`cylinder` 與 `wall` 等模擬場景。
+- `mission_planner`、`trajectory_controller` 與第一版觀測式防撞已被 EGO-Swarm
+  取代；舊 `/ned_target` 與 `/waypoints` 僅保留相容或純邏輯測試用途。
 
 ---
 
@@ -386,10 +484,9 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `FORMATION_VERT_LINEAR <spacing>` | 間距 (公尺) | 垂直一字編隊 |
 | `FORMATION_CANCEL` | 無 | 取消編隊 |
 
-> **編隊基準點**：收到 `FORMATION_*` 指令當下，以 GPS 將所有線上機體位置換算到
-> 共同參考系後計算質心並固定為編隊圓心；線上成員增減時以目前位置重算。
-> 若線上機體少於 2 台，編隊自動取消（發布一次目前位置目標後停止發布），
-> 需重新廣播編隊指令才能恢復。
+> **EGO-Swarm 編隊基準點**：收到 `FORMATION_*` 指令後，由 `ego_swarm_planner`
+> 使用 GPS common frame 計算共同參考點與虛擬編隊槽位；每台 Agent 自行規劃前往
+> 自己的槽位。既有命令字串與廣播 Topic 保持不變。成員掃描週期為 3 秒。
 
 #### 相容性簡寫
 
@@ -444,7 +541,11 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 | 命令 Topic (`/command`) | reliable | volatile | 10 |
 | Shutdown Service (`/shutdown`) | reliable | volatile | 10 |
 | 控制流 Topic (`/ned_target`, `/waypoints`) | reliable (pub) / best_effort (sub) | volatile | 10 |
-| 障礙物 Topic (`/obstacles`) | best_effort | volatile | 10 |
+| `/fmu_all_agent/swarm/agent_trajectories` | reliable (pub) / best_effort (sub) | volatile | 10 |
+| `/{agent_namespace}/perception/obstacles` | best_effort | volatile | 10 |
+| `/{agent_namespace}/planning/status`、`/planning/trajectory` | reliable | volatile | 10 |
+
+> 上述 QoS 與目前 `ego_swarm_planner`、`obstacle_cloud_simulator` 實作一致。
 
 ---
 

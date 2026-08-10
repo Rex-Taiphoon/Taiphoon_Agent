@@ -21,6 +21,118 @@ namespace taiphoon
 namespace controllers
 {
 
+namespace
+{
+
+/** @brief 驗證三維控制點是否為有限值。 */
+bool is_finite_control_point(const std::array<float, 3>& point)
+{
+    return std::isfinite(point[0]) &&
+        std::isfinite(point[1]) &&
+        std::isfinite(point[2]);
+}
+
+/**
+ * @brief 使用 uniform clamped knot vector 評估 B-spline。
+ *
+ * `degree` 是多項式階數，控制點數量至少為 degree+1。時間已由呼叫端
+ * 映射到 [0, control_point_count-degree] 的 spline domain。
+ */
+bool evaluate_uniform_clamped_bspline(
+    const std::vector<std::array<float, 3>>& control_points,
+    std::size_t degree,
+    double domain_position,
+    std::array<float, 3>& position)
+{
+    const std::size_t point_count = control_points.size();
+    if (point_count == 0U || degree == 0U || degree >= point_count ||
+        !std::isfinite(domain_position))
+    {
+        return false;
+    }
+
+    const std::size_t last_domain = point_count - degree;
+    if (domain_position <= 0.0)
+    {
+        position = control_points.front();
+        return is_finite_control_point(position);
+    }
+    if (domain_position >= static_cast<double>(last_domain))
+    {
+        position = control_points.back();
+        return is_finite_control_point(position);
+    }
+
+    // Open uniform clamped knot vector:
+    // [0 ... 0, 1, 2, ..., last_domain-1, last_domain ... last_domain]
+    const std::size_t knot_count = point_count + degree + 1U;
+    std::vector<double> knots(knot_count, 0.0);
+    for (std::size_t index = 0U; index < knot_count; ++index)
+    {
+        if (index <= degree)
+        {
+            knots[index] = 0.0;
+        }
+        else if (index >= point_count)
+        {
+            knots[index] = static_cast<double>(last_domain);
+        }
+        else
+        {
+            knots[index] = static_cast<double>(index - degree);
+        }
+    }
+
+    std::size_t span = degree;
+    while (span + 1U < knot_count && domain_position >= knots[span + 1U])
+    {
+        ++span;
+    }
+    if (span >= point_count)
+    {
+        return false;
+    }
+
+    std::vector<std::array<double, 3>> de_boor(degree + 1U);
+    for (std::size_t index = 0U; index <= degree; ++index)
+    {
+        const auto& source = control_points[span - degree + index];
+        de_boor[index] = {
+            static_cast<double>(source[0]),
+            static_cast<double>(source[1]),
+            static_cast<double>(source[2])};
+    }
+
+    for (std::size_t recursion = 1U; recursion <= degree; ++recursion)
+    {
+        for (std::size_t index = degree + 1U; index-- > recursion;)
+        {
+            const std::size_t knot_index = span - degree + index;
+            const double denominator =
+                knots[knot_index + degree - recursion + 1U] -
+                knots[knot_index];
+            const double alpha = denominator > 0.0
+                ? (domain_position - knots[knot_index]) / denominator
+                : 0.0;
+
+            for (std::size_t axis = 0U; axis < 3U; ++axis)
+            {
+                de_boor[index][axis] =
+                    (1.0 - alpha) * de_boor[index - 1U][axis] +
+                    alpha * de_boor[index][axis];
+            }
+        }
+    }
+
+    position = {
+        static_cast<float>(de_boor[degree][0]),
+        static_cast<float>(de_boor[degree][1]),
+        static_cast<float>(de_boor[degree][2])};
+    return is_finite_control_point(position);
+}
+
+}  // namespace
+
 
 // =============================================================================
 // 建構子
@@ -88,6 +200,14 @@ void BasicController::shutdown()
 {
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "BasicController shutting down");
+
+    {
+        std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+        timed_trajectory_ = TimedTrajectory{};
+        has_timed_trajectory_ = false;
+        has_frame_revision_ = false;
+        timed_trajectory_frame_revision_ = 0U;
+    }
 
     offboard_control_mode_pub_.reset();
     trajectory_setpoint_pub_.reset();
@@ -586,17 +706,34 @@ bool BasicController::set_ned_target(float x, float y, float z, float yaw_deg)
 
 void BasicController::update_odometry(const px4_msgs::msg::VehicleOdometry& msg)
 {
-    current_altitude_m_.store(-msg.position[2]);
-    current_position_ned_[0] = msg.position[0];
-    current_position_ned_[1] = msg.position[1];
-    current_position_ned_[2] = msg.position[2];
+    if (utils::is_valid_float(msg.position[0]) &&
+        utils::is_valid_float(msg.position[1]) &&
+        utils::is_valid_float(msg.position[2]))
+    {
+        current_altitude_m_.store(-msg.position[2]);
+        current_position_ned_[0] = msg.position[0];
+        current_position_ned_[1] = msg.position[1];
+        current_position_ned_[2] = msg.position[2];
+    }
+    else
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Ignoring odometry position containing NaN or Inf");
+    }
 
     // Extract yaw from orientation quaternion (NED convention)
     // q = [w, x, y, z], yaw = atan2(2(w*z + x*y), 1 - 2(y² + z²))
     float w = msg.q[0], x = msg.q[1], y = msg.q[2], z = msg.q[3];
-    float yaw_rad = std::atan2(2.0F * (w * z + x * y),
-                               1.0F - 2.0F * (y * y + z * z));
-    current_yaw_rad_.store(yaw_rad);
+    if (utils::is_valid_float(w) && utils::is_valid_float(x) &&
+        utils::is_valid_float(y) && utils::is_valid_float(z))
+    {
+        float yaw_rad = std::atan2(2.0F * (w * z + x * y),
+                                   1.0F - 2.0F * (y * y + z * z));
+        if (utils::is_valid_float(yaw_rad))
+        {
+            current_yaw_rad_.store(yaw_rad);
+        }
+    }
 }
 // =============================================================================
 // Publisher 初始化 (單一職責原則)
@@ -720,10 +857,11 @@ void BasicController::publish_control_commands()
 
     auto msg = px4_msgs::msg::TrajectorySetpoint();
     msg.timestamp = node_->now().nanoseconds() / 1000ULL;
-    msg.position[0] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[1] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[2] = std::numeric_limits<float>::quiet_NaN();
-    msg.yaw = std::numeric_limits<float>::quiet_NaN();
+    const auto hold_position = get_safe_hold_position();
+    msg.position[0] = hold_position[0];
+    msg.position[1] = hold_position[1];
+    msg.position[2] = hold_position[2];
+    msg.yaw = 0.0F;
 
     auto mode_msg_local = px4_msgs::msg::OffboardControlMode();
     mode_msg_local.timestamp = node_->now().nanoseconds() / 1000ULL;
@@ -744,13 +882,51 @@ void BasicController::publish_control_commands()
         case FlightState::ERROR:
         default: break;
     }
+
+    // 只有收到定時軌跡時才覆寫 MOVING/HOVER 的狀態機目標；沒有軌跡時
+    // 保留原有狀態機語意。軌跡尚未開始、取樣失敗、座標版本切換或超出
+    // duration 時，送出目前位置的有限 hold setpoint。
+    if (current_state == FlightState::MOVING ||
+        current_state == FlightState::HOVER)
+    {
+        if (has_timed_trajectory())
+        {
+            std::array<float, 3> sampled_position = get_safe_hold_position();
+            const auto sample_result = sample_timed_trajectory(
+                node_->now(), sampled_position);
+            if (sample_result != TimedTrajectorySampleResult::VALID)
+            {
+                RCLCPP_WARN_THROTTLE(
+                    rclcpp::get_logger("BasicController"), *node_->get_clock(),
+                    2000,
+                    "Timed trajectory unavailable (result=%d); "
+                    "holding current position",
+                    static_cast<int>(sample_result));
+            }
+
+            msg.position[0] = sampled_position[0];
+            msg.position[1] = sampled_position[1];
+            msg.position[2] = sampled_position[2];
+        }
+    }
+
     // 若已設定目標偏航角，則控制偏航
     // 位置控制模式下，PX4 要求 yaw 必須有效（非 NaN），否則 setpoint 可能被忽略
-    if (!std::isnan(target_yaw_rad_))
+    if (utils::is_valid_float(target_yaw_rad_))
     {
         msg.yaw = target_yaw_rad_;
     }
-    else if (!std::isnan(msg.position[0]) && !std::isnan(msg.position[1]) && !std::isnan(msg.position[2]))
+
+    // 最後一道輸出邊界：即使狀態處理器或軌跡取樣產生非法值，仍以
+    // 目前位置（失效時使用有限目標／原點）發布有限的 position/yaw。
+    for (std::size_t index = 0U; index < 3U; ++index)
+    {
+        if (!utils::is_valid_float(msg.position[index]))
+        {
+            msg.position[index] = hold_position[index];
+        }
+    }
+    if (!utils::is_valid_float(msg.yaw))
     {
         msg.yaw = 0.0F;
     }
@@ -771,6 +947,164 @@ std::array<float, 3> BasicController::get_current_position_ned() const
 std::array<float, 3> BasicController::get_target_position_ned() const
 {
     return target_position_ned_;
+}
+
+bool BasicController::validate_timed_trajectory(
+    const TimedTrajectory& trajectory)
+{
+    if (!trajectory.valid ||
+        !std::isfinite(trajectory.knot_interval_s) ||
+        trajectory.knot_interval_s <= 0.0F ||
+        !std::isfinite(trajectory.duration_s) ||
+        trajectory.duration_s <= 0.0F)
+    {
+        return false;
+    }
+
+    const std::size_t degree = static_cast<std::size_t>(trajectory.order);
+    if (degree == 0U || degree >= trajectory.control_points.size())
+    {
+        return false;
+    }
+
+    for (const auto& point : trajectory.control_points)
+    {
+        if (!is_finite_control_point(point))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool BasicController::update_timed_trajectory(
+    const TimedTrajectory& trajectory)
+{
+    if (!validate_timed_trajectory(trajectory))
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Rejecting invalid timed trajectory %u; keeping last valid trajectory",
+                    trajectory.trajectory_id);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+
+    // frame_revision 是座標系生命週期 token。版本切換時先清除舊座標的
+    // 軌跡，並要求下一筆相同版本資料才啟用，避免跨 frame 跳接。
+    if (has_frame_revision_ &&
+        trajectory.frame_revision != timed_trajectory_frame_revision_)
+    {
+        const uint32_t previous_frame_revision =
+            timed_trajectory_frame_revision_;
+        if (trajectory.frame_revision < timed_trajectory_frame_revision_)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                        "Rejecting stale timed trajectory frame revision %u; "
+                        "current revision is %u",
+                        trajectory.frame_revision,
+                        timed_trajectory_frame_revision_);
+            return false;
+        }
+
+        if (trajectory.frame_revision > timed_trajectory_frame_revision_)
+        {
+            timed_trajectory_frame_revision_ = trajectory.frame_revision;
+        }
+        has_timed_trajectory_ = false;
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Timed trajectory frame revision changed from %u to %u; "
+                    "holding until the next trajectory in the new frame",
+                    previous_frame_revision,
+                    trajectory.frame_revision);
+        return false;
+    }
+
+    if (!has_frame_revision_)
+    {
+        timed_trajectory_frame_revision_ = trajectory.frame_revision;
+        has_frame_revision_ = true;
+    }
+
+    timed_trajectory_ = trajectory;
+    has_timed_trajectory_ = true;
+    return true;
+}
+
+TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
+    const rclcpp::Time& sample_time,
+    std::array<float, 3>& position) const
+{
+    std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+    if (!has_timed_trajectory_)
+    {
+        return TimedTrajectorySampleResult::NO_TRAJECTORY;
+    }
+
+    const auto& trajectory = timed_trajectory_;
+    if (!validate_timed_trajectory(trajectory))
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    if (sample_time.get_clock_type() != trajectory.start_time.get_clock_type())
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    const double elapsed_s = (sample_time - trajectory.start_time).seconds();
+    if (!std::isfinite(elapsed_s))
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+    if (elapsed_s < 0.0)
+    {
+        return TimedTrajectorySampleResult::NOT_STARTED;
+    }
+    if (elapsed_s > static_cast<double>(trajectory.duration_s))
+    {
+        return TimedTrajectorySampleResult::EXPIRED;
+    }
+
+    const std::size_t degree = static_cast<std::size_t>(trajectory.order);
+    const double span_count = static_cast<double>(
+        trajectory.control_points.size() - degree);
+    const double domain_position =
+        elapsed_s / static_cast<double>(trajectory.duration_s) * span_count;
+
+    if (!evaluate_uniform_clamped_bspline(
+            trajectory.control_points, degree, domain_position, position))
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    return TimedTrajectorySampleResult::VALID;
+}
+
+bool BasicController::has_timed_trajectory() const
+{
+    std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+    return has_timed_trajectory_;
+}
+
+std::array<float, 3> BasicController::get_safe_hold_position() const
+{
+    if (validate_setpoint(
+            current_position_ned_[0], current_position_ned_[1],
+            current_position_ned_[2]))
+    {
+        return current_position_ned_;
+    }
+
+    if (validate_setpoint(
+            target_position_ned_[0], target_position_ned_[1],
+            target_position_ned_[2]))
+    {
+        return target_position_ned_;
+    }
+
+    return {0.0F, 0.0F, 0.0F};
 }
 
 bool BasicController::hold_current_position()
@@ -917,7 +1251,8 @@ void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
     // }
 }
 
-void BasicController::handle_rtl_state(px4_msgs::msg::TrajectorySetpoint& msg)
+void BasicController::handle_rtl_state(
+    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
 {
     if (!rtl_cmd_sent_)
     {
@@ -925,9 +1260,6 @@ void BasicController::handle_rtl_state(px4_msgs::msg::TrajectorySetpoint& msg)
         takeoff_start_time_ = node_->now();
         send_rtl_command();
     }
-    msg.position[0] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[1] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[2] = std::numeric_limits<float>::quiet_NaN();
     if (arming_state_.load() == 1)
     {
         RCLCPP_INFO(rclcpp::get_logger("BasicController"),
@@ -947,7 +1279,8 @@ void BasicController::handle_rtl_state(px4_msgs::msg::TrajectorySetpoint& msg)
     }
 }
 
-void BasicController::handle_land_state(px4_msgs::msg::TrajectorySetpoint& msg)
+void BasicController::handle_land_state(
+    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
 {
     if (!land_cmd_sent_)
     {
@@ -955,9 +1288,6 @@ void BasicController::handle_land_state(px4_msgs::msg::TrajectorySetpoint& msg)
         takeoff_start_time_ = node_->now();
         send_land_command();
     }
-    msg.position[0] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[1] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[2] = std::numeric_limits<float>::quiet_NaN();
     if (arming_state_.load() == 1)
     {
         flight_state_.store(FlightState::IDLE);
@@ -975,12 +1305,10 @@ void BasicController::handle_land_state(px4_msgs::msg::TrajectorySetpoint& msg)
 }
 
 void BasicController::handle_post_rtl_state(
-    px4_msgs::msg::TrajectorySetpoint& msg)
+    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
 {
-    // RTL 降落完成，停止位置設定
-    msg.position[0] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[1] = std::numeric_limits<float>::quiet_NaN();
-    msg.position[2] = std::numeric_limits<float>::quiet_NaN();
+    // RTL 降落完成，停止 Offboard 控制；position/yaw 仍維持有限 hold，
+    // 實際模式轉換交由下方的 PX4 HOLD 命令處理。
 
     if (!hold_cmd_sent_)
     {

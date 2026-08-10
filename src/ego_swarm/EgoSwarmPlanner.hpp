@@ -1,0 +1,612 @@
+/**
+ * @file EgoSwarmPlanner.hpp
+ * @brief EGO-Swarm 風格 deterministic 局部候選軌跡規劃器
+ * @author Taiphoon Agent Team
+ * @date 2026-08-10
+ *
+ * 本模組以目標、平滑性、PointCloud 障礙物 clearance 與同儕未來
+ * 軌跡成本選擇候選 B-spline。它是可測試的 deterministic baseline，
+ * 不宣稱已實作原始 EGO-Swarm 的完整非線性最佳化器。
+ */
+
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
+
+#include "ego_swarm/PeerTrajectoryTable.hpp"
+
+namespace taiphoon
+{
+namespace ego_swarm
+{
+
+/// EGO-Swarm deterministic candidate planner 設定。
+struct PlannerConfig
+{
+    double knot_interval_s{1.0};
+    std::size_t control_point_count{6U};
+    double sample_interval_s{0.1};
+    double candidate_offset_m{3.0};
+    double obstacle_clearance_m{1.0};
+    double peer_collision_min_distance_m{3.0};
+    double goal_weight{1.0};
+    double smoothness_weight{0.1};
+    double obstacle_weight{10.0};
+    double peer_weight{10.0};
+};
+
+/// 局部規劃結果；失敗時可包含由目前位置構成的有限值 hold 軌跡。
+struct PlannerResult
+{
+    bool is_valid{false};
+    bool is_hold{true};
+    BsplineTrajectory trajectory{};
+    double cost{0.0};
+    double minimum_obstacle_distance_m{0.0};
+    double minimum_peer_distance_m{0.0};
+
+    /**
+     * @brief 檢查規劃結果中所有可輸出的數值
+     *
+     * @return true 表示成本、距離與軌跡控制點皆為有限值
+     */
+    bool has_finite_output() const
+    {
+        if (!is_finite(cost) ||
+            !is_finite(minimum_obstacle_distance_m) ||
+            !is_finite(minimum_peer_distance_m))
+        {
+            return false;
+        }
+
+        for (const Vector3& control_point : trajectory.control_points())
+        {
+            if (!is_finite_vector(control_point))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+/**
+ * @brief EGO-Swarm 風格局部規劃深層模組
+ *
+ * 對外只需要目前位置、編隊槽位目標、障礙物點雲、同儕軌跡表與
+ * 時間，即可取得一條 deterministic B-spline。完整梯度最佳化可在
+ * build_candidates 與 evaluate_candidate 的內部 seam 後續替換。
+ */
+class EgoSwarmPlanner
+{
+public:
+    /**
+     * @brief 使用設定建立規劃器
+     *
+     * @param config 規劃器設定；無效設定會退回預設值
+     */
+    explicit EgoSwarmPlanner(const PlannerConfig& config = PlannerConfig{})
+    {
+        if (!set_config(config))
+        {
+            config_ = PlannerConfig{};
+        }
+    }
+
+    /**
+     * @brief 更新規劃器設定
+     *
+     * @param config 新設定
+     * @return true 表示設定有效並已套用
+     */
+    bool set_config(const PlannerConfig& config)
+    {
+        if (!is_valid_config(config))
+        {
+            return false;
+        }
+        config_ = config;
+        return true;
+    }
+
+    /**
+     * @brief 取得目前規劃器設定
+     *
+     * @return 唯讀設定參考
+     */
+    const PlannerConfig& config() const
+    {
+        return config_;
+    }
+
+    /**
+     * @brief 產生一條避開障礙物與同儕未來軌跡的局部軌跡
+     *
+     * 短暫缺少同儕新資料時，table 提供的最後有效 B-spline 會原樣
+     * 參與評估；此處不依資料年齡修改 peer_collision_min_distance_m。
+     * 若所有候選都不安全，回傳有限值 hold 軌跡並將 is_valid 設為 false。
+     *
+     * @param current_position 目前機體中心的 swarm_ned 位置
+     * @param target_position 編隊槽位或任務目標的 swarm_ned 位置
+     * @param obstacle_points PointCloud2 轉換後的障礙物點
+     * @param peer_table 最後有效同儕軌跡表
+     * @param now_s 目前共同時間，單位為秒
+     * @param self_agent_id 自身 Agent ID，用於排除自身軌跡
+     * @return 規劃結果；所有輸出數值都會維持有限
+     */
+    PlannerResult plan(
+        const Vector3& current_position,
+        const Vector3& target_position,
+        const std::vector<Vector3>& obstacle_points,
+        const PeerTrajectoryTable& peer_table,
+        const double now_s,
+        const int self_agent_id) const
+    {
+        PlannerResult result;
+        if (!is_valid_config(config_) ||
+            !is_finite_vector(current_position) ||
+            !is_finite_vector(target_position) ||
+            !is_finite(now_s) ||
+            !are_finite_points(obstacle_points))
+        {
+            return result;
+        }
+
+        const std::vector<Vector3> offsets =
+            build_candidate_offsets(current_position, target_position);
+        bool has_best = false;
+        CandidateEvaluation best_evaluation;
+        BsplineTrajectory best_trajectory;
+        for (const Vector3& offset : offsets)
+        {
+            const BsplineTrajectory candidate = build_candidate(
+                current_position, target_position, offset);
+            const CandidateEvaluation evaluation = evaluate_candidate(
+                candidate,
+                target_position,
+                obstacle_points,
+                peer_table,
+                now_s,
+                self_agent_id);
+            if (!evaluation.is_safe)
+            {
+                continue;
+            }
+            if (!has_best || evaluation.cost <
+                best_evaluation.cost - EGO_SWARM_EPSILON_M)
+            {
+                has_best = true;
+                best_evaluation = evaluation;
+                best_trajectory = candidate;
+            }
+        }
+
+        if (!has_best)
+        {
+            return make_hold_result(current_position);
+        }
+
+        result.is_valid = true;
+        result.is_hold = false;
+        result.trajectory = best_trajectory;
+        result.cost = best_evaluation.cost;
+        result.minimum_obstacle_distance_m =
+            best_evaluation.minimum_obstacle_distance_m;
+        result.minimum_peer_distance_m =
+            best_evaluation.minimum_peer_distance_m;
+        return result;
+    }
+
+private:
+    /// 候選軌跡的安全與成本評估結果。
+    struct CandidateEvaluation
+    {
+        bool is_safe{false};
+        double cost{0.0};
+        double minimum_obstacle_distance_m{0.0};
+        double minimum_peer_distance_m{0.0};
+    };
+
+    /**
+     * @brief 驗證規劃器設定
+     *
+     * @param config 待驗證設定
+     * @return true 表示所有設定可用
+     */
+    static bool is_valid_config(const PlannerConfig& config)
+    {
+        return is_finite(config.knot_interval_s) &&
+               config.knot_interval_s > EGO_SWARM_EPSILON_M &&
+               config.control_point_count >= BSPLINE_DEGREE + 1U &&
+               config.control_point_count <= EGO_SWARM_MAX_SAMPLE_COUNT &&
+               is_finite(config.sample_interval_s) &&
+               config.sample_interval_s > EGO_SWARM_EPSILON_M &&
+               is_finite(config.candidate_offset_m) &&
+               config.candidate_offset_m >= 0.0 &&
+               is_finite(config.obstacle_clearance_m) &&
+               config.obstacle_clearance_m >= 0.0 &&
+               is_finite(config.peer_collision_min_distance_m) &&
+               config.peer_collision_min_distance_m >= 0.0 &&
+               is_non_negative_finite(config.goal_weight) &&
+               is_non_negative_finite(config.smoothness_weight) &&
+               is_non_negative_finite(config.obstacle_weight) &&
+               is_non_negative_finite(config.peer_weight);
+    }
+
+    /**
+     * @brief 檢查非負有限權重
+     *
+     * @param value 待驗證數值
+     * @return true 表示可作為成本權重
+     */
+    static bool is_non_negative_finite(const double value)
+    {
+        return is_finite(value) && value >= 0.0;
+    }
+
+    /**
+     * @brief 檢查障礙物點列表
+     *
+     * @param points 障礙物點列表
+     * @return true 表示所有點皆為有限值
+     */
+    static bool are_finite_points(const std::vector<Vector3>& points)
+    {
+        for (const Vector3& point : points)
+        {
+            if (!is_finite_vector(point))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 建立直行與側向／垂直繞行候選的偏移基底
+     *
+     * @param current_position 起點位置
+     * @param target_position 終點位置
+     * @return 固定順序的候選彎曲偏移列表
+     */
+    std::vector<Vector3> build_candidate_offsets(
+        const Vector3& current_position,
+        const Vector3& target_position) const
+    {
+        const Vector3 direction = subtract_vectors(
+            target_position, current_position);
+        const double horizontal_norm = std::sqrt(
+            direction.at(0) * direction.at(0) +
+            direction.at(1) * direction.at(1));
+        Vector3 lateral{1.0, 0.0, 0.0};
+        if (horizontal_norm > EGO_SWARM_EPSILON_M)
+        {
+            lateral = Vector3{
+                -direction.at(1) / horizontal_norm,
+                direction.at(0) / horizontal_norm,
+                0.0};
+        }
+
+        const Vector3 vertical{0.0, 0.0, 1.0};
+        const Vector3 zero{0.0, 0.0, 0.0};
+        const Vector3 lateral_offset = scale_vector(
+            lateral, config_.candidate_offset_m);
+        const Vector3 vertical_offset = scale_vector(
+            vertical, config_.candidate_offset_m);
+        return std::vector<Vector3>{
+            zero,
+            lateral_offset,
+            scale_vector(lateral_offset, -1.0),
+            vertical_offset,
+            scale_vector(vertical_offset, -1.0)};
+    }
+
+    /**
+     * @brief 將候選偏移套用到 B-spline 控制點
+     *
+     * @param current_position 起點位置
+     * @param target_position 終點位置
+     * @param bend_offset 中段彎曲偏移
+     * @return 有限且可取樣的候選軌跡
+     */
+    BsplineTrajectory build_candidate(
+        const Vector3& current_position,
+        const Vector3& target_position,
+        const Vector3& bend_offset) const
+    {
+        std::vector<Vector3> control_points;
+        control_points.reserve(config_.control_point_count);
+        const double denominator = static_cast<double>(
+            config_.control_point_count - 1U);
+        for (std::size_t index = 0;
+             index < config_.control_point_count;
+             ++index)
+        {
+            const double progress = static_cast<double>(index) / denominator;
+            const double profile = std::sin(EGO_SWARM_PI * progress);
+            const Vector3 line_position = interpolate_vectors(
+                current_position, target_position, progress);
+            control_points.push_back(add_vectors(
+                line_position, scale_vector(bend_offset, profile)));
+        }
+        return BsplineTrajectory(control_points, config_.knot_interval_s);
+    }
+
+    /**
+     * @brief 評估候選的障礙物、同儕與平滑成本
+     *
+     * @param candidate 候選 B-spline
+     * @param target_position 目標位置
+     * @param obstacle_points 障礙物點列表
+     * @param peer_table 最後有效同儕軌跡表
+     * @param now_s 共同現在時間
+     * @param self_agent_id 自身 Agent ID
+     * @return 候選評估結果
+     */
+    CandidateEvaluation evaluate_candidate(
+        const BsplineTrajectory& candidate,
+        const Vector3& target_position,
+        const std::vector<Vector3>& obstacle_points,
+        const PeerTrajectoryTable& peer_table,
+        const double now_s,
+        const int self_agent_id) const
+    {
+        CandidateEvaluation evaluation;
+        if (!candidate.is_valid())
+        {
+            return evaluation;
+        }
+
+        std::vector<PeerTrajectory> peers;
+        peer_table.get_all(peers);
+        peers.erase(
+            std::remove_if(
+                peers.begin(),
+                peers.end(),
+                [self_agent_id](const PeerTrajectory& peer)
+                {
+                    return peer.agent_id == self_agent_id;
+                }),
+            peers.end());
+        const std::size_t sample_count = compute_sample_count(
+            candidate.duration_s());
+        double goal_cost = 0.0;
+        double obstacle_cost = 0.0;
+        double peer_cost = 0.0;
+        double minimum_obstacle_distance =
+            std::numeric_limits<double>::max();
+        double minimum_peer_distance =
+            std::numeric_limits<double>::max();
+        for (std::size_t sample_index = 0;
+             sample_index <= sample_count;
+             ++sample_index)
+        {
+            const double sample_time = std::min(
+                candidate.duration_s(),
+                static_cast<double>(sample_index) *
+                    config_.sample_interval_s);
+            const TrajectorySample sample = candidate.evaluate(sample_time);
+            if (!sample.is_valid)
+            {
+                return evaluation;
+            }
+            goal_cost += distance_between_centers(
+                sample.position, target_position);
+            if (!evaluate_obstacles(
+                    sample.position,
+                    obstacle_points,
+                    minimum_obstacle_distance,
+                    obstacle_cost))
+            {
+                return evaluation;
+            }
+            if (!evaluate_peers(
+                    sample.position,
+                    sample_time,
+                    now_s,
+                    self_agent_id,
+                    peers,
+                    minimum_peer_distance,
+                    peer_cost))
+            {
+                return evaluation;
+            }
+        }
+
+        if (obstacle_points.empty())
+        {
+            minimum_obstacle_distance = 0.0;
+        }
+        if (peers.empty())
+        {
+            minimum_peer_distance = 0.0;
+        }
+        const double sample_divisor = static_cast<double>(sample_count + 1U);
+        const double smoothness_cost = compute_smoothness_cost(candidate);
+        evaluation.cost = config_.goal_weight * goal_cost / sample_divisor +
+            config_.smoothness_weight * smoothness_cost +
+            config_.obstacle_weight * obstacle_cost / sample_divisor +
+            config_.peer_weight * peer_cost / sample_divisor;
+        evaluation.minimum_obstacle_distance_m = minimum_obstacle_distance;
+        evaluation.minimum_peer_distance_m = minimum_peer_distance;
+        evaluation.is_safe = is_finite(evaluation.cost) &&
+            is_finite(minimum_obstacle_distance) &&
+            is_finite(minimum_peer_distance);
+        return evaluation;
+    }
+
+    /**
+     * @brief 依持續時間計算取樣數量
+     *
+     * @param duration_s 軌跡持續時間
+     * @return 不超過上限的取樣區間數
+     */
+    std::size_t compute_sample_count(const double duration_s) const
+    {
+        const double raw_count = std::ceil(
+            duration_s / config_.sample_interval_s);
+        if (!is_finite(raw_count) || raw_count <= 0.0)
+        {
+            return 1U;
+        }
+        if (raw_count >= static_cast<double>(EGO_SWARM_MAX_SAMPLE_COUNT))
+        {
+            return EGO_SWARM_MAX_SAMPLE_COUNT;
+        }
+        return std::min(
+            static_cast<std::size_t>(raw_count), EGO_SWARM_MAX_SAMPLE_COUNT);
+    }
+
+    /**
+     * @brief 計算候選控制點的二階差分平滑成本
+     *
+     * @param candidate 候選 B-spline
+     * @return 平滑成本
+     */
+    static double compute_smoothness_cost(
+        const BsplineTrajectory& candidate)
+    {
+        const std::vector<Vector3>& points = candidate.control_points();
+        double cost = 0.0;
+        if (points.size() < 3U)
+        {
+            return cost;
+        }
+        for (std::size_t index = 1U; index + 1U < points.size(); ++index)
+        {
+            const Vector3 second_difference{
+                points.at(index + 1U).at(0) -
+                    2.0 * points.at(index).at(0) +
+                    points.at(index - 1U).at(0),
+                points.at(index + 1U).at(1) -
+                    2.0 * points.at(index).at(1) +
+                    points.at(index - 1U).at(1),
+                points.at(index + 1U).at(2) -
+                    2.0 * points.at(index).at(2) +
+                    points.at(index - 1U).at(2)};
+            cost += std::sqrt(squared_norm(second_difference));
+        }
+        return is_finite(cost) ? cost : 0.0;
+    }
+
+    /**
+     * @brief 評估單一取樣點與靜態障礙物的關係
+     *
+     * @param sample_position 本機候選位置
+     * @param obstacle_points 障礙物點列表
+     * @param[in,out] minimum_distance 目前最小障礙物距離
+     * @param[in,out] cost 障礙物成本累計值
+     * @return false 表示已違反 clearance 或輸入異常
+     */
+    bool evaluate_obstacles(
+        const Vector3& sample_position,
+        const std::vector<Vector3>& obstacle_points,
+        double& minimum_distance,
+        double& cost) const
+    {
+        for (const Vector3& obstacle : obstacle_points)
+        {
+            const double distance = distance_between_centers(
+                sample_position, obstacle);
+            if (!is_finite(distance))
+            {
+                return false;
+            }
+            minimum_distance = std::min(minimum_distance, distance);
+            if (distance + EGO_SWARM_EPSILON_M <
+                config_.obstacle_clearance_m)
+            {
+                return false;
+            }
+            cost += 1.0 / std::max(
+                distance, EGO_SWARM_EPSILON_M);
+        }
+        return is_finite(cost);
+    }
+
+    /**
+     * @brief 評估單一取樣點與同儕未來軌跡的關係
+     *
+     * @param sample_position 本機候選位置
+     * @param sample_time_s 本機候選相對時間
+     * @param now_s 規劃當下共同時間
+     * @param self_agent_id 自身 Agent ID
+     * @param peers 最後有效同儕軌跡
+     * @param[in,out] minimum_distance 目前最小同儕中心距離
+     * @param[in,out] cost 同儕成本累計值
+     * @return false 表示已違反中心距離或輸入異常
+     */
+    bool evaluate_peers(
+        const Vector3& sample_position,
+        const double sample_time_s,
+        const double now_s,
+        const int self_agent_id,
+        const std::vector<PeerTrajectory>& peers,
+        double& minimum_distance,
+        double& cost) const
+    {
+        for (const PeerTrajectory& peer : peers)
+        {
+            if (peer.agent_id == self_agent_id)
+            {
+                continue;
+            }
+            const double peer_relative_time = std::max(
+                0.0, now_s + sample_time_s - peer.start_time_s);
+            const TrajectorySample peer_sample =
+                peer.trajectory.evaluate(peer_relative_time);
+            if (!peer_sample.is_valid)
+            {
+                return false;
+            }
+            const double distance = distance_between_centers(
+                sample_position, peer_sample.position);
+            if (!is_finite(distance))
+            {
+                return false;
+            }
+            minimum_distance = std::min(minimum_distance, distance);
+            if (distance + EGO_SWARM_EPSILON_M <
+                config_.peer_collision_min_distance_m)
+            {
+                return false;
+            }
+            cost += 1.0 / std::max(
+                distance, EGO_SWARM_EPSILON_M);
+        }
+        return is_finite(cost);
+    }
+
+    /**
+     * @brief 在無安全候選時建立目前位置 hold 軌跡
+     *
+     * @param current_position 目前位置
+     * @return 失敗狀態與有限值 hold 軌跡
+     */
+    PlannerResult make_hold_result(const Vector3& current_position) const
+    {
+        PlannerResult result;
+        if (!is_finite_vector(current_position) ||
+            !is_valid_config(config_))
+        {
+            return result;
+        }
+
+        std::vector<Vector3> hold_points(
+            config_.control_point_count, current_position);
+        result.trajectory = BsplineTrajectory(
+            hold_points, config_.knot_interval_s);
+        result.is_hold = true;
+        result.is_valid = false;
+        return result;
+    }
+
+    PlannerConfig config_{};
+};
+
+}  // namespace ego_swarm
+}  // namespace taiphoon

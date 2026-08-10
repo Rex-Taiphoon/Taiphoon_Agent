@@ -118,6 +118,15 @@ protected:
         ASSERT_TRUE(has_setpoint_);
     }
 
+    /** @brief 驗證位置與偏航欄位均為有限值。 */
+    void expect_finite_position_and_yaw() const
+    {
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.position[0]));
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.position[1]));
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.position[2]));
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.yaw));
+    }
+
     rclcpp::Node::SharedPtr node_;
     rclcpp::executors::SingleThreadedExecutor executor_;
     std::unique_ptr<taiphoon::controllers::BasicController> controller_;
@@ -151,6 +160,25 @@ TEST_F(BasicControllerSetpointTest, HoldPositionLocksAllAxesAgainstOdometryDrift
     EXPECT_NEAR(latest_setpoint_.position[0], 3.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       IdleRtlAndLandPublishFinitePositionAndYaw)
+{
+    controller_->update_odometry(make_odometry(4.0F, -2.0F, -3.0F));
+
+    publish_until_setpoint_received();
+    expect_finite_position_and_yaw();
+
+    has_setpoint_ = false;
+    ASSERT_TRUE(controller_->switch_to_rtl_mode());
+    publish_until_setpoint_received();
+    expect_finite_position_and_yaw();
+
+    has_setpoint_ = false;
+    ASSERT_TRUE(controller_->switch_to_land_mode());
+    publish_until_setpoint_received();
+    expect_finite_position_and_yaw();
 }
 
 }  // namespace

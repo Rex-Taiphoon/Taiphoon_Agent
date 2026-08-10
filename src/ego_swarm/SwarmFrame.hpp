@@ -1,0 +1,187 @@
+/**
+ * @file SwarmFrame.hpp
+ * @brief GPS 座標轉換至共同 swarm_ned 的純 C++ 模組
+ * @author Taiphoon Agent Team
+ * @date 2026-08-10
+ *
+ * 本模組提供區域 WGS84 NED 轉換，讓每台 Agent 的 GPS 位置能在
+ * 同一個共同座標系中進行編隊與同儕避碰計算。
+ */
+
+#pragma once
+
+#include <cmath>
+
+#include "ego_swarm/EgoSwarmTypes.hpp"
+
+namespace taiphoon
+{
+namespace ego_swarm
+{
+
+/// WGS84 橢球體長半軸，單位為公尺。
+constexpr double WGS84_SEMI_MAJOR_AXIS_M = 6378137.0;
+/// WGS84 第一偏心率平方。
+constexpr double WGS84_FIRST_ECCENTRICITY_SQUARED = 6.6943799901413165e-3;
+/// 角度轉弧度常數。
+constexpr double DEGREES_TO_RADIANS = 0.017453292519943295;
+
+/**
+ * @brief 共同 swarm_ned 座標轉換器
+ *
+ * 設定原點後，所有 GPS 座標都會轉成 x=North、y=East、z=Down。
+ * 轉換採用原點附近的 WGS84 曲率半徑，適合機群尺度的局部座標計算。
+ */
+class SwarmFrame
+{
+public:
+    /**
+     * @brief 建立尚未設定原點的座標轉換器
+     */
+    SwarmFrame() = default;
+
+    /**
+     * @brief 檢查 GPS 座標的有限值與地理範圍
+     *
+     * @param coordinate 待檢查的 GPS 座標
+     * @return true 表示座標可用
+     */
+    static bool is_valid_geodetic(const GeoCoordinate& coordinate)
+    {
+        constexpr double MIN_LATITUDE_DEG = -90.0;
+        constexpr double MAX_LATITUDE_DEG = 90.0;
+        constexpr double MIN_LONGITUDE_DEG = -180.0;
+        constexpr double MAX_LONGITUDE_DEG = 180.0;
+
+        return is_finite(coordinate.latitude_deg) &&
+               is_finite(coordinate.longitude_deg) &&
+               is_finite(coordinate.altitude_m) &&
+               coordinate.latitude_deg >= MIN_LATITUDE_DEG &&
+               coordinate.latitude_deg <= MAX_LATITUDE_DEG &&
+               coordinate.longitude_deg >= MIN_LONGITUDE_DEG &&
+               coordinate.longitude_deg <= MAX_LONGITUDE_DEG;
+    }
+
+    /**
+     * @brief 設定共同座標系原點
+     *
+     * @param origin GPS 原點
+     * @return true 表示原點有效並已設定
+     */
+    bool set_origin(const GeoCoordinate& origin)
+    {
+        if (!is_valid_geodetic(origin))
+        {
+            return false;
+        }
+
+        origin_ = origin;
+        has_origin_ = true;
+        return true;
+    }
+
+    /**
+     * @brief 檢查是否已設定有效原點
+     *
+     * @return true 表示可進行 GPS 轉換
+     */
+    bool has_origin() const
+    {
+        return has_origin_;
+    }
+
+    /**
+     * @brief 取得目前共同座標系原點
+     *
+     * @return GPS 原點；未設定時為全零結構
+     */
+    GeoCoordinate origin() const
+    {
+        return origin_;
+    }
+
+    /**
+     * @brief 將 GPS 座標轉換為共同 swarm_ned
+     *
+     * @param coordinate 待轉換的 GPS 座標
+     * @param[out] out_ned 轉換後的 North、East、Down 位置
+     * @return true 表示轉換成功；失敗時 out_ned 會被清為零
+     */
+    bool to_swarm_ned(
+        const GeoCoordinate& coordinate,
+        Vector3& out_ned) const
+    {
+        out_ned = Vector3{0.0, 0.0, 0.0};
+        if (!has_origin_ || !is_valid_geodetic(coordinate))
+        {
+            return false;
+        }
+
+        const double latitude_rad = origin_.latitude_deg * DEGREES_TO_RADIANS;
+        const double sine_latitude = std::sin(latitude_rad);
+        const double denominator = std::sqrt(
+            1.0 - WGS84_FIRST_ECCENTRICITY_SQUARED *
+                sine_latitude * sine_latitude);
+        if (!is_finite(denominator) ||
+            denominator < EGO_SWARM_EPSILON_M)
+        {
+            return false;
+        }
+
+        const double prime_vertical_radius =
+            WGS84_SEMI_MAJOR_AXIS_M / denominator;
+        const double meridian_radius =
+            WGS84_SEMI_MAJOR_AXIS_M *
+            (1.0 - WGS84_FIRST_ECCENTRICITY_SQUARED) /
+            (denominator * denominator * denominator);
+        if (!is_finite(prime_vertical_radius) ||
+            !is_finite(meridian_radius))
+        {
+            return false;
+        }
+
+        const double delta_latitude_rad =
+            (coordinate.latitude_deg - origin_.latitude_deg) *
+            DEGREES_TO_RADIANS;
+        const double delta_longitude_deg = shortest_longitude_delta_deg(
+            coordinate.longitude_deg - origin_.longitude_deg);
+        const double delta_longitude_rad =
+            delta_longitude_deg * DEGREES_TO_RADIANS;
+
+        out_ned.at(0) = meridian_radius * delta_latitude_rad;
+        out_ned.at(1) = prime_vertical_radius *
+                       std::cos(latitude_rad) * delta_longitude_rad;
+        out_ned.at(2) = origin_.altitude_m - coordinate.altitude_m;
+
+        if (!is_finite_vector(out_ned))
+        {
+            out_ned = Vector3{0.0, 0.0, 0.0};
+            return false;
+        }
+
+        return true;
+    }
+
+private:
+    /**
+     * @brief 將經度差限制到最短角度
+     *
+     * @param delta_deg 原始經度差
+     * @return -180 到 180 度之間的經度差
+     */
+    static double shortest_longitude_delta_deg(const double delta_deg)
+    {
+        double normalized = std::fmod(delta_deg + 180.0, 360.0);
+        if (normalized < 0.0)
+        {
+            normalized += 360.0;
+        }
+        return normalized - 180.0;
+    }
+
+    GeoCoordinate origin_{};
+    bool has_origin_{false};
+};
+
+}  // namespace ego_swarm
+}  // namespace taiphoon
