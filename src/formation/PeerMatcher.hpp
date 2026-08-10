@@ -10,6 +10,7 @@
  * 2. 從 node/topic 名稱擷取 agent 索引數字
  * 3. 過濾 node 列表（含自身），供同儕發現使用
  * 4. 判斷 topic 名稱是否為 /fmu*_agent/state（向後相容）
+ * 5. 比對已知與目前探索結果，找出已消失的 Agent
  *
  * 由 MissionPlanner 節點在 scan_peers_cb 中呼叫。
  */
@@ -273,6 +274,32 @@ public:
         }
 
         return result;
+    }
+
+    /**
+     * @brief 找出已知但不再出現在探索結果中的 Agent 索引
+     *
+     * Agent 消失後必須退出編隊與防撞集合，後續飛行行為交由其 PX4
+     * failsafe 處理。回傳順序依索引遞增，讓呼叫端可穩定記錄與移除。
+     *
+     * @param known_indices 已建立狀態或訂閱的 Agent 索引
+     * @param discovered_indices 目前 ROS2 graph 中探索到的 Agent 索引
+     * @return 已消失的 Agent 索引
+     */
+    static std::vector<int> find_removed_indices(
+        const std::set<int>& known_indices,
+        const std::set<int>& discovered_indices)
+    {
+        std::vector<int> removed_indices;
+        for (const int agent_index : known_indices)
+        {
+            if (discovered_indices.find(agent_index) ==
+                discovered_indices.end())
+            {
+                removed_indices.push_back(agent_index);
+            }
+        }
+        return removed_indices;
     }
 };
 

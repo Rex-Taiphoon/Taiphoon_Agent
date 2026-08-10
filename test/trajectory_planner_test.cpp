@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "trajectory/TrajectoryPlanner.hpp"
@@ -91,6 +92,14 @@ TEST(TrajectoryPlannerTest, IsWaypointSafeExactThreshold)
     EXPECT_TRUE(TrajectoryPlanner::is_waypoint_safe(wp, peers, 3.0F));
 }
 
+TEST(TrajectoryPlannerTest, DoesNotAllowConfiguredMarginBelowThreeMeters)
+{
+    const std::array<float, 3> waypoint{0.0F, 0.0F, 0.0F};
+    const std::vector<std::array<float, 3>> peers{{2.0F, 0.0F, 0.0F}};
+
+    EXPECT_FALSE(TrajectoryPlanner::is_waypoint_safe(waypoint, peers, 1.0F));
+}
+
 // ==================== find_unsafe_waypoints 測試 ====================
 
 TEST(TrajectoryPlannerTest, FindUnsafeWaypoints)
@@ -149,6 +158,70 @@ TEST(TrajectoryPlannerTest, NoPeers)
         waypoints, peers, 3.0F);
 
     EXPECT_TRUE(unsafe.empty());
+}
+
+TEST(TrajectoryPlannerTest, PathIsUnsafeWhenSegmentPassesNearPeer)
+{
+    std::array<float, 3> current = {0.0F, 0.0F, 0.0F};
+    std::array<float, 3> target = {10.0F, 0.0F, 0.0F};
+    auto waypoints = TrajectoryPlanner::generate_path(current, target, 10.0F);
+
+    // 兩個端點皆距離同儕超過 3 m，但連續路徑最近距離只有 2 m。
+    std::vector<std::array<float, 3>> peers = {{5.0F, 2.0F, 0.0F}};
+
+    ASSERT_EQ(waypoints.size(), 2u);
+    EXPECT_TRUE(TrajectoryPlanner::is_waypoint_safe(
+        waypoints[0].position_ned, peers, 3.0F));
+    EXPECT_TRUE(TrajectoryPlanner::is_waypoint_safe(
+        waypoints[1].position_ned, peers, 3.0F));
+    EXPECT_FALSE(TrajectoryPlanner::is_path_safe(waypoints, peers, 3.0F));
+}
+
+TEST(TrajectoryPlannerTest, UnsafePathReturnsCurrentPositionHoldSequence)
+{
+    std::array<float, 3> current = {1.0F, 2.0F, -3.0F};
+    std::array<float, 3> target = {11.0F, 2.0F, -3.0F};
+    std::vector<std::array<float, 3>> peers = {{6.0F, 4.0F, -3.0F}};
+
+    auto waypoints = TrajectoryPlanner::generate_safe_path(
+        current, target, peers, 10.0F, 3.0F);
+
+    ASSERT_EQ(waypoints.size(), 1u);
+    EXPECT_NEAR(waypoints.at(0).position_ned.at(0), current.at(0), 1e-6F);
+    EXPECT_NEAR(waypoints.at(0).position_ned.at(1), current.at(1), 1e-6F);
+    EXPECT_NEAR(waypoints.at(0).position_ned.at(2), current.at(2), 1e-6F);
+}
+
+TEST(TrajectoryPlannerTest, ContinuousPathAtDefaultThresholdIsSafe)
+{
+    std::array<float, 3> current = {0.0F, 0.0F, 0.0F};
+    std::array<float, 3> target = {10.0F, 0.0F, 0.0F};
+    auto waypoints = TrajectoryPlanner::generate_path(current, target, 10.0F);
+    std::vector<std::array<float, 3>> peers = {{5.0F, 3.0F, 0.0F}};
+
+    EXPECT_TRUE(TrajectoryPlanner::is_path_safe(waypoints, peers));
+}
+
+TEST(TrajectoryPlannerTest, PathWithNanPeerIsRejected)
+{
+    std::array<float, 3> current = {0.0F, 0.0F, 0.0F};
+    std::array<float, 3> target = {10.0F, 0.0F, 0.0F};
+    auto waypoints = TrajectoryPlanner::generate_path(current, target, 10.0F);
+    std::vector<std::array<float, 3>> peers = {{
+        std::numeric_limits<float>::quiet_NaN(), 2.0F, 0.0F}};
+
+    EXPECT_FALSE(TrajectoryPlanner::is_path_safe(waypoints, peers, 3.0F));
+}
+
+TEST(TrajectoryPlannerTest, PathWithNanWaypointIsRejectedWithoutPeers)
+{
+    Waypoint invalid_waypoint;
+    invalid_waypoint.position_ned = {
+        0.0F, std::numeric_limits<float>::quiet_NaN(), 0.0F};
+    std::vector<Waypoint> waypoints = {invalid_waypoint};
+    std::vector<std::array<float, 3>> peers;
+
+    EXPECT_FALSE(TrajectoryPlanner::is_path_safe(waypoints, peers, 3.0F));
 }
 
 TEST(TrajectoryPlannerTest, WaypointDistance3d)

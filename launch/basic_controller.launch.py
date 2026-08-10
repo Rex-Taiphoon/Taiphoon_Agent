@@ -50,6 +50,8 @@ def launch_nodes(context, *args, **kwargs):
                 {"target_system": i},
                 {"auto_start_sequence": True},
                 {"agent_namespace": agent_ns},
+                {"collision_safety_margin_m": 3.0},
+                {"collision_peer_timeout_s": 2.0},
             ],
             output="screen",
             emulate_tty=True,

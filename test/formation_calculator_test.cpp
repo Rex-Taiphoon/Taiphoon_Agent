@@ -200,6 +200,71 @@ TEST(FormationCalculatorTest, FormationNone)
     EXPECT_TRUE(std::isnan(t[3]));
 }
 
+// ==================== 編隊幾何安全測試 ====================
+
+TEST(FormationCalculatorTest, CircleRejectsSlotsCloserThanSafetyMargin)
+{
+    FormationParams params;
+    params.param1 = 1.0F;
+
+    EXPECT_FALSE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::CIRCLE, params, 3, 3.0F));
+}
+
+TEST(FormationCalculatorTest, CircleAcceptsSafetyMarginBoundary)
+{
+    FormationParams params;
+    params.param1 = 1.5F;
+
+    EXPECT_TRUE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::CIRCLE, params, 2, 3.0F));
+}
+
+TEST(FormationCalculatorTest, HoriLinearRejectsSlotsCloserThanSafetyMargin)
+{
+    FormationParams params;
+    params.param1 = 2.99F;
+
+    EXPECT_FALSE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::HORI_LINEAR, params, 4, 3.0F));
+}
+
+TEST(FormationCalculatorTest, HoriLinearAcceptsSafetyMarginBoundary)
+{
+    FormationParams params;
+    params.param1 = 3.0F;
+
+    EXPECT_TRUE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::HORI_LINEAR, params, 4, 3.0F));
+}
+
+TEST(FormationCalculatorTest, DoesNotAllowMinimumDistanceBelowThreeMeters)
+{
+    FormationParams params;
+    params.param1 = 2.0F;
+
+    EXPECT_FALSE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::HORI_LINEAR, params, 4U, 1.0F));
+}
+
+TEST(FormationCalculatorTest, VertLinearRejectsSlotsCloserThanSafetyMargin)
+{
+    FormationParams params;
+    params.param1 = 2.99F;
+
+    EXPECT_FALSE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::VERT_LINEAR, params, 4, 3.0F));
+}
+
+TEST(FormationCalculatorTest, VertLinearAcceptsSafetyMarginBoundary)
+{
+    FormationParams params;
+    params.param1 = 3.0F;
+
+    EXPECT_TRUE(FormationCalculator::is_formation_geometry_safe(
+        FormationType::VERT_LINEAR, params, 4, 3.0F));
+}
+
 // ==================== GPS 共同參考系換算測試 ====================
 
 TEST(FormationCalculatorTest, GpsOffsetMetersEast)

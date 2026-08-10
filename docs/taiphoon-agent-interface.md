@@ -1,7 +1,7 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.3
-> **更新日期**：2026-08-06
+> **版本**：1.4
+> **更新日期**：2026-08-10
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
 > 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、Service、自訂訊息格式與命令協定，
@@ -27,31 +27,18 @@
 ## 1. 系統架構總覽
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  Taiphoon_Agent                    │
-│                                                    │
-│  ┌──────────────┐    ┌───────────────────┐        │
-│  │ MissionPlanner│───▶│TrajectoryController│       │
-│  │  (formation)  │    │  (path planning)   │       │
-│  └──────┬───────┘    └────────┬──────────┘        │
-│         │ NedTarget           │ WaypointSequence   │
-│         ▼                     ▼                    │
-│  ┌──────────────────────────────────────┐         │
-│  │        BasicControllerNode           │         │
-│  │  ┌─────────────┐  ┌───────────────┐  │         │
-│  │  │BasicController│  │AgentCmdHandler│  │         │
-│  │  └──────┬──────┘  └───────┬───────┘  │         │
-│  │         │                  │           │         │
-│  │    PX4 Topics        Agent Topics     │         │
-│  └─────────┼──────────────────┼──────────┘         │
-│            │                  │                     │
-└────────────┼──────────────────┼─────────────────────┘
-             │                  │
-     ┌───────▼──────┐   ┌──────▼──────────┐
-     │  PX4 SITL    │   │  ROS2 Network   │
-     │  (飛控橋接)   │   │  (GCS / 其他Agent)│
-     └──────────────┘   └─────────────────┘
+MissionPlanner ── NedTarget ──┬──▶ TrajectoryController
+                              │             │
+                              │             └──▶ /waypoints
+                              ▼                  （僅規劃／觀測）
+其他 AgentState ──▶ [防撞關卡] ──▶ BasicController ──▶ PX4
+                         ▲
+GCS 移動命令 ─────────────┘
 ```
+
+> `/{agent_namespace}/waypoints` 是軌跡規劃與觀測輸出，目前沒有接入
+> `BasicController` 或 PX4 控制鏈。BasicController 執行控制目標前的防撞關卡，才是
+> NED 目標送往 PX4 前的最終控制關卡。
 
 每一台無人機對應一個 Taiphoon_Agent 實例，內含四個節點：
 
@@ -78,6 +65,7 @@
 **內部組件**：
 - `BasicController`：PX4 Offboard 控制（arm/disarm/takeoff/land/move）
 - `AgentCommandHandler`：接收並解析高階命令字串
+- 防撞關卡：以同儕 AgentState 檢查三維安全距離，決定移動目標是否可交給 BasicController 執行
 - `PositionSafetyMonitor`：位置偏差安全監控
 - `StatePublisher`：填充 AgentState / AgentAttitude 訊息
 
@@ -102,7 +90,7 @@
 | **執行檔** | `trajectory_controller` |
 | **節點名稱** | `trajectory_controller` |
 | **命名空間** | `fmu{N}` |
-| **描述** | 軌跡控制層。路徑生成、碰撞檢查、waypoint 序列發布。 |
+| **描述** | 軌跡控制層。路徑生成、碰撞檢查、waypoint 序列發布；輸出目前不直接控制 PX4。 |
 
 **內部組件**：
 - `TrajectoryPlanner`：直線路徑生成與到達時間計算
@@ -130,7 +118,9 @@
 
 Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 PX4 實際觀測結果校正後的
 任務階段，不代表最近收到的命令意圖。位置資訊由既有的 `position_ned` 與
-`position_global` 提供，不另外複製 PX4 Position 欄位。
+`position_global` 提供，不另外複製 PX4 Position 欄位。`position_global` 唯一取自
+`/fmu{N}/fmu/out/vehicle_global_position`；AgentState 名目發布頻率至少為 10 Hz，若 PX4
+原始資料更新較慢，期間會重複最近一筆有效值，不進行插值。
 
 | 欄位 | 型別 | 說明 |
 |------|------|------|
@@ -219,6 +209,7 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 | `fmu/in/trajectory_setpoint` | 發布 → PX4 | `px4_msgs/TrajectorySetpoint` | best_effort (10) |
 | `fmu/in/vehicle_command` | 發布 → PX4 | `px4_msgs/VehicleCommand` | best_effort (10) |
 | `fmu/out/vehicle_odometry` | 訂閱 ← PX4 | `px4_msgs/VehicleOdometry` | best_effort (10) |
+| `fmu/out/vehicle_global_position` | 訂閱 ← PX4 | `px4_msgs/VehicleGlobalPosition` | best_effort (10) |
 | `fmu/out/vehicle_command_ack_v1` | 訂閱 ← PX4 | `px4_msgs/VehicleCommandAck` | best_effort (10) |
 | `fmu/out/vehicle_status_v4` | 訂閱 ← PX4 | `px4_msgs/VehicleStatus` | best_effort (10) |
 
@@ -232,8 +223,8 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 
 | Topic 模板 | 說明 | 型別 | 頻率 | QoS |
 |------------|------|------|------|-----|
-| `/{agent_namespace}/state` | Agent 狀態（位置、飛行模式、電量） | `taiphoon_agent/AgentState` | 10 Hz (預設) | reliable (10) |
-| `/{agent_namespace}/attitude` | Agent 姿態（四元數） | `taiphoon_agent/AgentAttitude` | 10 Hz (預設) | reliable (10) |
+| `/{agent_namespace}/state` | Agent 狀態（位置、飛行模式、電量） | `taiphoon_agent/AgentState` | ≥ 10 Hz（名目） | reliable (10) |
+| `/{agent_namespace}/attitude` | Agent 姿態（四元數） | `taiphoon_agent/AgentAttitude` | ≥ 10 Hz（名目） | reliable (10) |
 
 **實際範例**（4 機部署）：
 
@@ -261,7 +252,7 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 | Topic 模板 | 說明 | 型別 | QoS |
 |------------|------|------|-----|
 | `/{agent_namespace}/ned_target` | 編隊計算出的 NED 目標 | `taiphoon_agent/NedTarget` | reliable (10) |
-| `/{agent_namespace}/waypoints` | 軌跡控制器輸出的 waypoint 序列 | `taiphoon_agent/WaypointSequence` | reliable (10) |
+| `/{agent_namespace}/waypoints` | 軌跡控制器輸出的規劃／觀測 waypoint 序列；目前不是 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | reliable (10) |
 | `/{agent_namespace}/obstacles` | 障礙物資訊（預留介面，尚未實作） | `std_msgs/String` | best_effort (10) |
 
 #### 4.2.4 跨 Agent 通訊（同儕發現）
@@ -272,15 +263,35 @@ Waypoint 序列，由 `trajectory_controller` 發布。
 |--------|-----------|------|
 | `mission_planner` | `/{peer_namespace}/state` | 取得同儕位置以計算編隊目標 |
 | `trajectory_controller` | `/{peer_namespace}/state` | 取得同儕位置以檢查路徑碰撞 |
+| `basic_controller_node` | `/{peer_namespace}/state` | 在移動目標送往 PX4 前執行最終防撞判斷 |
 
 > **同儕發現與離線判定機制**：透過 ROS2 node 名稱掃描自動發現線上 Agent，
 > 只辨識 `/fmu<N>_agent/...` 節點（相容模式另含 `/fmu<N>/basic_controller_node`）。
 > 離線判定以 `/fmu<N>_agent` 節點存在性為主軸，並以「超過
 > `peer_timeout_s`（預設 2 秒）未收到該 Agent 的 `/fmu<N>_agent/state`」作為
 > 加速器（避免等待 DDS 節點清除延遲）。掃描週期為 3 秒（`peer_scan_interval_s`）。
+> Agent 從 ROS2 discovery 消失時，MissionPlanner、TrajectoryController 與
+> BasicController 會將它移出活動同儕及防撞集合；該機後續由 PX4 failsafe
+> 處理，其餘 Agent 直接重新編隊。Agent 再次出現時會重新建立訂閱。
 >
 > 機群之間一律只訂閱 `/fmu<N>_agent/state` 等 Agent 對外 topic，
 > 不直接訂閱其他無人機的 PX4 原生 topic（`/fmu<N>/fmu/out/*`）。
+
+### 4.2.5 第一版觀測式防撞契約
+
+- 安全距離使用三維直線距離，任兩機必須維持至少 3 公尺。
+- BasicController 執行控制目標前的防撞關卡是送往 PX4 前的最終控制關卡，適用於編隊與一般移動目標。
+- 發現路徑衝突、仍存在的同儕狀態無效、位置資料無效，或各機 GPS 無法轉換成可比較的共同座標時，Agent 原地保持並保留待執行目標。
+- Agent 從 ROS2 discovery 消失後，不再參與防撞判斷；後續飛行交由該機 PX4 failsafe 處理。
+- 當資料恢復有效且目標重新符合安全距離後，Agent 自動續行，不要求 GCS 重新發布命令。
+- `/{agent_namespace}/waypoints` 目前只表示 TrajectoryController 的規劃結果，不會送入 PX4，也不能作為 PX4 已執行防撞路徑的證據。
+- 第一版只依賴最近觀測位置，不使用速度、加速度或同儕未來軌跡；高速相向、通訊延遲與制動距離不在預測模型內。
+- 本功能沿用既有 `AgentState` 與 `NedTarget`，不新增 Topic、自訂訊息或 GCS 命令。
+- `collision_safety_margin_m` 預設為 `3.0` 公尺，低於 `3.0` 的設定會被限制為
+  `3.0`；`collision_peer_timeout_s` 預設為 `2.0` 秒。參數由每個
+  `basic_controller_node` 個別載入。
+- TrajectoryController 的 `safety_margin_m` 與 `peer_timeout_s` 預設同樣為
+  `3.0` 公尺與 `2.0` 秒；`safety_margin_m` 低於 `3.0` 時也會被限制為 `3.0`。
 
 ---
 

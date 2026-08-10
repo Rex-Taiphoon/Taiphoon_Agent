@@ -129,6 +129,9 @@ ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: HOLD'
 ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_LAND'
 ```
 
+`TAKEOFF` 會在命令接受時鎖定當下的 NED X/Y 與目標高度；`HOLD` 會鎖定命令接受時的
+NED 三軸位置。後續 odometry 更新只用於觀測，不會把即時估測位置改寫成新的懸停目標。
+
 全體廣播（所有 Agent 同時執行）：
 
 ```bash
@@ -356,6 +359,37 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 
 ---
 
+## 第一版觀測式防撞
+
+編隊與一般移動目標在送往 PX4 前，會以其他 Agent 最近發布的有效位置進行防撞檢查。安全距離採三維直線距離，任兩機必須維持至少 **3 公尺**。
+
+實際控制資料流如下：
+
+```text
+MissionPlanner / 移動命令
+          │
+          ▼
+      NED 目標
+          │
+          ├──▶ TrajectoryController ──▶ /waypoints（規劃與觀測輸出）
+          │
+          ▼
+BasicController 執行前防撞關卡（最終控制關卡）
+          │
+          ▼
+         PX4
+```
+
+- 目標路徑與其他機體的最新有效位置小於 3 公尺時，Agent 原地保持並保留待執行目標。
+- 仍存在的同儕狀態無效、位置資料無效，或各機 GPS 無法轉換成可比較的共同座標時，採相同的原地保持策略。
+- Agent 從 ROS2 discovery 消失時，會立即退出編隊與防撞集合；該機後續由 PX4 failsafe 處理，其餘 Agent 直接重新編隊。Agent 再次出現時會重新加入同儕集合。
+- 當位置資料恢復有效且目標重新符合安全距離後，Agent 會自動續行，不需要重新下達命令。
+- `TrajectoryController` 發布的 `/{agent_namespace}/waypoints` 目前不是 PX4 的實際控制來源；觀察到安全 waypoint 不代表 PX4 已採用該序列。
+- 第一版只使用最近觀測位置，不使用速度、加速度或其他 Agent 的未來軌跡，因此不具時間域碰撞預測能力。高速飛行、通訊延遲與制動距離仍需納入任務規劃及 SITL／實機驗證。
+- 此功能沿用既有 `AgentState`、`NedTarget` 與 Topic，不新增 ROS2 Topic 或自訂訊息。
+
+---
+
 ## 命令參考
 
 | 命令 | 說明 | 參數 | 範例 |
@@ -435,6 +469,9 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `auto_start_sequence` | bool | true | 連線後是否自動切換至 Offboard 模式 |
 | `target_system` | int | 1 | PX4 MAVLink 系統 ID |
 | `agent_namespace` | string | fmu1 | Agent 命令命名空間 |
+| `state_publish_rate_hz` | double | 10.0 | AgentState／AgentAttitude 名目發布頻率（Hz）；非法值或低於 10 時固定使用 10 Hz |
+| `collision_safety_margin_m` | double | 3.0 | 編隊及一般移動的最小三維安全距離（公尺）；低於 3.0 的設定會被限制為 3.0 |
+| `collision_peer_timeout_s` | double | 2.0 | 同儕 AgentState 超時後觸發原地保持的秒數 |
 
 ### FormationNode 參數
 
@@ -444,6 +481,17 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `formation_update_rate_hz` | double | 5.0 | 編隊控制迴圈更新頻率（Hz） |
 | `peer_scan_interval_s` | double | 3.0 | 同儕無人機狀態掃描間隔（秒） |
 | `peer_timeout_s` | double | 2.0 | 同儕 state 逾時判定離線的秒數 |
+
+### TrajectoryController 參數
+
+| 參數 | 類型 | 預設值 | 說明 |
+|------|------|--------|------|
+| `agent_namespace` | string | fmu1_agent | 自身命令命名空間 |
+| `trajectory_update_rate_hz` | double | 10.0 | waypoint 規劃與發布頻率（Hz） |
+| `waypoint_spacing_m` | double | 1.0 | 直線路徑 waypoint 間距（公尺） |
+| `flight_speed_mps` | double | 5.0 | waypoint 到達時間估算速度（公尺／秒） |
+| `safety_margin_m` | double | 3.0 | 規劃／觀測路徑安全距離；低於 3.0 時限制為 3.0 |
+| `peer_timeout_s` | double | 2.0 | 同儕 AgentState 逾時後改發布原地保持序列的秒數 |
 
 範例：停用自動 Offboard 並設定起飛高度 5m：
 
@@ -575,6 +623,12 @@ ros2 topic echo /fmu1/fmu/out/vehicle_odometry
 
 # 檢視 Agent 狀態（GPS / 電池 / 飛行模式）
 ros2 topic echo /fmu1_agent/state
+
+# 量測 AgentState 發布頻率（名目頻率至少 10 Hz）
+ros2 topic hz /fmu1_agent/state
+
+# 檢視 position_global 的 PX4 原始來源
+ros2 topic echo /fmu1/fmu/out/vehicle_global_position
 
 # 檢視 NED 目標（formation_node 輸出）
 ros2 topic echo /fmu1_agent/ned_target

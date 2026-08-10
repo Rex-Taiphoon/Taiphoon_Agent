@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <vector>
 #include <array>
 #include <cmath>
@@ -61,6 +62,10 @@ struct ReferenceCentroid
 constexpr float PI = 3.14159265358979323846F;
 /// 等距圓柱投影：緯度每 1 度對應的北向距離（公尺）
 constexpr float METERS_PER_DEG_LAT = 111320.0F;
+/// 編隊任兩個目標 slot 的最小三維安全距離（公尺）
+constexpr float MIN_FORMATION_SLOT_DISTANCE_M = 3.0F;
+/// 浮點距離邊界比較容差（公尺）
+constexpr float FORMATION_DISTANCE_EPSILON_M = 1.0e-5F;
 
 /**
  * @brief 編隊計算器
@@ -343,6 +348,66 @@ public:
         }
 
         return target;
+    }
+
+    /**
+     * @brief 判斷編隊中任兩個目標 slot 是否符合三維安全距離
+     *
+     * @param type 編隊類型
+     * @param params 編隊參數（半徑／間距／高度）
+     * @param slot_count 目標 slot 數量
+     * @param minimum_distance_m 最小允許三維距離（公尺）
+     * @return true 表示所有 slot 間距皆符合安全距離；false 表示不安全或輸入無效
+     */
+    static bool is_formation_geometry_safe(
+        FormationType type,
+        const FormationParams& params,
+        size_t slot_count,
+        float minimum_distance_m = MIN_FORMATION_SLOT_DISTANCE_M)
+    {
+        if (type == FormationType::NONE || slot_count < 2)
+        {
+            return true;
+        }
+        if (!std::isfinite(minimum_distance_m))
+        {
+            return false;
+        }
+        const float effective_minimum_distance_m = std::max(
+            minimum_distance_m, MIN_FORMATION_SLOT_DISTANCE_M);
+
+        const std::array<float, 3> centroid{0.0F, 0.0F, 0.0F};
+        std::vector<std::array<float, 4>> targets;
+        targets.reserve(slot_count);
+        for (size_t index = 0; index < slot_count; ++index)
+        {
+            auto target = compute_formation_target(
+                centroid, type, params, index, slot_count);
+            if (!std::isfinite(target.at(0)) ||
+                !std::isfinite(target.at(1)) ||
+                !std::isfinite(target.at(2)))
+            {
+                return false;
+            }
+            targets.push_back(target);
+        }
+
+        for (size_t first = 0; first < targets.size(); ++first)
+        {
+            for (size_t second = first + 1; second < targets.size(); ++second)
+            {
+                float dx = targets.at(first).at(0) - targets.at(second).at(0);
+                float dy = targets.at(first).at(1) - targets.at(second).at(1);
+                float dz = targets.at(first).at(2) - targets.at(second).at(2);
+                float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (distance + FORMATION_DISTANCE_EPSILON_M <
+                    effective_minimum_distance_m)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 };
 

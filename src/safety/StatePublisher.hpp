@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 
 #include "taiphoon_agent/msg/agent_state.hpp"
 #include "taiphoon_agent/msg/agent_attitude.hpp"
@@ -34,6 +35,24 @@ namespace safety
 class StatePublisher
 {
 public:
+    /**
+     * @brief 將狀態發布頻率限制為合法且不低於介面保證的值
+     *
+     * @param requested_rate_hz 使用者請求的狀態發布頻率（Hz）
+     * @return 有限且至少為 10 Hz 的狀態發布頻率
+     */
+    static double normalize_publish_rate_hz(double requested_rate_hz)
+    {
+        constexpr double MIN_STATE_PUBLISH_RATE_HZ = 10.0;
+        if (!std::isfinite(requested_rate_hz) ||
+            requested_rate_hz < MIN_STATE_PUBLISH_RATE_HZ)
+        {
+            return MIN_STATE_PUBLISH_RATE_HZ;
+        }
+
+        return requested_rate_hz;
+    }
+
     /**
      * @brief 從 PX4 里程計、GPS 與電池狀態填充 AgentState 訊息
      *

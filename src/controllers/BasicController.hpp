@@ -239,6 +239,12 @@ public:
     /** @brief 取得目前目標 NED 位置 */
     std::array<float, 3> get_target_position_ned() const;
 
+    /**
+     * @brief 將目標重設為目前位置並進入 HOVER
+     * @return true 控制器已初始化且保持目標設定成功
+     */
+    bool hold_current_position();
+
 private:
     // ==================== Publisher 初始化 (單一職責) ====================
 

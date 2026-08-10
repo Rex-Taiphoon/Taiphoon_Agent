@@ -25,11 +25,15 @@ _Avoid_：驅動層、硬體層
 _Avoid_：PID 控制器、姿態控制
 
 **軌跡控制層 (Trajectory Controller)**：
-接收目標 NED 位置，規劃無碰撞路徑並輸出帶時間戳的 waypoint 序列。負責處理多機路線重疊與安全邊界（≥3m）。預留外部避障節點介面。
+接收目標 NED 位置，規劃符合安全距離的路徑並輸出帶時間戳的 waypoint 序列。第一版輸出的 `/waypoints` 僅供路徑規劃、觀測與後續整合使用，目前不是 PX4 的實際控制來源；不得把 waypoint 輸出視為已對飛控生效的防撞保證。預留外部避障節點介面。
 _Avoid_：路徑規劃（路徑規劃是軌跡控制的子功能）
 
+**觀測式防撞 (Observation-based Collision Avoidance)**：
+第一版多機防撞策略。依各 Agent 最近發布的有效位置，檢查自身移動路徑與其他機體是否維持至少 3 公尺的三維距離。BasicController 執行控制目標前的防撞關卡是送往 PX4 前的最終控制關卡；發生衝突、仍被探索到的同儕狀態無效，或 GPS 無法轉換至可比較的共同座標時，維持目前位置並保留待執行目標，條件恢復安全後自動續行。Agent 從 ROS2 discovery 消失時，立即退出編隊與防撞集合，該機後續行為交由 PX4 failsafe 處理，其餘 Agent 直接重新編隊。此版本不使用速度或未來軌跡預測，不能視為時間域碰撞預測。
+_Avoid_：動態避障、速度預測、PX4 內建避障
+
 **任務規劃層 (Mission Planner)**：
-最高層決策模組。解析編隊命令（如 FORMATION_CIRCLE）、自動發現線上有哪些同儕 Agent、根據所有 Agent 狀態計算自身在編隊中的目標位置。輸出目標 NED 給軌跡控制層。
+最高層決策模組。解析編隊命令（如 FORMATION_CIRCLE）、自動發現線上有哪些同儕 Agent、根據所有 Agent 狀態計算自身在編隊中的目標位置。發布目標 NED 供軌跡控制層規劃與 BasicController 控制鏈使用；實際送往 PX4 前仍須通過 BasicController 執行前的防撞關卡。
 _Avoid_：排程器、任務佇列
 
 **Agent 狀態 (Agent State)**：
@@ -37,14 +41,14 @@ _Avoid_：排程器、任務佇列
 _Avoid_：telemetry、PX4 state
 
 **同儕發現 (Peer Discovery)**：
-Agent 啟動時自動掃描 ROS2 網路中所有 `/fmu*_agent/state` topic，動態建立對其他 Agent 的訂閱，無需靜態設定檔。
+Agent 會定期掃描 ROS2 網路中所有 `/fmu*_agent/state` topic，動態建立或移除對其他 Agent 的訂閱，無需靜態設定檔。Agent 消失後不保留在活動同儕集合，再次出現時可重新加入。
 _Avoid_：手動配置、靜態拓撲
 
 **編隊 (Formation)**：
 任務規劃層功能之一。根據編隊類型（環形 CIRCLE、水平直列 HORI_LINEAR、垂直直列 VERT_LINEAR）與參數（半徑/間距、高度），計算自身在編隊中的目標 NED 位置。
 
 **安全邊界 (Safety Margin)**：
-軌跡規劃時兩機路徑之間的最小允許距離，預設 ≥ 3 公尺。
+第一版觀測式防撞要求兩機之間維持的最小三維距離，固定為至少 3 公尺。此邊界同時適用於編隊目標與一般移動目標；是否允許目標送往 PX4，最後由 BasicController 執行前的防撞關卡判定。
 _Avoid_：緩衝區、禁航區
 
 **沉默失效 (Silent Failure)**：

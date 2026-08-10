@@ -115,6 +115,17 @@ private:
      */
     void cancel_formation_for_low_members();
 
+    /**
+     * @brief 驗證編隊幾何安全後啟用編隊
+     *
+     * @param type 編隊類型
+     * @param param1 半徑或間距（公尺）
+     * @param param2 高度（公尺）
+     * @return true 表示編隊已安全啟用；false 表示參數或成員數不允許啟用
+     */
+    bool activate_formation_if_safe(
+        formation::FormationType type, float param1, float param2);
+
     // ==================== 初始化 ====================
 
     /**

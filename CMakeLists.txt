@@ -41,6 +41,7 @@ add_executable(basic_controller
   src/controllers/BasicController.cpp
   src/controllers/AgentCommandHandler.cpp
   src/nodes/basic_controller_node.cpp
+  src/safety/CollisionSafetyMonitor.cpp
 )
 
 target_include_directories(basic_controller PRIVATE
@@ -136,6 +137,21 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_state_publisher ${cpp_typesupport_target})
 
+  # BasicController 固定位置設定點測試
+  ament_add_gtest(test_basic_controller_setpoint
+    test/basic_controller_setpoint_test.cpp
+    src/controllers/BasicController.cpp
+  )
+
+  target_include_directories(test_basic_controller_setpoint PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  ament_target_dependencies(test_basic_controller_setpoint
+    rclcpp
+    px4_msgs
+  )
+
   # FlightStateResolver 測試（純邏輯，獨立編譯）
   ament_add_gtest(test_flight_state_resolver
     test/flight_state_resolver_test.cpp
@@ -166,6 +182,16 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_position_safety_monitor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # CollisionSafetyMonitor 測試（純邏輯，獨立編譯）
+  ament_add_gtest(test_collision_safety_monitor
+    test/collision_safety_monitor_test.cpp
+    src/safety/CollisionSafetyMonitor.cpp
+  )
+
+  target_include_directories(test_collision_safety_monitor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

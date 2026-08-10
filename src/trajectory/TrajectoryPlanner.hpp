@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <vector>
 #include <array>
 #include <cmath>
@@ -19,6 +20,9 @@ namespace taiphoon
 {
 namespace trajectory
 {
+
+constexpr float DEFAULT_TRAJECTORY_SAFETY_MARGIN_M = 3.0F;
+constexpr float TRAJECTORY_DISTANCE_EPSILON_M = 1.0e-5F;
 
 /**
  * @brief Waypoint 結構
@@ -100,6 +104,34 @@ public:
     }
 
     /**
+     * @brief 生成符合安全距離的直線路徑
+     *
+     * 路徑與任一同儕距離不足時，回傳只包含目前位置的保持序列。
+     *
+     * @param current_ned 目前 NED 位置
+     * @param target_ned 目標 NED 位置
+     * @param peer_positions 所有有效同儕的 NED 位置列表
+     * @param spacing_m waypoint 間距（公尺）
+     * @param safety_margin_m 三維安全距離（公尺）
+     * @return std::vector<Waypoint> 安全路徑或目前位置保持序列
+     */
+    static std::vector<Waypoint> generate_safe_path(
+        const std::array<float, 3>& current_ned,
+        const std::array<float, 3>& target_ned,
+        const std::vector<std::array<float, 3>>& peer_positions,
+        float spacing_m = 1.0F,
+        float safety_margin_m = DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
+    {
+        auto waypoints = generate_path(current_ned, target_ned, spacing_m);
+        if (is_path_safe(waypoints, peer_positions, safety_margin_m))
+        {
+            return waypoints;
+        }
+
+        return generate_path(current_ned, current_ned, spacing_m);
+    }
+
+    /**
      * @brief 為 waypoint 序列計算到達時間
      *
      * 假設固定速度，從起始時間開始計算每個 waypoint 的抵達時間。
@@ -145,15 +177,29 @@ public:
     static bool is_waypoint_safe(
         const std::array<float, 3>& wp_position,
         const std::vector<std::array<float, 3>>& peer_positions,
-        float safety_margin_m)
+        float safety_margin_m = DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
     {
+        if (!is_position_finite(wp_position))
+        {
+            return false;
+        }
+
+        const float effective_margin_m = std::isfinite(safety_margin_m)
+            ? std::max(safety_margin_m, DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
+            : DEFAULT_TRAJECTORY_SAFETY_MARGIN_M;
+
         for (const auto& peer : peer_positions)
         {
+            if (!is_position_finite(peer))
+            {
+                return false;
+            }
+
             float dx = wp_position[0] - peer[0];
             float dy = wp_position[1] - peer[1];
             float dz = wp_position[2] - peer[2];
             float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (dist < safety_margin_m)
+            if (dist + TRAJECTORY_DISTANCE_EPSILON_M < effective_margin_m)
             {
                 return false;
             }
@@ -174,7 +220,7 @@ public:
     static std::vector<size_t> find_unsafe_waypoints(
         const std::vector<Waypoint>& waypoints,
         const std::vector<std::array<float, 3>>& peer_positions,
-        float safety_margin_m)
+        float safety_margin_m = DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
     {
         std::vector<size_t> unsafe_indices;
 
@@ -188,6 +234,127 @@ public:
         }
 
         return unsafe_indices;
+    }
+
+    /**
+     * @brief 檢查完整 waypoint 路徑與所有同儕位置的三維安全距離
+     *
+     * 每一對相鄰 waypoint 視為連續線段，避免稀疏取樣漏掉線段中間的碰撞風險。
+     *
+     * @param waypoints waypoint 序列
+     * @param peer_positions 所有有效同儕的 NED 位置列表
+     * @param safety_margin_m 三維安全距離（公尺），非正值時使用預設 3 公尺
+     * @return true 完整路徑與所有同儕距離皆不小於安全距離
+     */
+    static bool is_path_safe(
+        const std::vector<Waypoint>& waypoints,
+        const std::vector<std::array<float, 3>>& peer_positions,
+        float safety_margin_m = DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
+    {
+        if (waypoints.empty())
+        {
+            return false;
+        }
+
+        const float effective_margin_m = std::isfinite(safety_margin_m)
+            ? std::max(safety_margin_m, DEFAULT_TRAJECTORY_SAFETY_MARGIN_M)
+            : DEFAULT_TRAJECTORY_SAFETY_MARGIN_M;
+
+        for (const auto& waypoint : waypoints)
+        {
+            if (!is_position_finite(waypoint.position_ned))
+            {
+                return false;
+            }
+        }
+
+        for (const auto& peer : peer_positions)
+        {
+            if (!is_position_finite(peer))
+            {
+                return false;
+            }
+
+            if (waypoints.size() == 1U)
+            {
+                if (!is_waypoint_safe(
+                        waypoints.front().position_ned,
+                        {peer},
+                        effective_margin_m))
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            for (size_t index = 1U; index < waypoints.size(); ++index)
+            {
+                const auto& start = waypoints.at(index - 1U).position_ned;
+                const auto& end = waypoints.at(index).position_ned;
+                if (distance_to_segment(start, end, peer) +
+                    TRAJECTORY_DISTANCE_EPSILON_M < effective_margin_m)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+private:
+    /**
+     * @brief 判斷三維位置是否皆為有限值
+     * @param position 三維位置
+     * @return true 三個軸皆不是 NaN 或 Inf
+     */
+    static bool is_position_finite(const std::array<float, 3>& position)
+    {
+        return std::isfinite(position.at(0)) &&
+               std::isfinite(position.at(1)) &&
+               std::isfinite(position.at(2));
+    }
+
+    /**
+     * @brief 計算點到三維線段的最短距離
+     * @param start 線段起點
+     * @param end 線段終點
+     * @param point 待測點
+     * @return float 點到線段的最短距離（公尺）
+     */
+    static float distance_to_segment(
+        const std::array<float, 3>& start,
+        const std::array<float, 3>& end,
+        const std::array<float, 3>& point)
+    {
+        const float segment_x = end.at(0) - start.at(0);
+        const float segment_y = end.at(1) - start.at(1);
+        const float segment_z = end.at(2) - start.at(2);
+        const float segment_length_squared =
+            segment_x * segment_x + segment_y * segment_y +
+            segment_z * segment_z;
+
+        float projection = 0.0F;
+        if (segment_length_squared > std::numeric_limits<float>::epsilon())
+        {
+            projection =
+                ((point.at(0) - start.at(0)) * segment_x +
+                 (point.at(1) - start.at(1)) * segment_y +
+                 (point.at(2) - start.at(2)) * segment_z) /
+                segment_length_squared;
+            projection = std::fmax(0.0F, std::fmin(1.0F, projection));
+        }
+
+        const float closest_x = start.at(0) + projection * segment_x;
+        const float closest_y = start.at(1) + projection * segment_y;
+        const float closest_z = start.at(2) + projection * segment_z;
+        const float distance_x = point.at(0) - closest_x;
+        const float distance_y = point.at(1) - closest_y;
+        const float distance_z = point.at(2) - closest_z;
+
+        return std::sqrt(
+            distance_x * distance_x + distance_y * distance_y +
+            distance_z * distance_z);
     }
 };
 

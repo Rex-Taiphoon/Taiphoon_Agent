@@ -232,6 +232,40 @@ void MissionPlanner::update_peer_liveness(
 // 回呼
 // =============================================================================
 
+bool MissionPlanner::activate_formation_if_safe(
+    formation::FormationType type, float param1, float param2)
+{
+    sweep_peer_online_status();
+    const size_t online_count = formation::FormationCalculator::count_online(
+        build_sorted_peers());
+    formation::FormationParams params;
+    params.param1 = param1;
+    params.param2 = param2;
+
+    if (online_count < 2)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Formation command rejected: online agents < 2");
+        return false;
+    }
+    if (!formation::FormationCalculator::is_formation_geometry_safe(
+            type, params, online_count))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Formation command rejected: target slots violate "
+                    "the %.2f m safety margin",
+                    static_cast<double>(
+                        formation::MIN_FORMATION_SLOT_DISTANCE_M));
+        return false;
+    }
+
+    formation_type_ = type;
+    formation_param1_ = param1;
+    formation_param2_ = param2;
+    snapshot_centroid();
+    return true;
+}
+
 void MissionPlanner::all_agent_command_cb(
     const std_msgs::msg::String::SharedPtr msg)
 {
@@ -247,32 +281,36 @@ void MissionPlanner::all_agent_command_cb(
     switch (parsed.command)
     {
         case utils::AgentCommand::FORMATION_CIRCLE:
-            formation_type_ = formation::FormationType::CIRCLE;
-            formation_param1_ = parsed.param_value;  // 半徑
-            formation_param2_ = parsed.param2;        // 高度
-            snapshot_centroid();
-            RCLCPP_INFO(this->get_logger(),
-                        "FORMATION_CIRCLE: radius=%.2f, altitude=%.2f",
-                        formation_param1_, formation_param2_);
+            if (activate_formation_if_safe(
+                    formation::FormationType::CIRCLE,
+                    parsed.param_value, parsed.param2))
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "FORMATION_CIRCLE: radius=%.2f, altitude=%.2f",
+                            formation_param1_, formation_param2_);
+            }
             break;
 
         case utils::AgentCommand::FORMATION_HORI_LINEAR:
-            formation_type_ = formation::FormationType::HORI_LINEAR;
-            formation_param1_ = parsed.param_value;  // 間距
-            formation_param2_ = parsed.param2;        // 高度
-            snapshot_centroid();
-            RCLCPP_INFO(this->get_logger(),
-                        "FORMATION_HORI_LINEAR: spacing=%.2f, altitude=%.2f",
-                        formation_param1_, formation_param2_);
+            if (activate_formation_if_safe(
+                    formation::FormationType::HORI_LINEAR,
+                    parsed.param_value, parsed.param2))
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "FORMATION_HORI_LINEAR: spacing=%.2f, altitude=%.2f",
+                            formation_param1_, formation_param2_);
+            }
             break;
 
         case utils::AgentCommand::FORMATION_VERT_LINEAR:
-            formation_type_ = formation::FormationType::VERT_LINEAR;
-            formation_param1_ = parsed.param_value;  // 間距
-            snapshot_centroid();
-            RCLCPP_INFO(this->get_logger(),
-                        "FORMATION_VERT_LINEAR: spacing=%.2f",
-                        formation_param1_);
+            if (activate_formation_if_safe(
+                    formation::FormationType::VERT_LINEAR,
+                    parsed.param_value, parsed.param2))
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "FORMATION_VERT_LINEAR: spacing=%.2f",
+                            formation_param1_);
+            }
             break;
 
         case utils::AgentCommand::FORMATION_CANCEL:
@@ -506,6 +544,17 @@ void MissionPlanner::formation_loop_cb()
     formation::FormationParams params;
     params.param1 = formation_param1_;
     params.param2 = formation_param2_;
+
+    if (!formation::FormationCalculator::is_formation_geometry_safe(
+            formation_type_, params, online_count))
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Formation target publish blocked: target slots violate "
+            "the %.2f m safety margin",
+            static_cast<double>(formation::MIN_FORMATION_SLOT_DISTANCE_M));
+        return;
+    }
 
     // 動態計算 effective_self_index：自身在所有 online agent 中的排序位置
     // 避免因中間 agent 離線導致 self_index 不連續（如 0, 2）

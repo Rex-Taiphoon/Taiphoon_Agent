@@ -172,7 +172,8 @@ bool BasicController::takeoff(float altitude_m)
         return false;
     }
     target_altitude_m_.store(altitude_m);
-    target_position_ned_[2] = -altitude_m;
+    target_position_ned_ = current_position_ned_;
+    target_position_ned_.at(2) = -altitude_m;
     flight_state_.store(FlightState::TAKEOFF);
     takeoff_start_time_ = node_->now();
     altitude_log_counter_ = 0;
@@ -203,6 +204,7 @@ bool BasicController::hold_position(float duration_s)
         return false;
     }
     hover_duration_s_.store(duration_s);
+    target_position_ned_ = current_position_ned_;
     flight_state_.store(FlightState::HOVER);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Hovering for %.2f seconds", duration_s);
@@ -771,6 +773,26 @@ std::array<float, 3> BasicController::get_target_position_ned() const
     return target_position_ned_;
 }
 
+bool BasicController::hold_current_position()
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot hold current position: not initialized");
+        return false;
+    }
+
+    target_position_ned_ = current_position_ned_;
+    flight_state_.store(FlightState::HOVER);
+    RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                "Collision safety hold at current NED position "
+                "(%.2f, %.2f, %.2f)",
+                static_cast<double>(target_position_ned_.at(0)),
+                static_cast<double>(target_position_ned_.at(1)),
+                static_cast<double>(target_position_ned_.at(2)));
+    return true;
+}
+
 
 // =============================================================================
 // 狀態機處理函式 (單一職責原則)
@@ -836,11 +858,11 @@ void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*m
 
 void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
-    msg.position[0] = current_position_ned_[0];
-    msg.position[1] = current_position_ned_[1];
-    msg.position[2] = target_position_ned_[2];
+    msg.position[0] = target_position_ned_.at(0);
+    msg.position[1] = target_position_ned_.at(1);
+    msg.position[2] = target_position_ned_.at(2);
     float current_alt = current_altitude_m_.load();
-    float target_alt = -target_position_ned_[2];
+    float target_alt = -target_position_ned_.at(2);
 
     altitude_log_counter_++;
     if (altitude_log_counter_ >= ALTITUDE_LOG_INTERVAL)
@@ -879,9 +901,9 @@ void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& ms
 
 void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
-    msg.position[2] = target_position_ned_[2];
-    msg.position[0] = current_position_ned_[0];
-    msg.position[1] = current_position_ned_[1];
+    msg.position[0] = target_position_ned_.at(0);
+    msg.position[1] = target_position_ned_.at(1);
+    msg.position[2] = target_position_ned_.at(2);
     // 避免自動進入RTL模式，先註解掉自動進入HOVER或RTL的邏輯
     // if (is_hover_timer_active_)
     // {

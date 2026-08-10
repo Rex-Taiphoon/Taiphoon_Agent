@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include <cmath>
+#include <limits>
 
 #include "safety/StatePublisher.hpp"
 #include "taiphoon_agent/msg/agent_state.hpp"
@@ -21,6 +22,32 @@
 #include "controllers/FlightStateResolver.hpp"
 
 using taiphoon::safety::StatePublisher;
+
+// ==================== 狀態發布頻率測試 ====================
+
+TEST(StatePublisherTest, NormalizePublishRate_ClampsBelowMinimum)
+{
+    EXPECT_DOUBLE_EQ(StatePublisher::normalize_publish_rate_hz(2.0), 10.0);
+}
+
+TEST(StatePublisherTest, NormalizePublishRate_UsesMinimumForInvalidValues)
+{
+    EXPECT_DOUBLE_EQ(
+        StatePublisher::normalize_publish_rate_hz(
+            std::numeric_limits<double>::quiet_NaN()),
+        10.0);
+    EXPECT_DOUBLE_EQ(
+        StatePublisher::normalize_publish_rate_hz(
+            std::numeric_limits<double>::infinity()),
+        10.0);
+    EXPECT_DOUBLE_EQ(StatePublisher::normalize_publish_rate_hz(0.0), 10.0);
+    EXPECT_DOUBLE_EQ(StatePublisher::normalize_publish_rate_hz(-5.0), 10.0);
+}
+
+TEST(StatePublisherTest, NormalizePublishRate_PreservesValidHigherRate)
+{
+    EXPECT_DOUBLE_EQ(StatePublisher::normalize_publish_rate_hz(20.0), 20.0);
+}
 
 // ==================== fill_agent_state 既有測試 ====================
 

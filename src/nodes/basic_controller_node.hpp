@@ -13,6 +13,9 @@
 #include <string>
 #include <memory>
 #include <array>
+#include <chrono>
+#include <map>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
@@ -25,7 +28,10 @@
 #include "taiphoon_agent/msg/agent_state.hpp"
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "safety/PositionSafetyMonitor.hpp"
+#include "safety/CollisionSafetyMonitor.hpp"
 #include "safety/StatePublisher.hpp"
+#include "formation/FormationCalculator.hpp"
+#include "formation/PeerMatcher.hpp"
 
 namespace taiphoon
 {
@@ -37,6 +43,18 @@ constexpr double DEFAULT_HOVER_DURATION_S = 3.0;
 constexpr double CONTROL_LOOP_RATE_HZ = 20.0;
 constexpr double DEFAULT_STATE_PUBLISH_RATE_HZ = 10.0;
 constexpr double DEFAULT_POSITION_DEVIATION_THRESHOLD_M = 2.0;
+constexpr double DEFAULT_COLLISION_SAFETY_MARGIN_M = 3.0;
+constexpr double DEFAULT_COLLISION_PEER_TIMEOUT_S = 2.0;
+constexpr double DEFAULT_COLLISION_PEER_SCAN_INTERVAL_S = 3.0;
+
+/// 防撞關卡使用的已知同儕狀態
+struct CollisionPeerState
+{
+    taiphoon_agent::msg::AgentState state;
+    std::chrono::steady_clock::time_point last_arrival{};
+    bool has_state{false};
+    bool is_discovered{false};
+};
 
 /**
  * @brief BasicController ROS2 節點類別
@@ -110,6 +128,48 @@ private:
     void on_agent_command(const utils::ParsedCommand& cmd);
 
     /**
+     * @brief 接收同儕 AgentState 並更新防撞快取
+     * @param agent_index 同儕 Agent 編號
+     * @param msg 同儕 AgentState
+     */
+    void collision_peer_state_cb(
+        int agent_index,
+        const taiphoon_agent::msg::AgentState::SharedPtr msg);
+
+    /** @brief 掃描同儕 AgentState topic 並維持訂閱生命週期 */
+    void scan_collision_peers_cb();
+
+    /**
+     * @brief 建立已轉換到自身 NED frame 的同儕觀測
+     * @return 防撞監控器輸入；無效同儕仍保留並標記 is_valid=false
+     */
+    std::vector<safety::PeerCollisionObservation>
+        build_collision_peer_observations() const;
+
+    /** @brief 評估最新移動目標並執行套用或原地保持 */
+    void evaluate_collision_target();
+
+    /**
+     * @brief 登記控制器剛產生的移動目標並立即評估
+     * @param yaw_deg 目標偏航角；NaN 表示維持既有偏航
+     */
+    void register_controller_motion_target(float yaw_deg);
+
+    /**
+     * @brief 判斷命令是否會產生位置移動目標
+     * @param command 高階命令
+     * @return true 表示成功執行後需進入防撞關卡
+     */
+    static bool is_position_motion_command(utils::AgentCommand command);
+
+    /**
+     * @brief 判斷命令是否應清除待執行移動目標並略過防撞保持
+     * @param command 高階命令
+     * @return true 表示 RTL、Land 或 Disarm 安全中止命令
+     */
+    static bool is_collision_bypass_command(utils::AgentCommand command);
+
+    /**
      * @brief 初始化 AgentCommandHandler
      *
      * @return true 初始化成功
@@ -160,6 +220,8 @@ private:
     std::string agent_namespace_{"fmu1_agent"};
     double state_publish_rate_hz_{DEFAULT_STATE_PUBLISH_RATE_HZ};
     double position_deviation_threshold_m_{DEFAULT_POSITION_DEVIATION_THRESHOLD_M};
+    double collision_safety_margin_m_{DEFAULT_COLLISION_SAFETY_MARGIN_M};
+    double collision_peer_timeout_s_{DEFAULT_COLLISION_PEER_TIMEOUT_S};
 
     // ==================== 時間 ====================
 
@@ -182,6 +244,10 @@ private:
     rclcpp::Subscription<taiphoon_agent::msg::NedTarget>::SharedPtr
         ned_target_sub_;
 
+    /// 動態同儕 AgentState 訂閱者
+    std::map<int, rclcpp::Subscription<taiphoon_agent::msg::AgentState>::SharedPtr>
+        collision_peer_subs_;
+
     // ==================== 發布者 ====================
 
     /// Agent 對外狀態發布者
@@ -201,6 +267,12 @@ private:
     /// 位置偏差安全監控器
     safety::PositionSafetyMonitor position_safety_monitor_;
 
+    /// 多機移動目標防撞關卡
+    safety::CollisionTargetGate collision_target_gate_;
+
+    /// 已知同儕狀態；同儕消失時保留以採取保守保持
+    std::map<int, CollisionPeerState> collision_peer_states_;
+
     // ==================== 命令處理器 ====================
 
     std::unique_ptr<controllers::AgentCommandHandler> agent_cmd_handler_;
@@ -209,6 +281,7 @@ private:
 
     rclcpp::TimerBase::SharedPtr control_loop_timer_;
     rclcpp::TimerBase::SharedPtr state_publish_timer_;
+    rclcpp::TimerBase::SharedPtr collision_peer_scan_timer_;
 
     // ==================== PX4 資料快取 ====================
 

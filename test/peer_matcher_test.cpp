@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,29 @@ TEST(PeerMatcherTest, FilterPeersNoMatches)
     };
     auto peers = PeerMatcher::filter_peers(topics, "fmu1_agent");
     EXPECT_TRUE(peers.empty());
+}
+
+TEST(PeerMatcherTest, FindsPeerRemovedFromDiscovery)
+{
+    const std::set<int> known_indices{2, 3, 4};
+    const std::set<int> discovered_indices{2, 3};
+
+    const auto removed_indices = PeerMatcher::find_removed_indices(
+        known_indices, discovered_indices);
+
+    ASSERT_EQ(removed_indices.size(), 1U);
+    EXPECT_EQ(removed_indices.at(0), 4);
+}
+
+TEST(PeerMatcherTest, DoesNotRemoveRediscoveredPeer)
+{
+    const std::set<int> known_indices{2, 3, 4};
+    const std::set<int> discovered_indices{2, 3, 4};
+
+    const auto removed_indices = PeerMatcher::find_removed_indices(
+        known_indices, discovered_indices);
+
+    EXPECT_TRUE(removed_indices.empty());
 }
 
 // ==================== is_agent_node 測試 ====================
