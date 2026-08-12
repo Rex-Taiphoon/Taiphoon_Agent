@@ -25,7 +25,8 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 │ └── entrypoint.sh # 容器啟動進入點
 │
 ├── docs/ # 開發文件
-│ └── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
+│ ├── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
+│ └── codex/ # EGO-Swarm / 機群規劃開發文件
 │
 ├── build/ # 建置中間檔案
 ├── install/ # 安裝輸出目錄
@@ -48,6 +49,8 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 每個任務開始時先指定一個主角色；跨模組或安全關鍵工作再指定協作角色。
 - `CHARACTERS.md` 不取代根目錄或子目錄的 `AGENTS.md`：角色文件負責協作責任，`AGENTS.md` 負責專案與模組技術規範。
 - `CONTEXT.md` 僅負責領域詞彙與架構語言，不作為實作規格或角色規約使用。
+- 任何 EGO-Swarm、機群編隊、trajectory planning、obstacle avoidance 相關工作開始前，先閱讀 `docs/codex/README.md` 及其指定文件。
+- `docs/codex/EGO_SWARM_IMPLEMENTATION_GUIDE.md` 定義分階段 scope；AI Agent 一次只實作一個已指定 Phase。
 - 規則衝突時，安全與人類確認要求優先，其次是本文件與對應子目錄 `AGENTS.md`，再依 `CHARACTERS.md` 補充跨模組協作行為。
 
 ## Topic & interface conventions
@@ -66,7 +69,7 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 所有中文註解、文件與回覆都使用繁體中文。
 - 命名、排版與其他程式風格規範請遵循 `CODE_CONSTRAINT.md`，不要在此檔重複描述。
 - 與無人機、地面站及其他 Agent 的資料鏈一律基於 ROS2（Humble），不繞過 DDS 通訊層。
-- 多機協作一律透過 Agent ↔ Agent 指令，不讓單一 Agent 直接控多台飛控。
+- 多機協作一律透過 ROS2/DDS 的 Agent-level topic/message 交換狀態、任務意圖、編隊資訊與未來軌跡；任何 Agent 不得直接發布控制命令至其他 Agent 所屬的飛控。
 - 功能開發先規劃再動手：在修改程式之前，先寫下介面、資料流、失效情境與驗證方式。
 - 維持模組低耦合：避免把飛控橋接、任務邏輯、感測融合、影像串流寫成互相纏繞的單體模組。
 - 開發過程中任何單元測試應該在`test/`中實作

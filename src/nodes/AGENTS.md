@@ -9,10 +9,13 @@
 | 檔案 | 角色 |
 |------|------|
 | `basic_controller_node.hpp/.cpp` | `BasicControllerNode`：整合 `BasicController`、`AgentCommandHandler`、`PositionSafetyMonitor`、`StatePublisher`，以固定頻率驅動（控制迴圈 20Hz、狀態發布 10Hz） |
+| `ego_swarm_planner_node.hpp/.cpp` | `EgoSwarmPlannerNode`：組裝 EGO-Swarm 規劃、編隊、同儕軌跡與 trajectory safety，輸出 planner result |
+| `obstacle_cloud_simulator_node.hpp/.cpp` | `ObstacleCloudSimulatorNode`：依 YAML 障礙物與選定 source mode 發布 PointCloud2 模擬資料 |
 
 ## 核心原則
 
-- 節點只做「組裝與驅動」：演算法放在對應模組（`controllers/`、`safety/`、`trajectory/`、`formation/`），不要在節點內新增業務邏輯。
+- 節點只做「組裝與驅動」：trajectory / swarm / formation 演算法放 `src/ego_swarm/`，obstacle-map 演算法放 `src/perception/`；不要在節點內新增業務邏輯。
+- Node 只做 ROS2 message、parameter、timer、QoS、資料轉換與模組組裝。
 - 所有參數必須用 `declare_parameter` 宣告並指定預設值（L2-19）；初始化失敗必須記錄錯誤並中斷啟動流程。
 - Publisher / Subscriber 必須以 `shared_ptr` 成員持有（L1-12），回呼命名以 `_cb` 結尾（L2-17）。
 - 訂閱 PX4 資料（odometry / GPS / battery）必須檢查「已收到第一筆資料」旗標後才使用，避免以未初始化資料驅動控制。

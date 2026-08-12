@@ -18,6 +18,8 @@
 - 控制命令參數必須先驗證（NaN / Inf / 負值）再傳入控制器（L1-08）；`BasicController` 方法回傳 `bool` 表示命令是否設定成功。
 - `FlightState` 是控制器核心狀態，新增狀態時需同步檢查所有狀態轉移與 `safety/StatePublisher` 的對應。
 - 與 PX4 的資料交換統一透過 `px4_msgs` topic，禁止在此層直接撰寫 MAVLink 協定。
+- `BasicController` 是現行 runtime 唯一允許發布 PX4 `TrajectorySetpoint` 的 component。
+- Controller 可以執行 planner trajectory 的 p/v/a sampling 與 PX4 message translation，但不得做 formation assignment、swarm collision planning 或 obstacle path planning。
 
 ## 變更與驗證
 

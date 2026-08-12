@@ -11,7 +11,7 @@
 | `core/` | 介面契約層（純虛擬基底類別） |
 | `controllers/` | 實作 core 介面，轉譯 PX4 飛行控制 |
 | `nodes/` | ROS2 節點組裝層（topic、參數、控制迴圈） |
-| `ego_swarm/` | EGO-Swarm deterministic candidate baseline 核心：GPS common frame、編隊槽位、B-spline 與同儕避碰 |
+| `ego_swarm/` | 現行機群局部規劃核心：共同座標、B-spline、peer future trajectory、編隊、planner backend、trajectory-level safety。現有 deterministic candidate planner 保留作 fallback / regression，允許後續加入 optimized EGO backend |
 | `perception/` | 障礙物幾何採樣與 PointCloud2 Adapter（純邏輯） |
 | `safety/` | 安全監控與狀態轉譯（純邏輯） |
 | `formation/` | 舊 MissionPlanner 與編隊純邏輯元件；不再提供現行 runtime Node |
@@ -37,5 +37,7 @@
   `src/main_obstacle_cloud_simulator.cpp` 是現行 EGO／PointCloud Node 進入點。
 - `formation/main_mission_planner.cpp` 與 `trajectory/main_trajectory_controller.cpp`
   是舊進入點，未列入現行 CMake／Launch runtime。
+- 現行 trajectory planning 與 formation runtime 皆以 `src/ego_swarm/` 為主要 domain；legacy `src/trajectory/`、`src/formation/` 不重新接回 runtime。
+- obstacle map / sensor-independent obstacle representation 放 `src/perception/`。
 - 單元測試統一放在專案根目錄 `test/` 並使用 gtest（`ament_add_gtest`）；`src/` 內禁止放置測試原始碼。
 - 修改任何模組前，先閱讀該模組的 AGENTS.md 與 `CODE_CONSTRAINT.md`。

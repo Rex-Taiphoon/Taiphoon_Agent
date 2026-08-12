@@ -16,8 +16,10 @@
 
 ## 核心原則
 
-- `TrajectoryPlanner` 僅維持無 ROS2 依賴的純邏輯測試；現行局部軌跡規劃應修改
-  `src/ego_swarm/` 的 `EgoSwarmPlanner`，並保持 deterministic candidate baseline 定義。
+- 現行局部軌跡規劃一律位於 `src/ego_swarm/`。
+- legacy `TrajectoryPlanner` / `TrajectoryController` 不得重新接回 runtime。
+- 現有 deterministic candidate planner 必須保留作 fallback 與 regression baseline，但允許
+  `src/ego_swarm/` 新增其他 planner backend，例如 `OptimizedEgoPlanner`。
 - 現行 EGO 距離參數是機體中心到中心，使用 `formation_min_distance_m` 與
   `peer_collision_min_distance_m`；不把舊 `safety_margin_m` 視為現行 runtime 契約。
 - 同儕軌跡資料處理與有限值檢查由現行 EGO planner 負責；禁止讓舊

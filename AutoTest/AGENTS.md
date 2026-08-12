@@ -16,7 +16,9 @@
 
 ## 標準測試流程
 
-前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull；共用映像 `taiphoon-agent:dev` 需已建構（`docker build --target taiphoon-dev -t taiphoon-agent:dev .`，只需一次）。
+前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull；共用映像 `taiphoon-agent:dev` 需由使用者預先建立。
+
+測試所需 Docker image 必須由使用者預先建立。如果必要 image 不存在，AI Agent 不得自行執行 `docker build` 或 `docker compose build`；應停止需要該 image 的測試步驟，回報 NOT RUN，並提供使用者應自行執行的 build command。
 
 ```bash
 # 1. 啟動 Agent 容器（一容器一機，uXRCE-DDS 橋接內嵌於容器）
