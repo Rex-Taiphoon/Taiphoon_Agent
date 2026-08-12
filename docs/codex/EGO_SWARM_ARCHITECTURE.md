@@ -258,29 +258,20 @@ Planner 執行過程不要直接重新讀 ROS callback 更新中的資料。
 
 # 5. Swarm Frame
 
-第一版採 deterministic origin：
+AgentTrajectory 的跨 Agent transport contract 固定使用 WGS84 geodetic：
 
 ```text
-swarm_origin_agent_index = 1
+[latitude_deg, longitude_deg, height_m]
 ```
 
-流程：
+每個接收端在自己的有效 GPS Home 首次建立後 freeze 一份 `SwarmFrame` snapshot，
+並將收到的 WGS84 控制點轉成自己的公尺制 local NED。這個 local NED 只存在於
+接收端的規劃與控制計算，不會作為跨 Agent message 的座標格式。如此即使不同
+Agent 的 Home 不同，也不會把發布端 NED 與接收端 NED 混用。
 
-1. 等待指定 origin Agent 的有效 global position。
-2. 第一次成功後 freeze origin。
-3. 任務期間 origin Agent 移動不改 frame。
-4. origin Agent 後續離線也不改既有 frame。
-5. 啟動時 origin unavailable：
-   - planner 不自行選自己的 GPS
-   - planner 進入安全 HOLD / unavailable 狀態
-
-可保留：
-
-```text
-frame_revision / frame_epoch
-```
-
-用來防止不同 coordinate lifetime trajectory 混用。
+`swarm_origin_agent_index` 保留作為 launch 相容參數；WGS84 trajectory exchange
+不再要求所有 Agent freeze 同一個原點。`frame_revision` 改為全球 WGS84 contract
+版本，僅用來識別 message schema／座標語義，不是 peer origin 比對值。
 
 ---
 
@@ -302,6 +293,7 @@ frame_revision
 
 ```text
 ACTIVE
+TERMINAL_HOLD
 STALE
 MISSING
 INVALID
@@ -315,10 +307,12 @@ INVALID
 - expiration
 - freshness check
 
-禁止：
+規則：
 
-- 永遠使用最後有效 trajectory
-- trajectory 結束後永久 clamp endpoint 當 ghost UAV
+- 移動中的 trajectory 必須在 receive timeout 與 end time 內才可使用。
+- 完成任務的 Agent 必須以 `terminal_hold=true` 持續發布固定終點 heartbeat；
+  heartbeat fresh 時，接收端把該終點當成佔位 peer 參與避碰。
+- heartbeat timeout 後才移除終點，不可無限期使用最後有效資料。
 
 ---
 
@@ -562,6 +556,12 @@ max_jerk_mps3
 |j| <= j_max
 ```
 
+Phase 4 的 `PlannerConfig` 以 `max_velocity_mps`、`max_acceleration_mps2` 與
+`max_jerk_mps3` 作為 canonical 動力學限制；Phase 3 的
+`max_velocity_m_s`／`max_acceleration_m_s2` 仍保留為相容別名。`EgoSwarmPlanner`
+用相同限制估算 candidate duration，`ContinuousSafetyValidator` 再以獨立 safety
+gate 驗證整條 B-spline 的 analytic p/v/a/j 取樣，避免 planner cost 被誤當成安全保證。
+
 ---
 
 # 13. Emergency Brake
@@ -595,6 +595,10 @@ UAV 仍有顯著速度時：
 
 完全停止後才可以 static HOLD。
 
+目前 `EmergencyBrakePlanner` 使用自身 `VehiclePlanningState` 的 position、velocity、
+acceleration 與 timestamp 建立有限 jerk braking B-spline。當速度仍顯著時，控制點不會
+全部重複目前位置；只有速度接近零且加速度很小時，才允許產生固定 hold trajectory。
+
 ---
 
 # 14. Continuous Safety Validator
@@ -625,6 +629,19 @@ ContinuousSafetyValidator
 - obstacle clearance
 
 Validator 必須獨立於 planner backend。
+
+目前 `ContinuousSafetyValidator` 的 safety gate 至少檢查：
+
+- finite trajectory state 與輸出指標
+- frame revision、trajectory start／end time 與自身狀態 freshness
+- peer table 的 ACTIVE freshness 與時間有效性
+- obstacle map 的 valid／fresh 狀態
+- velocity、acceleration、jerk norm
+- 取樣期間的 peer center separation 與 obstacle clearance
+
+Validator 失敗、planner failure、stale peer 或 stale map 時，Node 交由
+`EmergencyBrakePlanner` 產生 fail-closed trajectory；BasicController 仍是唯一 PX4
+`TrajectorySetpoint` publisher。
 
 ---
 

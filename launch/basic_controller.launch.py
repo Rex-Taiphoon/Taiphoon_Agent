@@ -171,6 +171,12 @@ def launch_nodes(context, *args, **kwargs):
                     "max_velocity_m_s")},
                 {"max_acceleration_m_s2": LaunchConfiguration(
                     "max_acceleration_m_s2")},
+                {"max_velocity_mps": LaunchConfiguration(
+                    "max_velocity_mps")},
+                {"max_acceleration_mps2": LaunchConfiguration(
+                    "max_acceleration_mps2")},
+                {"max_jerk_mps3": LaunchConfiguration(
+                    "max_jerk_mps3")},
                 {"candidate_offset_m": LaunchConfiguration(
                     "candidate_offset_m")},
                 {"local_arrival_tolerance_m": LaunchConfiguration(
@@ -259,14 +265,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "swarm_origin_agent_index",
             default_value="1",
-            description="固定 swarm_ned 原點的 Agent 索引"),
+            description="已保留的相容參數；全球 WGS84 軌跡改用各 Agent 自身 Home"),
         DeclareLaunchArgument(
             "peer_trajectory_timeout_s",
-            default_value="1.0",
+            default_value="2.0",
             description="同儕未來軌跡 freshness timeout（秒）"),
         DeclareLaunchArgument(
             "max_peer_time_skew_s",
-            default_value="0.5",
+            default_value="1.0",
             description="同儕軌跡時間戳允許的最大時鐘偏差（秒）"),
         DeclareLaunchArgument(
             "obstacle_cloud_timeout_s",
@@ -292,6 +298,18 @@ def generate_launch_description():
             "max_acceleration_m_s2",
             default_value="1.0",
             description="EGO-Swarm 軌跡最大加速度（公尺/秒^2）"),
+        DeclareLaunchArgument(
+            "max_velocity_mps",
+            default_value="2.0",
+            description="Phase 4 動力學驗證最大速度（公尺/秒）"),
+        DeclareLaunchArgument(
+            "max_acceleration_mps2",
+            default_value="1.0",
+            description="Phase 4 動力學驗證最大加速度（公尺/秒^2）"),
+        DeclareLaunchArgument(
+            "max_jerk_mps3",
+            default_value="2.0",
+            description="Phase 4 動力學驗證最大 jerk（公尺/秒^3）"),
         DeclareLaunchArgument(
             "candidate_offset_m",
             default_value="3.0",

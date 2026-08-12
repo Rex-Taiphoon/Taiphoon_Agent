@@ -31,6 +31,10 @@ struct PlannerConfig
     double knot_interval_s{1.0};
     std::size_t control_point_count{6U};
     double sample_interval_s{0.1};
+    double max_velocity_mps{2.0};
+    double max_acceleration_mps2{1.0};
+    double max_jerk_mps3{2.0};
+    // 舊參數名稱保留，讓既有 launch / 純邏輯呼叫端可以平滑遷移。
     double max_velocity_m_s{2.0};
     double max_acceleration_m_s2{1.0};
     double candidate_offset_m{3.0};
@@ -108,11 +112,12 @@ public:
      */
     bool set_config(const PlannerConfig& config)
     {
-        if (!is_valid_config(config))
+        const PlannerConfig normalized_config = normalize_config(config);
+        if (!is_valid_config(normalized_config))
         {
             return false;
         }
-        config_ = config;
+        config_ = normalized_config;
         return true;
     }
 
@@ -129,8 +134,9 @@ public:
     /**
      * @brief 產生一條避開障礙物與同儕未來軌跡的局部軌跡
      *
-     * 只有 table 判定為 ACTIVE 的同儕軌跡會參與評估；資料逾時或
-     * trajectory 結束後不會把最後 endpoint 當成仍存在的 peer。
+     * 只有 table 判定為 ACTIVE 或 TERMINAL_HOLD 的同儕軌跡會參與評估；
+     * 移動軌跡逾時後不會猜測 endpoint，完成任務的 peer 則以 terminal hold
+     * heartbeat 明確保留固定終點。
      * 若所有候選都不安全，回傳有限值 hold 軌跡並將 is_valid 設為 false。
      *
      * @param current_position 目前機體中心的 swarm_ned 位置
@@ -171,14 +177,33 @@ public:
         {
             const double path_length_m = estimate_candidate_path_length_m(
                 current_position, target_position, offset);
-            const double duration_s = compute_trajectory_duration_s(
+            double duration_s = compute_trajectory_duration_s(
                 path_length_m);
             const double span_count = static_cast<double>(
                 config_.control_point_count - BSPLINE_DEGREE);
-            const double candidate_knot_interval_s = duration_s / span_count;
-            const BsplineTrajectory candidate = build_candidate(
-                current_position, target_position, offset,
-                candidate_knot_interval_s);
+            BsplineTrajectory candidate;
+            bool dynamically_feasible = false;
+            constexpr std::size_t MAX_DYNAMIC_DURATION_ATTEMPTS = 12U;
+            for (std::size_t attempt = 0U;
+                 attempt < MAX_DYNAMIC_DURATION_ATTEMPTS; ++attempt)
+            {
+                const double candidate_knot_interval_s =
+                    duration_s / span_count;
+                candidate = build_candidate(
+                    current_position, target_position, offset,
+                    candidate_knot_interval_s);
+                if (candidate.is_valid() &&
+                    is_dynamically_feasible(candidate))
+                {
+                    dynamically_feasible = true;
+                    break;
+                }
+                duration_s *= 1.5;
+            }
+            if (!dynamically_feasible)
+            {
+                continue;
+            }
             const CandidateEvaluation evaluation = evaluate_candidate(
                 candidate,
                 target_position,
@@ -267,10 +292,12 @@ private:
                config.control_point_count <= EGO_SWARM_MAX_SAMPLE_COUNT &&
                is_finite(config.sample_interval_s) &&
                config.sample_interval_s > EGO_SWARM_EPSILON_M &&
-               is_finite(config.max_velocity_m_s) &&
-               config.max_velocity_m_s > EGO_SWARM_EPSILON_M &&
-               is_finite(config.max_acceleration_m_s2) &&
-               config.max_acceleration_m_s2 > EGO_SWARM_EPSILON_M &&
+               is_finite(config.max_velocity_mps) &&
+               config.max_velocity_mps > EGO_SWARM_EPSILON_M &&
+               is_finite(config.max_acceleration_mps2) &&
+               config.max_acceleration_mps2 > EGO_SWARM_EPSILON_M &&
+               is_finite(config.max_jerk_mps3) &&
+               config.max_jerk_mps3 > EGO_SWARM_EPSILON_M &&
                is_finite(config.candidate_offset_m) &&
                config.candidate_offset_m >= 0.0 &&
                is_finite(config.obstacle_clearance_m) &&
@@ -281,6 +308,34 @@ private:
                is_non_negative_finite(config.smoothness_weight) &&
                is_non_negative_finite(config.obstacle_weight) &&
                is_non_negative_finite(config.peer_weight);
+    }
+
+    /**
+     * @brief 將 Phase 3 舊動力學參數名稱正規化為 Phase 4 契約
+     * @param config 待正規化設定
+     * @return 同時保留新舊欄位一致性的設定
+     */
+    static PlannerConfig normalize_config(PlannerConfig config)
+    {
+        constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.0;
+        constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.0;
+        if (std::abs(config.max_velocity_mps - DEFAULT_MAX_VELOCITY_MPS) <=
+                EGO_SWARM_EPSILON_M &&
+            std::abs(config.max_velocity_m_s - DEFAULT_MAX_VELOCITY_MPS) >
+                EGO_SWARM_EPSILON_M)
+        {
+            config.max_velocity_mps = config.max_velocity_m_s;
+        }
+        if (std::abs(config.max_acceleration_mps2 -
+                     DEFAULT_MAX_ACCELERATION_MPS2) <= EGO_SWARM_EPSILON_M &&
+            std::abs(config.max_acceleration_m_s2 -
+                     DEFAULT_MAX_ACCELERATION_MPS2) > EGO_SWARM_EPSILON_M)
+        {
+            config.max_acceleration_mps2 = config.max_acceleration_m_s2;
+        }
+        config.max_velocity_m_s = config.max_velocity_mps;
+        config.max_acceleration_m_s2 = config.max_acceleration_mps2;
+        return config;
     }
 
     /**
@@ -396,9 +451,9 @@ private:
         const double minimum_duration =
             span_count * config_.knot_interval_s;
         const double velocity_duration =
-            path_length_m / config_.max_velocity_m_s;
+            path_length_m / config_.max_velocity_mps;
         const double acceleration_duration = 2.0 * std::sqrt(
-            path_length_m / config_.max_acceleration_m_s2);
+            path_length_m / config_.max_acceleration_mps2);
         return std::max(
             minimum_duration,
             std::max(velocity_duration, acceleration_duration));
@@ -544,6 +599,32 @@ private:
         }
         return std::min(
             static_cast<std::size_t>(raw_count), EGO_SWARM_MAX_SAMPLE_COUNT);
+    }
+
+    bool is_dynamically_feasible(
+        const BsplineTrajectory& trajectory) const
+    {
+        const std::size_t count = compute_sample_count(
+            trajectory.duration_s());
+        for (std::size_t index = 0U; index <= count; ++index)
+        {
+            const double sample_time = std::min(
+                trajectory.duration_s(),
+                static_cast<double>(index) * config_.sample_interval_s);
+            const TrajectoryState sample = trajectory.evaluate_state(
+                sample_time);
+            if (!sample.is_valid ||
+                std::sqrt(squared_norm(sample.velocity)) >
+                    config_.max_velocity_mps + EGO_SWARM_EPSILON_M ||
+                std::sqrt(squared_norm(sample.acceleration)) >
+                    config_.max_acceleration_mps2 + EGO_SWARM_EPSILON_M ||
+                std::sqrt(squared_norm(sample.jerk)) >
+                    config_.max_jerk_mps3 + EGO_SWARM_EPSILON_M)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

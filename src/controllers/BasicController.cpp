@@ -95,6 +95,9 @@ void BasicController::shutdown()
         has_timed_trajectory_ = false;
         has_frame_revision_ = false;
         timed_trajectory_frame_revision_ = 0U;
+        timed_trajectory_epoch_start_ = rclcpp::Time(
+            static_cast<int64_t>(0), RCL_ROS_TIME);
+        has_timed_trajectory_epoch_ = false;
     }
 
     offboard_control_mode_pub_.reset();
@@ -182,8 +185,19 @@ bool BasicController::takeoff(float altitude_m)
     target_altitude_m_.store(altitude_m);
     target_position_ned_ = current_position_ned_;
     target_position_ned_.at(2) = -altitude_m;
+    const auto takeoff_epoch_start = node_->now();
     flight_state_.store(FlightState::TAKEOFF);
-    takeoff_start_time_ = node_->now();
+    takeoff_start_time_ = takeoff_epoch_start;
+    {
+        std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+        // TAKEOFF 取得本機 PX4 setpoint 控制權。peer occupancy heartbeat
+        // 仍會在 ROS2 peer table 中流通，但不能把起飛前的地面 hold
+        // trajectory 帶進 HOVER 後重新接管本機控制。
+        timed_trajectory_ = TimedTrajectory{};
+        has_timed_trajectory_ = false;
+        timed_trajectory_epoch_start_ = takeoff_epoch_start;
+        has_timed_trajectory_epoch_ = true;
+    }
     altitude_log_counter_ = 0;
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Takeoff to %.2f meters (target_system=%d)",
@@ -944,6 +958,29 @@ bool BasicController::validate_timed_trajectory(
     return true;
 }
 
+bool BasicController::is_timed_trajectory_allowed_in_current_epoch(
+    const TimedTrajectory& trajectory) const
+{
+    // TAKEOFF 期間仍可接收 peer trajectory 供其他模組避碰，但 terminal
+    // hold 不得改寫本機起飛 setpoint。
+    if (flight_state_.load() == FlightState::TAKEOFF &&
+        trajectory.terminal_hold)
+    {
+        return false;
+    }
+
+    if (!has_timed_trajectory_epoch_ ||
+        trajectory.start_time.get_clock_type() !=
+            timed_trajectory_epoch_start_.get_clock_type())
+    {
+        return true;
+    }
+
+    // 起飛前的軌跡即使在 TAKEOFF 結束後才被重送，也不能重新取得
+    // BasicController 的本機控制權。
+    return trajectory.start_time >= timed_trajectory_epoch_start_;
+}
+
 bool BasicController::update_timed_trajectory(
     const TimedTrajectory& trajectory)
 {
@@ -956,6 +993,16 @@ bool BasicController::update_timed_trajectory(
     }
 
     std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+
+    if (!is_timed_trajectory_allowed_in_current_epoch(trajectory))
+    {
+        RCLCPP_DEBUG(
+            rclcpp::get_logger("BasicController"),
+            "Ignoring timed trajectory %u: TAKEOFF owns local control or "
+            "trajectory predates the current TAKEOFF epoch",
+            trajectory.trajectory_id);
+        return false;
+    }
 
     // frame_revision 是座標系生命週期 token。版本切換時先清除舊座標的
     // 軌跡，並要求下一筆相同版本資料才啟用，避免跨 frame 跳接。
@@ -1049,7 +1096,9 @@ TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
         // 逾時後不可回退到 current_position_ned_，否則到達目標後的
         // setpoint 會追著 odometry 漂移。以最後控制點作為永久 hold。
         position = trajectory.control_points.back();
-        return TimedTrajectorySampleResult::EXPIRED;
+        return trajectory.terminal_hold
+            ? TimedTrajectorySampleResult::VALID
+            : TimedTrajectorySampleResult::EXPIRED;
     }
 
     const std::size_t degree = static_cast<std::size_t>(trajectory.order);

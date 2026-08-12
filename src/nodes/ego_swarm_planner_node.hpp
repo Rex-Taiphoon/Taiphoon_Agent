@@ -24,6 +24,8 @@
 #include "taiphoon_agent/msg/ned_target.hpp"
 #include "taiphoon_agent/msg/planner_status.hpp"
 
+#include "ego_swarm/ContinuousSafetyValidator.hpp"
+#include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
@@ -45,9 +47,12 @@ constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
 constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
 constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
-constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 1.0;
-constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 0.5;
+constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 2.0;
+constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 1.0;
 constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
+constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.0;
+constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.0;
+constexpr double DEFAULT_MAX_JERK_MPS3 = 2.0;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -99,13 +104,30 @@ private:
         const ego_swarm::Vector3& target) const;
     void invalidate_active_plan();
     bool get_current_target(ego_swarm::Vector3& target) const;
+    void update_vehicle_motion_state(
+        const taiphoon_agent::msg::AgentState& state);
+    ego_swarm::VehiclePlanningState make_planning_state(
+        const ego_swarm::Vector3& position,
+        double now_s) const;
+    ego_swarm::SafetyValidationResult validate_plan(
+        const ego_swarm::BsplineTrajectory& trajectory,
+        const ego_swarm::VehiclePlanningState& state,
+        double now_s,
+        double trajectory_start_time_s) const;
+    bool publish_emergency_brake(
+        const ego_swarm::VehiclePlanningState& state,
+        const ego_swarm::Vector3& active_target,
+        const std::string& reason,
+        const rclcpp::Time& now,
+        bool peer_data_valid);
     void set_goal_from_command(const std::string& command);
     void publish_plan(
         const ego_swarm::PlannerResult& result,
         const ego_swarm::Vector3& origin_position,
         const rclcpp::Time& now,
         const rclcpp::Time& start_time,
-        uint32_t trajectory_id);
+        uint32_t trajectory_id,
+        bool terminal_hold = false);
     void publish_status(
         uint8_t state,
         const std::string& reason,
@@ -130,20 +152,29 @@ private:
 
     ego_swarm::PlannerConfig planner_config_{};
     ego_swarm::EgoSwarmPlanner planner_{};
+    ego_swarm::ContinuousSafetyValidator safety_validator_{};
+    ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};
     ego_swarm::SwarmFrame swarm_frame_{};
     ego_swarm::GeoCoordinate frame_origin_{};
-    /// 目前固定 swarm_ned 原點的 Agent ID；-1 表示尚未選定原點。
+    /// 目前 local Home 所屬的 Agent ID（本機自身）；-1 表示尚未建立 Home。
     int frame_origin_agent_index_{-1};
     uint32_t frame_revision_{0U};
     bool has_local_swarm_transform_{false};
     ego_swarm::Vector3 local_swarm_offset_{0.0, 0.0, 0.0};
 
     bool has_own_state_{false};
+    bool has_previous_state_sample_{false};
+    bool has_vehicle_motion_state_{false};
+    double previous_state_timestamp_s_{0.0};
+    ego_swarm::Vector3 previous_position_ned_{0.0, 0.0, 0.0};
+    ego_swarm::Vector3 previous_velocity_ned_{0.0, 0.0, 0.0};
+    ego_swarm::VehiclePlanningState vehicle_motion_state_{};
     bool has_goal_{false};
     bool has_formation_{false};
     bool preserve_altitude_{false};
     bool has_active_plan_{false};
+    bool has_terminal_hold_{false};
     taiphoon_agent::msg::AgentState own_state_{};
     ego_swarm::Vector3 goal_position_{0.0, 0.0, 0.0};
     ego_swarm::PlannerResult active_plan_{};
@@ -151,6 +182,11 @@ private:
     rclcpp::Time active_plan_start_time_{
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
     uint32_t active_plan_trajectory_id_{0U};
+    ego_swarm::PlannerResult terminal_hold_plan_{};
+    ego_swarm::Vector3 terminal_hold_position_{0.0, 0.0, 0.0};
+    rclcpp::Time terminal_hold_start_time_{
+        static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
+    uint32_t terminal_hold_trajectory_id_{0U};
     perception::RawPointObstacleMap obstacle_map_{};
     ego_swarm::FormationConfig formation_config_{};
     ego_swarm::Vector3 formation_center_{0.0, 0.0, 0.0};

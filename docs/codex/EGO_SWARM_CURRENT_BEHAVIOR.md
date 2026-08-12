@@ -9,11 +9,11 @@
 ## Runtime data flow
 
 ```text
-AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
+AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
                          ↓
-              EgoSwarmPlannerNode callbacks
+              EgoSwarmPlannerNode callbacks + WGS84→local NED Adapter
                          ↓
-      swarm_ned position + fresh LocalObstacleMap + peer table
+      receiver-local NED position + fresh LocalObstacleMap + peer table
                          ↓
               EgoSwarmPlanner::plan
                          ↓
@@ -44,18 +44,19 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
   `start_time_s`、`receive_time_s` 與 `end_time_s`，並檢查共同時間偏差。
 - 每筆 record 保存 `agent_id`、`trajectory_id`、`frame_revision`、message／start／
   receive／end time；同一 Agent 的 trajectory ID 不可倒退。
-- `get_status()` 明確回傳 `ACTIVE`、`STALE`、`MISSING` 或 `INVALID`；`prune()`
-  清除非 ACTIVE record。
-- planner 只取得 ACTIVE 軌跡；若候選軌跡時間已超過 peer 的 `end_time_s`，
-  不再把 peer 的最後 endpoint 當成 ghost UAV。
+- `get_status()` 明確回傳 `ACTIVE`、`TERMINAL_HOLD`、`STALE`、`MISSING` 或 `INVALID`；
+  `prune()` 保留 ACTIVE／TERMINAL_HOLD，清除其他 record。
+- planner 取得 ACTIVE 或 TERMINAL_HOLD 軌跡；移動軌跡超過 peer 的 `end_time_s`
+  後不再使用，但 TERMINAL_HOLD 由 heartbeat freshness 保留固定終點佔位。
 
 ### `SwarmFrame`
 
-- 使用 WGS84 局部近似將 GPS 轉換成 `swarm_ned`（North、East、Down）。
-- `set_origin()` 第一次成功後 freeze；不同 origin 會被拒絕，並以 `frame_revision()`
-  的非零值識別同一個座標 lifetime。
-- `are_origins_compatible()` 使用緯／經度 `1e-9` 度、高度 `1e-3` 公尺容差，
-  供 Node 拒絕不同 frame origin 的 peer trajectory。
+- 使用 WGS84 局部近似將全球 geodetic 座標轉換成接收端自己的 local NED
+  （North、East、Down），也能將本機 NED 控制點轉回 WGS84 發布。
+- `set_origin()` 第一次成功後 freeze 本機 Home；不同 Agent 的 Home 不需要相同，
+  因為跨 Agent 只傳 WGS84。
+- `frame_revision()` 的非零值識別本機 frame snapshot；對外 AgentTrajectory 使用
+  `GLOBAL_WGS84_FRAME_REVISION` 作為全球座標 contract 版本。
 
 ### `FormationSlotPlanner`
 
@@ -81,12 +82,13 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 
 ### `EgoSwarmPlannerNode`
 
-- 依 `swarm_origin_agent_index`（預設 Agent 1）等待指定 origin 的有效 GPS；
-  第一次建立後 freeze，不因 origin 移動或暫時離線而改選其他 Agent，並以
-  `frame_revision` 識別同一個座標生命週期。
-- peer `AgentTrajectory` 必須通過 agent ID、valid、order、frame revision、
-  frame origin、knot／duration、控制點長度、有限值、timestamp sanity、freshness
-  與 trajectory ID 單調性檢查；逾時或結束的資料不再參與 planner。
+- 以本機有效 GPS 建立並 freeze 自己的 Home；`swarm_origin_agent_index` 僅保留
+  launch 相容性，不再要求各 Agent 使用相同原點。
+- peer `AgentTrajectory` 必須通過 agent ID、valid、WGS84 coordinate frame、
+  全球 contract revision、order、knot／duration、控制點長度、有限值、timestamp
+  sanity、freshness 與 trajectory ID 單調性檢查；接收後先轉成本機 NED。
+  移動軌跡逾時或結束後不再使用；`terminal_hold=true` 的 fresh heartbeat 例外保留
+  固定終點佔位。
 - obstacle callback 只接受 `header.frame_id == "swarm_ned"`、合法 timestamp 且所有
   x/y/z 有限的 PointCloud2；成功收到空 cloud 會建立 valid empty map。
 - planner loop 以 `obstacle_cloud_timeout_s` 區分 `missing`、`fresh` 與 `stale`。
@@ -101,13 +103,14 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
   `LAND`、`YAW` 仍只由 BasicController 執行。
 - active trajectory 重發時保留原始 `start_time` 與 `trajectory_id`，直到
   軌跡完成或目標／座標生命週期改變，避免每個 planning cycle 重置軌跡進度。
-- Planner 同時以 PX4 local NED 與 GPS 轉換出的 common NED 判斷到達；兩者都在
+- Planner 同時以 PX4 local NED 與 GPS 轉換出的本機 NED 判斷到達；兩者都在
   各自容許誤差內時，以目標座標填滿控制點發布一次固定 hold trajectory、清除
   任務並停止新的移動軌跡。status reason 為
   `No mission target; BasicController keeps its hold setpoint`；軌跡逾時後
   BasicController 仍使用最後控制點，不回退至即時 odometry。
-- 沒有 mission goal 或 formation goal 時，planner 只發布 HOLD status，不發布
-  `AgentTrajectory`；BasicController 保留其固定位置／高度 setpoint。
+- 沒有 mission goal 或 formation goal 時，planner 對尚未完成煞車的 Agent 持續發布
+  emergency brake；煞停後持續發布 `terminal_hold=true` 的終點 heartbeat。
+  BasicController 保留其固定位置／高度 setpoint。
 
 ### `BasicController`
 
@@ -129,7 +132,10 @@ Phase 0 鎖定下列行為：
 
 - B-spline endpoint、p/v/a/j derivative、時間夾限與 invalid input。
 - peer future trajectory 在目前位置造成距離衝突時，所有候選被拒絕並降為 hold。
-- 不同 frame origin 被視為不相容；BasicController frame revision 變更會清除舊軌跡。
+- WGS84 trajectory 可由不同 Home 的接收端各自轉成 local NED；BasicController 的
+  本機 frame snapshot 改變時清除舊軌跡。
+- terminal hold heartbeat 在 peer table 中保留完成任務 Agent 的固定終點，直到
+  receive timeout。
 - 過期 timed trajectory 產生 finite endpoint hold，且 p/v/a feed-forward 歸零。
 - PX4 `TrajectorySetpoint` 的 position、analytic velocity／acceleration、jerk、
   yaw 與 yawspeed 欄位均為有限值。

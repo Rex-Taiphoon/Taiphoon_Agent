@@ -95,7 +95,7 @@ private:
     /**
      * @brief AgentTrajectory 回呼
      *
-     * 將 swarm_ned 控制點轉換為本機 local NED，交由唯一的
+     * 將 WGS84 控制點依本機 Home 轉換為 local NED，交由唯一的
      * BasicController PX4 setpoint publisher 取樣發布。
      *
      * @param msg EGO-Swarm 定時軌跡訊息
@@ -271,6 +271,11 @@ private:
     controllers::TimedTrajectory latest_agent_trajectory_{};
     bool has_latest_agent_trajectory_{false};
     mutable std::mutex agent_trajectory_mutex_;
+
+    /// 自身 Home 對應的全球軌跡轉換 frame；不使用發送端 origin。
+    ego_swarm::SwarmFrame trajectory_frame_{};
+    ego_swarm::Vector3 trajectory_local_offset_{0.0, 0.0, 0.0};
+    bool has_trajectory_frame_{false};
 
     // ==================== 狀態旗標 ====================
 

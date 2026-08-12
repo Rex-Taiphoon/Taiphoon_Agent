@@ -376,4 +376,60 @@ TEST_F(BasicControllerTrajectoryTest,
     }
 }
 
+TEST_F(BasicControllerTrajectoryTest,
+       TerminalHoldRemainsValidAfterTrajectoryDuration)
+{
+    const auto start_time = node_->now() -
+        rclcpp::Duration::from_seconds(2.0);
+    auto trajectory = make_linear_trajectory(start_time);
+    trajectory.trajectory_id = 8U;
+    trajectory.duration_s = 1.0F;
+    trajectory.terminal_hold = true;
+    ASSERT_TRUE(controller_->update_timed_trajectory(trajectory));
+
+    std::array<float, 3> position{};
+    std::array<float, 3> velocity{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> acceleration{1.0F, 1.0F, 1.0F};
+    EXPECT_EQ(
+        controller_->sample_timed_trajectory(
+            node_->now(), position, velocity, acceleration),
+        TimedTrajectorySampleResult::VALID);
+    EXPECT_NEAR(position[0], 10.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(position[1], 20.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(position[2], -3.0F, POSITION_EPSILON_M);
+    for (const float value : velocity)
+    {
+        EXPECT_FLOAT_EQ(value, 0.0F);
+    }
+    for (const float value : acceleration)
+    {
+        EXPECT_FLOAT_EQ(value, 0.0F);
+    }
+}
+
+TEST_F(BasicControllerTrajectoryTest,
+       PreTakeoffTerminalHoldCannotOverrideTakeoffSetpoint)
+{
+    controller_->update_odometry(make_odometry(0.0F, 0.0F, 0.0F));
+
+    auto pre_takeoff_hold = make_linear_trajectory(
+        node_->now() - rclcpp::Duration::from_seconds(2.0));
+    pre_takeoff_hold.trajectory_id = 9U;
+    pre_takeoff_hold.control_points = {
+        {0.0F, 0.0F, 0.0F},
+        {0.0F, 0.0F, 0.0F}};
+    pre_takeoff_hold.duration_s = 1.0F;
+    pre_takeoff_hold.terminal_hold = true;
+    ASSERT_TRUE(controller_->update_timed_trajectory(pre_takeoff_hold));
+
+    ASSERT_TRUE(controller_->takeoff(8.0F));
+    EXPECT_FALSE(controller_->has_timed_trajectory());
+    EXPECT_FALSE(controller_->update_timed_trajectory(pre_takeoff_hold));
+
+    // TAKEOFF 狀態即使收到 peer occupancy heartbeat，也必須維持
+    // BasicController 的起飛目標；terminal hold 只供 peer 避碰使用。
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[2], -8.0F, POSITION_EPSILON_M);
+}
+
 }  // namespace

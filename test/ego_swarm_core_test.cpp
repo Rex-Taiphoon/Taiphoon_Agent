@@ -117,6 +117,22 @@ TEST(SwarmFrameTest, ConvertsGpsToCommonNed)
     EXPECT_NEAR(ned.at(2), 5.0, 1.0e-9);
 }
 
+TEST(SwarmFrameTest, ConvertsReceiverLocalNedBackToWgs84)
+{
+    SwarmFrame frame;
+    ASSERT_TRUE(frame.set_origin(GeoCoordinate{25.000000, 121.000000, 100.0}));
+
+    const Vector3 expected_ned{12.0, -7.0, 3.5};
+    GeoCoordinate global{};
+    ASSERT_TRUE(frame.from_swarm_ned(expected_ned, global));
+
+    Vector3 round_trip{};
+    ASSERT_TRUE(frame.to_swarm_ned(global, round_trip));
+    EXPECT_NEAR(round_trip.at(0), expected_ned.at(0), 1.0e-6);
+    EXPECT_NEAR(round_trip.at(1), expected_ned.at(1), 1.0e-6);
+    EXPECT_NEAR(round_trip.at(2), expected_ned.at(2), 1.0e-9);
+}
+
 TEST(SwarmFrameTest, RejectsNonFiniteGps)
 {
     SwarmFrame frame;
@@ -471,6 +487,34 @@ TEST(PeerTrajectoryTableTest, PruneTurnsExpiredPeerIntoMissing)
     EXPECT_EQ(table.prune(2.0), 1U);
     EXPECT_EQ(table.get_status(2, 2.0), PeerTrajectoryStatus::MISSING);
     EXPECT_FALSE(table.contains(2));
+}
+
+TEST(PeerTrajectoryTableTest, KeepsTerminalHoldAfterTrajectoryEnd)
+{
+    PeerTrajectoryTable table(
+        taiphoon::ego_swarm::PeerTrajectoryTableConfig{10.0, 1.0});
+    PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 2.0);
+    peer.terminal_hold = true;
+    ASSERT_TRUE(table.update(peer));
+
+    EXPECT_EQ(table.get_status(2, 10.0), PeerTrajectoryStatus::TERMINAL_HOLD);
+    EXPECT_TRUE(table.is_fresh(2, 10.0));
+
+    std::vector<PeerTrajectory> active;
+    table.get_active(10.0, active);
+    ASSERT_EQ(active.size(), 1U);
+    EXPECT_TRUE(active.front().terminal_hold);
+
+    EXPECT_EQ(table.prune(10.0), 0U);
+    EXPECT_EQ(table.prune(11.1), 1U);
+    EXPECT_EQ(table.get_status(2, 11.1), PeerTrajectoryStatus::MISSING);
+}
+
+TEST(PeerTrajectoryTableTest, MissingExpectedPeerFailsClosed)
+{
+    PeerTrajectoryTable table;
+    EXPECT_TRUE(table.all_fresh(0.0));
+    EXPECT_FALSE(table.all_fresh(0.0, std::vector<int>{2}));
 }
 
 TEST(PeerTrajectoryTableTest, RejectsFutureAndReplayedTrajectory)

@@ -124,7 +124,7 @@ Launch 參數：
 
 EGO-Swarm 目標執行鏈中，每台無人機包含：
 - **BasicController** — 單機飛行控制與唯一 PX4 `TrajectorySetpoint` 輸出端。
-- **ego_swarm_planner** — GPS common frame、編隊槽位、PointCloud2 與同儕未來軌跡的 deterministic candidate baseline 局部規劃節點。
+- **ego_swarm_planner** — WGS84 軌跡交換、本機 local NED、編隊槽位、PointCloud2 與同儕未來軌跡的 deterministic candidate baseline 局部規劃節點。
 - **obstacle_cloud_simulator** — 依 YAML 產生 PointCloud2 障礙物資料的選配模擬節點。
 
 兩個 Node 已納入 `basic_controller.launch.py`；EGO planner 固定啟動，障礙物模擬器由
@@ -346,7 +346,8 @@ docker exec fmu1_agent bash -c "
 
 ## 操作手冊 — EGO-Swarm 編隊飛行
 
-編隊功能由 **ego_swarm_planner** 實作。每台無人機在 GPS common frame 中計算自身
+編隊功能由 **ego_swarm_planner** 實作。每台無人機以 WGS84 交換位置，再在自己的
+固定 Home 建立 local NED，計算自身
 的虛擬編隊槽位，再由 EGO-Swarm 局部規劃器產生包含障礙物與同儕避碰的未來軌跡。
 既有 `/fmu_all_agent/command` 編隊命令協定保持不變。
 
@@ -410,8 +411,8 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 | **水平直列** | 沿 Y 軸（右向）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 | **垂直直列** | 沿 Z 軸（向下）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 
-> 編隊運算以 **GPS common frame** 為共同基準：收到 `FORMATION_*` 指令後，
-> `ego_swarm_planner` 為每台 Agent 分配虛擬槽位，各 Agent 自行規劃前往自己的槽位。
+> 編隊運算以 WGS84 全球位置交換為共同基準；每台 Agent 收到 `FORMATION_*` 指令後，
+> 先在自己的固定 Home 轉成 local NED，再分配虛擬槽位與規劃前往自己的槽位。
 > GPS-only 可以正常執行編隊；PX4 odometry 與 attitude 仍由 BasicController 用於
 > 即時軌跡追蹤。EGO planner 每 3 秒掃描同儕 Agent，依目前成員更新槽位。
 
@@ -430,9 +431,12 @@ GCS 命令
     │
     ▼
 ego_swarm_planner
-    ├── GPS common frame／虛擬編隊槽位
+    ├── WGS84 → receiver-local NED／虛擬編隊槽位
     ├── PointCloud2 局部障礙物
     ├── 同儕 AgentTrajectory
+    ├── ContinuousSafetyValidator
+    │       ├── SAFE → 本機 AgentTrajectory
+    │       └── UNSAFE / stale / planner failure → EmergencyBrakePlanner
     └── 本機 AgentTrajectory
               │
               ▼
@@ -446,8 +450,18 @@ ego_swarm_planner
 - 最小距離不可硬編碼為 3 m；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
   1.5 m、2 m 或 3 m 等值。
-- 短暫缺少同儕未來軌跡時，沿用最後一份有效軌跡，且不因資料年齡擴張安全半徑。
+- 只有 freshness contract 內的 ACTIVE 或 TERMINAL_HOLD 同儕軌跡會進入驗證；同儕資料 stale、invalid 或
+  過期時，規劃器 fail-closed 產生 dynamic emergency brake，不把最後 endpoint 當成 ghost UAV。
 - `BasicController` 是唯一發布 PX4 `TrajectorySetpoint` 的節點。
+
+### Phase 4 動態安全與煞車
+
+每個 planner cycle 會以自身 AgentState 的連續 NED 位置樣本建立
+`VehiclePlanningState`（position、velocity、acceleration、timestamp）。Planner result
+必須通過獨立的 `ContinuousSafetyValidator`，檢查 finite p/v/a/j、frame/time、map／peer
+freshness、動力學限制、同儕中心距離與障礙物 clearance。驗證失敗、planner failure 或
+關鍵資料過期時，`EmergencyBrakePlanner` 依目前速度／加速度與 jerk limit 產生減速
+B-spline；速度尚未接近零以前不使用 repeated-current-position static hold。
 
 ### PointCloud2 障礙物模擬
 
@@ -584,14 +598,21 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 
 ### AgentTrajectory 的 `control_points`
 
-`AgentTrajectory.control_points` 是 `float32[]` 扁平陣列，使用 `swarm_ned` 座標。
-每 3 個連續元素代表一個控制點 `[x, y, z]`，排列格式為：
+`AgentTrajectory.control_points` 是 `float64[]` 扁平陣列，使用 WGS84 geodetic
+座標。每 3 個連續元素代表一個控制點
+`[latitude_deg, longitude_deg, height_m]`，排列格式為：
 
 ```text
-[x0, y0, z0, x1, y1, z1, ..., xN, yN, zN]
+[lat0, lon0, h0, lat1, lon1, h1, ..., latN, lonN, hN]
 ```
 
-陣列長度必須是 3 的倍數；不可依賴巢狀 `float32[3][]` 結構。
+陣列長度必須是 3 的倍數；不可依賴巢狀陣列結構。
+`coordinate_frame` 固定為 `COORDINATE_FRAME_WGS84_GEODETIC`，
+`frame_revision` 是全球座標 contract 版本，不是各 Agent 的 local Home 原點。
+接收端會以自己的固定 Home 將控制點轉成公尺制 local NED，再執行 B-spline
+取樣、動力學限制與同儕避碰。完成任務的 Agent 會持續發布
+`terminal_hold=true` 的固定終點軌跡 heartbeat，直到超過 peer timeout，讓其他
+Agent 仍把該終點視為佔位障礙。
 
 ---
 
@@ -617,9 +638,9 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 |------|------|--------|------|
 | `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
 | `agent_index` | int | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
-| `swarm_origin_agent_index` | int | `1` | 固定 `swarm_ned` 原點的 Agent 索引；尚未取得該 Agent 有效 GPS 前保持 HOLD，原點建立後不再切換 |
-| `peer_trajectory_timeout_s` | double | `1.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
-| `max_peer_time_skew_s` | double | `0.5` | 同儕軌跡 message／start time 與本機 receive time 允許的最大時間偏差 |
+| `swarm_origin_agent_index` | int | `1` | 保留的相容參數；WGS84 軌跡交換時各 Agent 以自己的固定 Home 建立 local NED |
+| `peer_trajectory_timeout_s` | double | `2.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
+| `max_peer_time_skew_s` | double | `1.0` | 同儕軌跡 message／start time 與本機 receive time 允許的最大時間偏差 |
 | `obstacle_cloud_timeout_s` | double | `1.0` | 局部障礙物地圖 freshness timeout；逾時後 planner 進入 HOLD |
 | `require_obstacle_cloud` | bool | `true` | 是否要求 fresh obstacle map；missing/stale 不會被當成 explicit empty |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
@@ -629,19 +650,27 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `knot_interval_s` | double | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由 EGO-Swarm 依候選路徑長度與限制計算 |
 | `max_velocity_m_s` | double | `2.0` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
 | `max_acceleration_m_s2` | double | `1.0` | EGO-Swarm 計算軌跡 duration 使用的最大加速度（公尺/秒^2） |
+| `max_velocity_mps` | double | `2.0` | Phase 4 safety validator／煞車使用的最大速度（公尺/秒）；與舊名稱同步時以此名稱為 canonical |
+| `max_acceleration_mps2` | double | `1.0` | Phase 4 safety validator／煞車使用的最大加速度（公尺/秒^2） |
+| `max_jerk_mps3` | double | `2.0` | Phase 4 safety validator／煞車使用的最大 jerk（公尺/秒^3） |
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
 | `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
 | `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |
 
 目前核心是 deterministic candidate baseline，並非完整原始 EGO-Swarm nonlinear optimizer。
-EGO-Swarm 會依候選路徑長度、最大速度與最大加速度計算每條 B-spline 的 duration。
+EGO-Swarm 會依候選路徑長度、最大速度、最大加速度與最大 jerk 計算每條 B-spline
+的 duration；若 analytic p/v/a/j 取樣仍超限，會逐步延長候選時間後才交給
+ContinuousSafetyValidator。
 同一條 active trajectory 在執行期間保留原始 `start_time` 與 `trajectory_id`，不會每個
-planning cycle 重置進度。Planner 同時檢查 PX4 local NED 與 GPS common NED；兩者都在
-容許誤差內才視為到達。到達後發布一次目標位置 hold trajectory，清除任務並停止產生
-新的移動軌跡；沒有移動或編隊目標時，BasicController 維持 finite hold setpoint。
+planning cycle 重置進度。Planner 以自己的固定 Home 將 WGS84 與 PX4 local NED
+轉換到同一個公尺制 local frame；兩者都在容許誤差內才視為到達。到達後持續發布
+`terminal_hold=true` 的目標位置 hold trajectory，清除任務但保留 peer occupancy
+heartbeat；沒有移動或編隊目標時，BasicController 維持 finite hold setpoint。
 同儕 `AgentTrajectory` 另受 `peer_trajectory_timeout_s`、`max_peer_time_skew_s`、
-軌跡 `end_time` 與 `frame_revision` 約束；只有 ACTIVE 資料參與 peer collision
-評估，逾時或結束後不會永久使用最後一個控制點。
+控制點／duration 合理性與 `frame_revision` 約束；ACTIVE 與 TERMINAL_HOLD 資料都
+參與 peer collision 評估。ContinuousSafetyValidator 會再檢查整條候選軌跡的 p/v/a/j、
+peer/map freshness、同儕 separation 與 obstacle clearance；移動軌跡逾時或資料失效時
+切換至 EmergencyBrakePlanner，完成後由 sender 發布終點 terminal hold。
 
 ### ObstacleCloudSimulator 實際參數
 
@@ -651,7 +680,7 @@ planning cycle 重置進度。Planner 同時檢查 PX4 local NED 與 GPS common 
 | `config_file` | string | 空字串 | YAML 場景檔；Launch 預設為 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | double | `15.0` | PointCloud2 發布頻率 |
 | `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
-| `swarm_origin_agent_index` | int | `1` | synthetic sensor 使用的固定 `swarm_ned` 原點 Agent |
+| `swarm_origin_agent_index` | int | `1` | synthetic sensor 的相容參數；障礙物資料仍以 `swarm_ned` 公尺座標輸入 |
 | `mode` | string | `synthetic_sensor` | `explicit_empty`、`ground_truth` 或 `synthetic_sensor`；相容舊名稱 |
 | `range_m` | double | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | double | `270.0` | 水平視野 |
@@ -734,7 +763,7 @@ EGO-Swarm 的 ROS2 資料流為：
 GCS command
     ↓
 ego_swarm_planner
-    ├─ GPS common frame／編隊槽位
+    ├─ WGS84 → receiver-local NED／編隊槽位
     ├─ PointCloud2 障礙物
     └─ 同儕 AgentTrajectory
     ↓
@@ -803,7 +832,7 @@ ls -la install/share/taiphoon_agent/launch/basic_controller.launch.py
 | `ros2 topic echo` 無法解析 NedTarget | 未 source 自訂訊息 workspace | 同上，需先 source install/setup.bash |
 | 無人機無法切換 Offboard | 心跳未建立 | 檢查 `auto_start_sequence` 參數是否為 true |
 | 無人機不起飛 | 高度或位置命令異常 | 檢查 `/fmu{N}_agent/planning/status` 與 `/fmu{N}_agent/planning/trajectory` |
-| 編隊不啟動 | `ego_swarm_planner` 未啟動或 GPS common frame 尚未建立 | 確認 Node 是否存在、GPS 是否有效 |
+| 編隊不啟動 | `ego_swarm_planner` 未啟動或本機 local NED Home 尚未建立 | 確認 Node 是否存在、GPS 是否有效 |
 | 模擬器無法啟動 | 網路或 Docker 權限問題 | 確認 `Taiphoon_Net` 已建立且 Docker 有足夠資源 |
 
 ### 日誌檢視

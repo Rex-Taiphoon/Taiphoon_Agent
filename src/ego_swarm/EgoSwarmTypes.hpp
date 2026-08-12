@@ -13,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace taiphoon
 {
@@ -53,6 +54,8 @@ constexpr double EGO_SWARM_EPSILON_M = 1.0e-6;
 constexpr double EGO_SWARM_PI = 3.14159265358979323846;
 /// 候選軌跡取樣數上限，避免異常設定造成無界計算。
 constexpr std::size_t EGO_SWARM_MAX_SAMPLE_COUNT = 2000U;
+/// AgentTrajectory 對外全球 WGS84 座標 contract 的版本。
+constexpr uint32_t GLOBAL_WGS84_FRAME_REVISION = 1U;
 
 /**
  * @brief 檢查純量是否為有限值
@@ -77,6 +80,32 @@ inline bool is_finite_vector(const Vector3& value)
            is_finite(value.at(1)) &&
            is_finite(value.at(2));
 }
+
+/**
+ * @brief 單一 planner cycle 使用的自身飛行狀態
+ *
+ * 位置、速度與加速度必須屬於同一個共同時間，讓 dynamic safety 與
+ * emergency brake 不會把不同 callback 時刻的資料混在同一個決策中。
+ */
+struct VehiclePlanningState
+{
+    Vector3 position{0.0, 0.0, 0.0};
+    Vector3 velocity{0.0, 0.0, 0.0};
+    Vector3 acceleration{0.0, 0.0, 0.0};
+    double timestamp_s{0.0};
+
+    /**
+     * @brief 檢查狀態是否可供 safety module 使用
+     * @return true 表示位置、速度、加速度與 timestamp 均為有限值
+     */
+    bool is_finite() const
+    {
+        return is_finite_vector(position) &&
+               is_finite_vector(velocity) &&
+               is_finite_vector(acceleration) &&
+               std::isfinite(timestamp_s);
+    }
+};
 
 /**
  * @brief 計算三維向量的平方長度

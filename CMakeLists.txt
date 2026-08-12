@@ -244,6 +244,16 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Phase 4 dynamic safety 與 emergency brake 測試（純 C++）
+  ament_add_gtest(test_dynamic_safety
+    test/dynamic_safety_test.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_dynamic_safety PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # PointCloud2 幾何資料測試
   ament_add_gtest(test_obstacle_cloud
     test/obstacle_cloud_test.cpp

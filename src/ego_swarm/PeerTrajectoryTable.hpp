@@ -4,8 +4,9 @@
  * @author Taiphoon Agent Team
  * @date 2026-08-10
  *
- * 這個模組刻意不把資料年齡轉成額外安全半徑。軌跡只有在 receive time
- * 尚未逾時且目前時間仍位於軌跡有效區間時，才會交給 planner 使用。
+ * 這個模組刻意不把資料年齡轉成額外安全半徑。移動軌跡只有在 receive
+ * time 尚未逾時且目前時間仍位於有效區間時，才會交給 planner 使用；
+ * terminal hold 則以 heartbeat freshness 維持固定終點佔位。
  */
 
 #pragma once
@@ -28,6 +29,7 @@ namespace ego_swarm
 enum class PeerTrajectoryStatus
 {
     ACTIVE = 0,
+    TERMINAL_HOLD,
     STALE,
     MISSING,
     INVALID
@@ -52,6 +54,7 @@ struct PeerTrajectory
     double start_time_s{0.0};
     double receive_time_s{0.0};
     double end_time_s{0.0};
+    bool terminal_hold{false};
     BsplineTrajectory trajectory{};
 };
 
@@ -177,7 +180,9 @@ public:
         PeerTrajectory& out_trajectory) const
     {
         out_trajectory = PeerTrajectory{};
-        if (get_status(agent_id, now_s) != PeerTrajectoryStatus::ACTIVE)
+        const PeerTrajectoryStatus status = get_status(agent_id, now_s);
+        if (status != PeerTrajectoryStatus::ACTIVE &&
+            status != PeerTrajectoryStatus::TERMINAL_HOLD)
         {
             return false;
         }
@@ -223,8 +228,9 @@ public:
         out_trajectories.reserve(trajectories_.size());
         for (const auto& entry : trajectories_)
         {
-            if (get_status(entry.first, now_s) ==
-                PeerTrajectoryStatus::ACTIVE)
+            const PeerTrajectoryStatus status = get_status(entry.first, now_s);
+            if (status == PeerTrajectoryStatus::ACTIVE ||
+                status == PeerTrajectoryStatus::TERMINAL_HOLD)
             {
                 out_trajectories.push_back(entry.second);
             }
@@ -236,7 +242,7 @@ public:
      *
      * @param agent_id 同儕 Agent ID
      * @param now_s planner 目前共同時間
-     * @return ACTIVE、STALE、MISSING 或 INVALID
+     * @return ACTIVE、TERMINAL_HOLD、STALE、MISSING 或 INVALID
      */
     PeerTrajectoryStatus get_status(
         const int agent_id,
@@ -265,8 +271,15 @@ public:
             return PeerTrajectoryStatus::INVALID;
         }
         if (now_s - peer.receive_time_s > config_.timeout_s +
-                PEER_TRAJECTORY_TIME_EPSILON_S ||
-            now_s > peer.end_time_s + PEER_TRAJECTORY_TIME_EPSILON_S)
+                PEER_TRAJECTORY_TIME_EPSILON_S)
+        {
+            return PeerTrajectoryStatus::STALE;
+        }
+        if (peer.terminal_hold)
+        {
+            return PeerTrajectoryStatus::TERMINAL_HOLD;
+        }
+        if (now_s > peer.end_time_s + PEER_TRAJECTORY_TIME_EPSILON_S)
         {
             return PeerTrajectoryStatus::STALE;
         }
@@ -282,7 +295,9 @@ public:
      */
     bool is_fresh(const int agent_id, const double now_s) const
     {
-        return get_status(agent_id, now_s) == PeerTrajectoryStatus::ACTIVE;
+        const PeerTrajectoryStatus status = get_status(agent_id, now_s);
+        return status == PeerTrajectoryStatus::ACTIVE ||
+            status == PeerTrajectoryStatus::TERMINAL_HOLD;
     }
 
     /**
@@ -304,6 +319,59 @@ public:
     }
 
     /**
+     * @brief 檢查表中所有已知同儕是否仍為 ACTIVE
+     *
+     * 空表代表目前沒有已知同儕，因此不會阻擋單機規劃。只要存在一筆
+     * stale 或 invalid record，就回傳 false，讓 safety layer 可以在
+     * prune 之前選擇 emergency brake，而不是靜默遺失失效證據。
+     *
+     * @param now_s planner 目前共同時間
+     * @return true 表示所有已知 record 均為 ACTIVE
+     */
+    bool all_fresh(const double now_s) const
+    {
+        if (!is_finite(now_s))
+        {
+            return false;
+        }
+        for (const auto& entry : trajectories_)
+        {
+            if (!is_fresh(entry.first, now_s))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 檢查預期同儕是否全部有可用軌跡
+     *
+     * 空表只有在呼叫端明確表示沒有預期同儕時才算通過；已發現的 peer
+     * 若尚未送出有效軌跡，必須 fail-closed，避免資料缺失被當成安全。
+     * @param now_s planner 目前共同時間
+     * @param expected_agent_ids 已發現且預期參與規劃的 Agent ID
+     * @return true 表示所有預期 peer 均為 ACTIVE 或 TERMINAL_HOLD
+     */
+    bool all_fresh(
+        const double now_s,
+        const std::vector<int>& expected_agent_ids) const
+    {
+        if (!is_finite(now_s))
+        {
+            return false;
+        }
+        for (const int agent_id : expected_agent_ids)
+        {
+            if (agent_id <= 0 || !is_fresh(agent_id, now_s))
+            {
+                return false;
+            }
+        }
+        return all_fresh(now_s);
+    }
+
+    /**
      * @brief 清除已過期或無效的同儕軌跡
      *
      * @param now_s planner 目前共同時間
@@ -315,8 +383,10 @@ public:
         for (auto iterator = trajectories_.begin();
              iterator != trajectories_.end();)
         {
-            if (get_status(iterator->first, now_s) !=
-                PeerTrajectoryStatus::ACTIVE)
+            const PeerTrajectoryStatus status = get_status(
+                iterator->first, now_s);
+            if (status != PeerTrajectoryStatus::ACTIVE &&
+                status != PeerTrajectoryStatus::TERMINAL_HOLD)
             {
                 last_update_status_.erase(iterator->first);
                 iterator = trajectories_.erase(iterator);
@@ -415,8 +485,9 @@ private:
                 max_skew_s + PEER_TRAJECTORY_TIME_EPSILON_S ||
             peer_trajectory.start_time_s > peer_trajectory.receive_time_s +
                 max_skew_s + PEER_TRAJECTORY_TIME_EPSILON_S ||
-            peer_trajectory.end_time_s < peer_trajectory.receive_time_s -
-                max_skew_s - PEER_TRAJECTORY_TIME_EPSILON_S)
+            (!peer_trajectory.terminal_hold &&
+             peer_trajectory.end_time_s < peer_trajectory.receive_time_s -
+                 max_skew_s - PEER_TRAJECTORY_TIME_EPSILON_S))
         {
             return false;
         }

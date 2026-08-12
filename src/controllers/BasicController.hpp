@@ -79,6 +79,8 @@ struct TimedTrajectory
     float knot_interval_s{0.0F};
     std::vector<std::array<float, 3>> control_points;
     float duration_s{0.0F};
+    /// 完成任務後的固定終點佔位；duration 後仍保持 endpoint。
+    bool terminal_hold{false};
     bool valid{false};
 };
 
@@ -589,6 +591,14 @@ private:
      */
     static bool validate_timed_trajectory(const TimedTrajectory& trajectory);
 
+    /**
+     * @brief 判斷軌跡是否可以在目前 TAKEOFF 控制 epoch 內接管本機。
+     * @param trajectory 待判斷軌跡
+     * @return true 表示允許寫入本機軌跡緩衝區
+     */
+    bool is_timed_trajectory_allowed_in_current_epoch(
+        const TimedTrajectory& trajectory) const;
+
     // ==================== 成員變數 ====================
 
     /// ROS2 節點指標
@@ -674,6 +684,11 @@ private:
     bool has_timed_trajectory_{false};
     bool has_frame_revision_{false};
     uint32_t timed_trajectory_frame_revision_{0U};
+
+    /// TAKEOFF 取得本機控制權的時間；更早建立的軌跡不可重新接管 PX4。
+    rclcpp::Time timed_trajectory_epoch_start_{
+        static_cast<int64_t>(0), RCL_ROS_TIME};
+    bool has_timed_trajectory_epoch_{false};
 
     /// Offboard 控制已停止旗標 (RTL 落地後)
     bool has_offboard_stopped_{false};

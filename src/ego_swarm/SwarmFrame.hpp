@@ -26,13 +26,15 @@ constexpr double WGS84_SEMI_MAJOR_AXIS_M = 6378137.0;
 constexpr double WGS84_FIRST_ECCENTRICITY_SQUARED = 6.6943799901413165e-3;
 /// 角度轉弧度常數。
 constexpr double DEGREES_TO_RADIANS = 0.017453292519943295;
+/// 弧度轉角度常數。
+constexpr double RADIANS_TO_DEGREES = 57.2957795130823208768;
 /// 緯度／經度原點相容性容差，單位為度。
 constexpr double SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG = 1.0e-9;
 /// 高度原點相容性容差，單位為公尺。
 constexpr double SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
 
 /**
- * @brief 共同 swarm_ned 座標轉換器
+ * @brief WGS84 與局部 metric NED 座標轉換器
  *
  * 設定原點後，所有 GPS 座標都會轉成 x=North、y=East、z=Down。
  * 轉換採用原點附近的 WGS84 曲率半徑，適合機群尺度的局部座標計算。
@@ -211,6 +213,60 @@ public:
         }
 
         return true;
+    }
+
+    /**
+     * @brief 將局部 NED 位置轉回 WGS84 geodetic 座標
+     *
+     * 發送 AgentTrajectory 前將內部公尺座標轉成全球座標；接收端會
+     * 使用自己的 frame 再轉回 NED，因此不會傳遞發送端的 local Home。
+     * @param ned 局部 North、East、Down 位置，單位為公尺
+     * @param[out] out_coordinate WGS84 緯度、經度與高度
+     * @return true 表示轉換成功
+     */
+    bool from_swarm_ned(
+        const Vector3& ned,
+        GeoCoordinate& out_coordinate) const
+    {
+        out_coordinate = GeoCoordinate{};
+        if (!has_origin_ || !is_finite_vector(ned))
+        {
+            return false;
+        }
+
+        const double latitude_rad = origin_.latitude_deg *
+            DEGREES_TO_RADIANS;
+        const double sine_latitude = std::sin(latitude_rad);
+        const double denominator = std::sqrt(
+            1.0 - WGS84_FIRST_ECCENTRICITY_SQUARED *
+                sine_latitude * sine_latitude);
+        if (!is_finite(denominator) ||
+            denominator < EGO_SWARM_EPSILON_M)
+        {
+            return false;
+        }
+
+        const double prime_vertical_radius =
+            WGS84_SEMI_MAJOR_AXIS_M / denominator;
+        const double meridian_radius =
+            WGS84_SEMI_MAJOR_AXIS_M *
+            (1.0 - WGS84_FIRST_ECCENTRICITY_SQUARED) /
+            (denominator * denominator * denominator);
+        const double cosine_latitude = std::cos(latitude_rad);
+        if (!is_finite(prime_vertical_radius) ||
+            !is_finite(meridian_radius) ||
+            std::abs(cosine_latitude) < EGO_SWARM_EPSILON_M)
+        {
+            return false;
+        }
+
+        out_coordinate.latitude_deg = origin_.latitude_deg +
+            ned.at(0) / meridian_radius * RADIANS_TO_DEGREES;
+        out_coordinate.longitude_deg = origin_.longitude_deg +
+            ned.at(1) / (prime_vertical_radius * cosine_latitude) *
+            RADIANS_TO_DEGREES;
+        out_coordinate.altitude_m = origin_.altitude_m - ned.at(2);
+        return is_valid_geodetic(out_coordinate);
     }
 
 private:

@@ -104,6 +104,11 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>("obstacle_clearance_m",
                              DEFAULT_OBSTACLE_CLEARANCE_M);
     declare_parameter<double>("knot_interval_s", 1.0);
+    declare_parameter<double>("max_velocity_mps", DEFAULT_MAX_VELOCITY_MPS);
+    declare_parameter<double>("max_acceleration_mps2",
+                             DEFAULT_MAX_ACCELERATION_MPS2);
+    declare_parameter<double>("max_jerk_mps3", DEFAULT_MAX_JERK_MPS3);
+    // 保留 Phase 3 參數名稱，既有 compose / launch 不需同步切換。
     declare_parameter<double>("max_velocity_m_s", 2.0);
     declare_parameter<double>("max_acceleration_m_s2", 1.0);
     declare_parameter<double>("candidate_offset_m", 3.0);
@@ -172,6 +177,12 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         "obstacle_clearance_m").as_double();
     planner_config_.knot_interval_s = get_parameter(
         "knot_interval_s").as_double();
+    planner_config_.max_velocity_mps = get_parameter(
+        "max_velocity_mps").as_double();
+    planner_config_.max_acceleration_mps2 = get_parameter(
+        "max_acceleration_mps2").as_double();
+    planner_config_.max_jerk_mps3 = get_parameter(
+        "max_jerk_mps3").as_double();
     planner_config_.max_velocity_m_s = get_parameter(
         "max_velocity_m_s").as_double();
     planner_config_.max_acceleration_m_s2 = get_parameter(
@@ -195,6 +206,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     if (!planner_.set_config(planner_config_))
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
+        return;
+    }
+    planner_config_ = planner_.config();
+    if (!safety_validator_.set_config(planner_config_) ||
+        !emergency_brake_planner_.set_config(planner_config_))
+    {
+        RCLCPP_ERROR(get_logger(),
+                     "EGO-Swarm safety parameters are invalid");
         return;
     }
     if (!obstacle_map_.set_freshness_timeout(obstacle_cloud_timeout_s_))
@@ -230,7 +249,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
 
     RCLCPP_INFO(get_logger(),
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
-                "origin_agent=%d peer_distance=%.2f m "
+                "compat_origin_agent=%d peer_distance=%.2f m "
                 "obstacle_clearance=%.2f m peer_timeout=%.2f s "
                 "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
                 "require_obstacle_cloud=%s",
@@ -309,6 +328,58 @@ void EgoSwarmPlannerNode::own_state_cb(
     }
     own_state_ = *msg;
     has_own_state_ = true;
+    update_vehicle_motion_state(*msg);
+}
+
+void EgoSwarmPlannerNode::update_vehicle_motion_state(
+    const taiphoon_agent::msg::AgentState& state)
+{
+    const ego_swarm::Vector3 position{
+        static_cast<double>(state.position_ned.at(0)),
+        static_cast<double>(state.position_ned.at(1)),
+        static_cast<double>(state.position_ned.at(2))};
+    const double timestamp_s = this->now().seconds();
+    if (!ego_swarm::is_finite_vector(position) ||
+        !std::isfinite(timestamp_s))
+    {
+        return;
+    }
+
+    ego_swarm::Vector3 velocity{0.0, 0.0, 0.0};
+    ego_swarm::Vector3 acceleration{0.0, 0.0, 0.0};
+    if (has_previous_state_sample_)
+    {
+        const double delta_time_s = timestamp_s - previous_state_timestamp_s_;
+        if (delta_time_s > 1.0e-3 && delta_time_s <= 1.0)
+        {
+            velocity = ego_swarm::scale_vector(
+                ego_swarm::subtract_vectors(position, previous_position_ned_),
+                1.0 / delta_time_s);
+            if (has_vehicle_motion_state_)
+            {
+                acceleration = ego_swarm::scale_vector(
+                    ego_swarm::subtract_vectors(
+                        velocity, previous_velocity_ned_),
+                    1.0 / delta_time_s);
+            }
+        }
+    }
+
+    if (!ego_swarm::is_finite_vector(velocity) ||
+        !ego_swarm::is_finite_vector(acceleration))
+    {
+        velocity = ego_swarm::Vector3{0.0, 0.0, 0.0};
+        acceleration = ego_swarm::Vector3{0.0, 0.0, 0.0};
+    }
+    vehicle_motion_state_.position = position;
+    vehicle_motion_state_.velocity = velocity;
+    vehicle_motion_state_.acceleration = acceleration;
+    vehicle_motion_state_.timestamp_s = timestamp_s;
+    has_vehicle_motion_state_ = true;
+    has_previous_state_sample_ = true;
+    previous_state_timestamp_s_ = timestamp_s;
+    previous_position_ned_ = position;
+    previous_velocity_ned_ = velocity;
 }
 
 void EgoSwarmPlannerNode::peer_state_cb(
@@ -438,7 +509,7 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     if (!update_swarm_frame())
     {
         RCLCPP_WARN(get_logger(),
-                    "Formation accepted but GPS common frame is not ready");
+                    "Formation accepted but local WGS84 Home is not ready");
     }
     else
     {
@@ -553,27 +624,24 @@ void EgoSwarmPlannerNode::trajectory_cb(
         return;
     }
 
-    if (frame_revision_ == 0U || msg->frame_revision != frame_revision_)
+    if (msg->coordinate_frame !=
+            taiphoon_agent::msg::AgentTrajectory::
+                COORDINATE_FRAME_WGS84_GEODETIC ||
+        msg->frame_revision != ego_swarm::GLOBAL_WGS84_FRAME_REVISION)
     {
         RCLCPP_WARN(
             get_logger(),
-            "Rejecting peer trajectory agent=%u: frame revision %u does not "
-            "match local revision %u",
-            msg->agent_index, msg->frame_revision, frame_revision_);
+            "Rejecting peer trajectory agent=%u: unsupported global frame "
+            "format=%u revision=%u",
+            msg->agent_index, msg->coordinate_frame, msg->frame_revision);
         return;
     }
 
-    const ego_swarm::GeoCoordinate message_origin{
-        msg->frame_origin_global[0],
-        msg->frame_origin_global[1],
-        msg->frame_origin_global[2]};
-    if (!ego_swarm::SwarmFrame::are_origins_compatible(
-            frame_origin_, message_origin))
+    if (frame_revision_ == 0U || !swarm_frame_.has_origin())
     {
         RCLCPP_WARN(
             get_logger(),
-            "Rejecting peer trajectory agent=%u: frame origin does not "
-            "match the local swarm frame",
+            "Rejecting peer trajectory agent=%u: local Home frame is not ready",
             msg->agent_index);
         return;
     }
@@ -603,21 +671,28 @@ void EgoSwarmPlannerNode::trajectory_cb(
     for (std::size_t index = 0U;
          index < msg->control_points.size(); index += 3U)
     {
-        const ego_swarm::Vector3 converted{
-            static_cast<double>(msg->control_points.at(index)),
-            static_cast<double>(msg->control_points.at(index + 1U)),
-            static_cast<double>(msg->control_points.at(index + 2U))};
-        if (!ego_swarm::is_finite_vector(converted))
+        const ego_swarm::GeoCoordinate global_point{
+            msg->control_points.at(index),
+            msg->control_points.at(index + 1U),
+            msg->control_points.at(index + 2U)};
+        ego_swarm::Vector3 local_point{};
+        if (!ego_swarm::SwarmFrame::is_valid_geodetic(global_point) ||
+            !swarm_frame_.to_swarm_ned(global_point, local_point))
         {
+            RCLCPP_WARN(
+                get_logger(),
+                "Rejecting peer trajectory agent=%u: invalid WGS84 point",
+                msg->agent_index);
             return;
         }
-        points.push_back(converted);
+        points.push_back(local_point);
     }
 
     ego_swarm::PeerTrajectory peer;
     peer.agent_id = static_cast<int>(msg->agent_index);
     peer.trajectory_id = msg->trajectory_id;
-    peer.frame_revision = msg->frame_revision;
+    peer.frame_revision = frame_revision_;
+    peer.terminal_hold = msg->terminal_hold;
     peer.message_time_s = static_cast<double>(msg->stamp.sec) +
         static_cast<double>(msg->stamp.nanosec) * 1.0e-9;
     peer.start_time_s = static_cast<double>(msg->start_time.sec) +
@@ -666,59 +741,181 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, false, false, now);
         return;
     }
-    (void)peer_trajectories_.prune(now_s);
+    std::vector<int> expected_peer_ids;
+    expected_peer_ids.reserve(peers_.size());
+    for (const auto& entry : peers_)
+    {
+        expected_peer_ids.push_back(entry.first);
+    }
+    const bool peer_data_valid = peer_trajectories_.all_fresh(
+        now_s, expected_peer_ids);
     if (!has_own_state_ || !update_swarm_frame())
     {
-        publish_status(PLANNER_STATE_HOLD, "GPS common frame unavailable",
-                       nullptr, false, peer_trajectories_.has_fresh(now_s), now);
+        (void)peer_trajectories_.prune(now_s);
+        publish_status(PLANNER_STATE_HOLD, "Local WGS84 Home unavailable",
+                       nullptr, false, peer_data_valid, now);
         return;
     }
 
-    // 沒有任務或編隊目標時，不應把每一回合的目前位置重新發布成
-    // timed trajectory。那會讓 BasicController 追蹤一個隨漂移移動的
-    // 目標，失去起飛後固定 hold position／altitude 的錨點。
+    // 沒有任務或編隊目標時，若仍在執行 emergency brake，必須先持續
+    // 發布同一條煞車軌跡；煞停完成後才切換成 terminal hold heartbeat。
     if (!has_goal_ && !has_formation_)
     {
+        if (has_active_plan_ && active_plan_.trajectory.is_valid())
+        {
+            const double active_elapsed_s =
+                (now - active_plan_start_time_).seconds();
+            if (std::isfinite(active_elapsed_s) && active_elapsed_s <=
+                    active_plan_.trajectory.duration_s())
+            {
+                ego_swarm::Vector3 current{};
+                if (get_position_in_swarm_frame(own_state_, current))
+                {
+                    publish_plan(
+                        active_plan_, current, now, active_plan_start_time_,
+                        active_plan_trajectory_id_);
+                }
+                publish_status(
+                    PLANNER_STATE_HOLD, "Emergency brake in progress",
+                    &active_plan_, true, peer_data_valid, now);
+                (void)peer_trajectories_.prune(now_s);
+                return;
+            }
+
+            const auto endpoint = active_plan_.trajectory.evaluate(
+                active_plan_.trajectory.duration_s());
+            if (endpoint.is_valid)
+            {
+                invalidate_active_plan();
+                terminal_hold_position_ = endpoint.position;
+                terminal_hold_plan_ = planner_.make_exact_hold_result(
+                    terminal_hold_position_);
+                terminal_hold_start_time_ = now;
+                terminal_hold_trajectory_id_ = ++trajectory_id_;
+                has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+            }
+            else
+            {
+                invalidate_active_plan();
+            }
+        }
+
+        if (has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid())
+        {
+            publish_plan(
+                terminal_hold_plan_, terminal_hold_position_, now,
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Terminal hold; peer occupancy heartbeat active",
+                &terminal_hold_plan_, true, peer_data_valid, now);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+
+        // 待命中的 Agent 也必須廣播自己的固定位置，讓其他 Agent 在
+        // 下一個任務開始前就能建立完整 peer occupancy snapshot；不能把
+        // 「目前沒有移動任務」誤當成「空氣中沒有 peer」。
+        ego_swarm::Vector3 current{};
+        if (!has_terminal_hold_ &&
+            get_position_in_swarm_frame(own_state_, current))
+        {
+            terminal_hold_position_ = current;
+            terminal_hold_plan_ = planner_.make_exact_hold_result(current);
+            terminal_hold_start_time_ = now;
+            terminal_hold_trajectory_id_ = ++trajectory_id_;
+            has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+        }
+        if (has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid())
+        {
+            publish_plan(
+                terminal_hold_plan_, terminal_hold_position_, now,
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Terminal hold; peer occupancy heartbeat active",
+                &terminal_hold_plan_, true, peer_data_valid, now);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+
+        (void)peer_trajectories_.prune(now_s);
         publish_status(
             PLANNER_STATE_HOLD,
             "No mission target; BasicController keeps its hold setpoint",
-            nullptr, true, peer_trajectories_.has_fresh(now_s), now);
+            nullptr, true, peer_data_valid, now);
         return;
     }
 
     ego_swarm::Vector3 current{};
     if (!get_position_in_swarm_frame(own_state_, current))
     {
+        (void)peer_trajectories_.prune(now_s);
         publish_status(PLANNER_STATE_HOLD, "Own GPS position unavailable",
-                       nullptr, false, peer_trajectories_.has_fresh(now_s), now);
+                       nullptr, false, peer_data_valid, now);
         return;
     }
+
+    const ego_swarm::VehiclePlanningState planning_state =
+        make_planning_state(current, now_s);
 
     ego_swarm::Vector3 target{};
     if (!get_current_target(target))
     {
-        target = current;
+        publish_emergency_brake(
+            planning_state, current, "target unavailable", now,
+            peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
     }
 
     const auto arrival = evaluate_target_arrival(current, target);
     if (arrival.reached)
     {
-        // 先發布一條以「目標座標」填滿控制點的固定 hold。不能使用
-        // current，因為到達判斷允許誤差，且即時 odometry 仍可能漂移。
-        const auto hold_result = planner_.make_exact_hold_result(target);
+        const double speed_mps = std::sqrt(
+            ego_swarm::squared_norm(planning_state.velocity));
         has_goal_ = false;
         has_formation_ = false;
         preserve_altitude_ = false;
         invalidate_active_plan();
-        if (hold_result.trajectory.is_valid())
+        if (std::isfinite(speed_mps) && speed_mps > 0.05)
         {
-            const uint32_t hold_id = ++trajectory_id_;
-            publish_plan(hold_result, target, now, now, hold_id);
+            publish_emergency_brake(
+                planning_state, target, "target reached while moving", now,
+                peer_data_valid);
         }
-        publish_status(
-            PLANNER_STATE_HOLD,
-            "No mission target; BasicController keeps its hold setpoint",
-            nullptr, true, !peers_.empty(), now);
+        else
+        {
+            // 到達判斷允許位置誤差，因此 hold 必須鎖定目標座標，而不是
+            // 使用仍可能漂移的即時位置。
+            terminal_hold_position_ = target;
+            terminal_hold_plan_ = planner_.make_exact_hold_result(target);
+            terminal_hold_start_time_ = now;
+            terminal_hold_trajectory_id_ = ++trajectory_id_;
+            has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+            if (has_terminal_hold_)
+            {
+                publish_plan(
+                    terminal_hold_plan_, target, now,
+                    terminal_hold_start_time_, terminal_hold_trajectory_id_,
+                    true);
+            }
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Terminal hold; peer occupancy heartbeat active",
+                has_terminal_hold_ ? &terminal_hold_plan_ : nullptr,
+                true, peer_data_valid, now);
+        }
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    if (!peer_data_valid)
+    {
+        publish_emergency_brake(
+            planning_state, target, "peer trajectory stale or invalid", now,
+            false);
+        (void)peer_trajectories_.prune(now_s);
         return;
     }
 
@@ -726,9 +923,9 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     if (obstacle_status != perception::ObstacleMapStatus::Fresh)
     {
         const std::string reason = obstacle_map_status_reason(now_s);
-        publish_status(
-            PLANNER_STATE_HOLD, reason, nullptr, true,
-            peer_trajectories_.has_fresh(now_s), now);
+        publish_emergency_brake(
+            planning_state, target, reason, now, peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
         return;
     }
 
@@ -752,6 +949,19 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             active_plan_.trajectory.duration_s();
     if (active_plan_running)
     {
+        const auto safety_result = validate_plan(
+            active_plan_.trajectory, planning_state, now_s,
+            active_plan_start_time_.seconds());
+        if (!safety_result.is_safe)
+        {
+            publish_emergency_brake(
+                planning_state, target,
+                ego_swarm::ContinuousSafetyValidator::reason_string(
+                    safety_result.reason),
+                now, peer_data_valid);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
         // 重新發布同一條軌跡時保留原始 start_time 與 trajectory_id，讓
         // BasicController 依原本的時間軸持續取樣，不會每 100 ms 重置進度。
         publish_plan(
@@ -760,25 +970,48 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_status(
             active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
             active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
-            &active_plan_, true, peer_trajectories_.has_fresh(now_s), now);
+            &active_plan_, true, peer_data_valid, now);
+        (void)peer_trajectories_.prune(now_s);
         return;
     }
 
     const auto result = planner_.plan(
         current, target, obstacle_map_, peer_trajectories_,
         now_s, agent_index_, preserve_altitude);
+    if (!result.is_valid || !result.trajectory.is_valid())
+    {
+        publish_emergency_brake(
+            planning_state, target, "planner failure", now, peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    const auto safety_result = validate_plan(
+        result.trajectory, planning_state, now_s, now_s);
+    if (!safety_result.is_safe)
+    {
+        publish_emergency_brake(
+            planning_state, target,
+            ego_swarm::ContinuousSafetyValidator::reason_string(
+                safety_result.reason),
+            now, peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
     active_plan_ = result;
     active_plan_target_ = target;
     active_plan_start_time_ = now;
     active_plan_trajectory_id_ = ++trajectory_id_;
-    has_active_plan_ = active_plan_.trajectory.is_valid();
+    has_active_plan_ = true;
     publish_plan(
         active_plan_, current, now, active_plan_start_time_,
         active_plan_trajectory_id_);
     publish_status(
         active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-        active_plan_.is_hold ? "No safe candidate; holding position" : "ok",
-        &active_plan_, true, peer_trajectories_.has_fresh(now_s), now);
+        active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
+        &active_plan_, true, peer_data_valid, now);
+    (void)peer_trajectories_.prune(now_s);
 }
 
 void EgoSwarmPlannerNode::scan_peers_cb()
@@ -825,38 +1058,19 @@ void EgoSwarmPlannerNode::scan_peers_cb()
 
 bool EgoSwarmPlannerNode::update_swarm_frame()
 {
-    std::map<int, ego_swarm::GeoCoordinate> candidates;
-    if (has_own_state_ && is_finite_state_position(own_state_))
-    {
-        candidates[agent_index_] = to_geo(own_state_);
-    }
-    for (const auto& entry : peers_)
-    {
-        if (entry.second.has_state &&
-            is_finite_state_position(entry.second.state))
-        {
-            candidates[entry.first] = to_geo(entry.second.state);
-        }
-    }
-    if (candidates.empty())
+    if (!has_own_state_ || !is_finite_state_position(own_state_))
     {
         return false;
     }
 
-    // 第一次只接受指定的 deterministic origin。所有 Agent 都等待同一個
-    // origin GPS，避免因啟動順序不同而各自選出不同的 swarm_ned frame。
     if (swarm_frame_.has_origin())
     {
         return update_local_swarm_transform();
     }
 
-    const auto origin_candidate = candidates.find(swarm_origin_agent_index_);
-    if (origin_candidate == candidates.end())
-    {
-        return false;
-    }
-
-    const ego_swarm::GeoCoordinate origin = origin_candidate->second;
+    // 全球 WGS84 trajectory 不再要求所有 Agent 共用同一個 origin。每個
+    // planner 只 freeze 自己的 Home，接收 peer 時再轉成本機 NED。
+    const ego_swarm::GeoCoordinate origin = to_geo(own_state_);
     if (!ego_swarm::SwarmFrame::is_valid_geodetic(origin) ||
         !swarm_frame_.set_origin(origin))
     {
@@ -864,11 +1078,11 @@ bool EgoSwarmPlannerNode::update_swarm_frame()
     }
 
     frame_origin_ = origin;
-    frame_origin_agent_index_ = swarm_origin_agent_index_;
+    frame_origin_agent_index_ = agent_index_;
     frame_revision_ = swarm_frame_.frame_revision();
     RCLCPP_INFO(
         get_logger(),
-        "Selected and froze Agent %d as swarm_ned frame origin, revision=%u",
+        "Selected and froze local Home for Agent %d, local revision=%u",
         frame_origin_agent_index_, frame_revision_);
     return swarm_frame_.has_origin() && update_local_swarm_transform();
 }
@@ -958,6 +1172,12 @@ void EgoSwarmPlannerNode::invalidate_active_plan()
     active_plan_start_time_ = rclcpp::Time(
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
     active_plan_trajectory_id_ = 0U;
+    has_terminal_hold_ = false;
+    terminal_hold_plan_ = ego_swarm::PlannerResult{};
+    terminal_hold_position_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
+    terminal_hold_start_time_ = rclcpp::Time(
+        static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
+    terminal_hold_trajectory_id_ = 0U;
 }
 
 bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
@@ -999,6 +1219,97 @@ bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
     return true;
 }
 
+ego_swarm::VehiclePlanningState EgoSwarmPlannerNode::make_planning_state(
+    const ego_swarm::Vector3& position,
+    const double now_s) const
+{
+    ego_swarm::VehiclePlanningState state;
+    state.position = position;
+    state.timestamp_s = now_s;
+    if (has_vehicle_motion_state_ &&
+        std::isfinite(vehicle_motion_state_.timestamp_s) &&
+        now_s >= vehicle_motion_state_.timestamp_s &&
+        now_s - vehicle_motion_state_.timestamp_s <= 1.0 &&
+        ego_swarm::is_finite_vector(vehicle_motion_state_.velocity) &&
+        ego_swarm::is_finite_vector(vehicle_motion_state_.acceleration))
+    {
+        state.velocity = vehicle_motion_state_.velocity;
+        state.acceleration = vehicle_motion_state_.acceleration;
+        return state;
+    }
+
+    if (has_active_plan_ && active_plan_.trajectory.is_valid())
+    {
+        const double elapsed_s =
+            now_s - active_plan_start_time_.seconds();
+        if (std::isfinite(elapsed_s) && elapsed_s >= 0.0 &&
+            elapsed_s <= active_plan_.trajectory.duration_s())
+        {
+            const auto sample = active_plan_.trajectory.evaluate_state(
+                elapsed_s);
+            if (sample.is_valid)
+            {
+                state.velocity = sample.velocity;
+                state.acceleration = sample.acceleration;
+            }
+        }
+    }
+    return state;
+}
+
+ego_swarm::SafetyValidationResult EgoSwarmPlannerNode::validate_plan(
+    const ego_swarm::BsplineTrajectory& trajectory,
+    const ego_swarm::VehiclePlanningState& state,
+    const double now_s,
+    const double trajectory_start_time_s) const
+{
+    ego_swarm::SafetyValidationContext context;
+    context.self_state = state;
+    context.now_s = now_s;
+    context.trajectory_start_time_s = trajectory_start_time_s;
+    context.max_time_skew_s = max_peer_time_skew_s_;
+    context.frame_revision = frame_revision_;
+    context.trajectory_frame_revision = frame_revision_;
+    context.self_agent_id = agent_index_;
+    context.peer_table = &peer_trajectories_;
+    context.obstacle_map = &obstacle_map_;
+    return safety_validator_.validate(trajectory, context);
+}
+
+bool EgoSwarmPlannerNode::publish_emergency_brake(
+    const ego_swarm::VehiclePlanningState& state,
+    const ego_swarm::Vector3& active_target,
+    const std::string& reason,
+    const rclcpp::Time& now,
+    const bool peer_data_valid)
+{
+    const auto brake_result = emergency_brake_planner_.plan(state);
+    if (!brake_result.is_valid || !brake_result.has_finite_output())
+    {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Emergency brake generation failed; retaining last finite setpoint");
+        publish_status(
+            PLANNER_STATE_ERROR, "Emergency brake generation failed", nullptr,
+            true, peer_data_valid, now);
+        return false;
+    }
+
+    active_plan_ = brake_result;
+    active_plan_target_ = ego_swarm::is_finite_vector(active_target)
+        ? active_target : state.position;
+    active_plan_start_time_ = now;
+    active_plan_trajectory_id_ = ++trajectory_id_;
+    has_active_plan_ = true;
+    publish_plan(
+        active_plan_, state.position, now, active_plan_start_time_,
+        active_plan_trajectory_id_);
+    publish_status(
+        PLANNER_STATE_HOLD, "Emergency brake: " + reason, &active_plan_,
+        true, peer_data_valid, now);
+    return true;
+}
+
 void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
 {
     const auto parsed = utils::parse_command_string(command);
@@ -1013,7 +1324,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     if (!has_own_state_ || !update_swarm_frame())
     {
         RCLCPP_WARN(get_logger(),
-                    "Mission intent deferred until GPS common frame is ready");
+                    "Mission intent deferred until local WGS84 Home is ready");
         return;
     }
 
@@ -1079,7 +1390,8 @@ void EgoSwarmPlannerNode::publish_plan(
     const ego_swarm::Vector3& origin_position,
     const rclcpp::Time& now,
     const rclcpp::Time& start_time,
-    const uint32_t trajectory_id)
+    const uint32_t trajectory_id,
+    const bool terminal_hold)
 {
     if (!result.has_finite_output())
     {
@@ -1096,21 +1408,31 @@ void EgoSwarmPlannerNode::publish_plan(
     message.start_time = start_time;
     message.trajectory_id = trajectory_id;
     message.agent_index = static_cast<uint32_t>(agent_index_);
-    message.frame_revision = frame_revision_;
+    message.coordinate_frame =
+        taiphoon_agent::msg::AgentTrajectory::
+            COORDINATE_FRAME_WGS84_GEODETIC;
+    message.frame_revision = ego_swarm::GLOBAL_WGS84_FRAME_REVISION;
     message.order = static_cast<uint8_t>(ego_swarm::BSPLINE_DEGREE);
     message.knot_interval_s = static_cast<float>(
         trajectory.knot_interval_s());
     message.duration_s = static_cast<float>(trajectory.duration_s());
-    message.frame_origin_global = {
-        frame_origin_.latitude_deg, frame_origin_.longitude_deg,
-        frame_origin_.altitude_m};
+    message.terminal_hold = terminal_hold;
     message.valid = true;
     message.control_points.reserve(trajectory.control_points().size() * 3U);
     for (const auto& point : trajectory.control_points())
     {
-        message.control_points.push_back(static_cast<float>(point.at(0)));
-        message.control_points.push_back(static_cast<float>(point.at(1)));
-        message.control_points.push_back(static_cast<float>(point.at(2)));
+        ego_swarm::GeoCoordinate global_point{};
+        if (!swarm_frame_.from_swarm_ned(point, global_point))
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Cannot publish trajectory id=%u: NED to WGS84 failed",
+                trajectory_id);
+            return;
+        }
+        message.control_points.push_back(global_point.latitude_deg);
+        message.control_points.push_back(global_point.longitude_deg);
+        message.control_points.push_back(global_point.altitude_m);
     }
     (void)origin_position;
     trajectory_pub_->publish(message);
