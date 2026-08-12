@@ -11,6 +11,7 @@
  */
 
 #include "controllers/BasicController.hpp"
+#include "ego_swarm/BsplineTrajectory.hpp"
 #include "utils/math_utils.hpp"
 #include <cmath>
 
@@ -20,119 +21,6 @@ namespace taiphoon
 {
 namespace controllers
 {
-
-namespace
-{
-
-/** @brief 驗證三維控制點是否為有限值。 */
-bool is_finite_control_point(const std::array<float, 3>& point)
-{
-    return std::isfinite(point[0]) &&
-        std::isfinite(point[1]) &&
-        std::isfinite(point[2]);
-}
-
-/**
- * @brief 使用 uniform clamped knot vector 評估 B-spline。
- *
- * `degree` 是多項式階數，控制點數量至少為 degree+1。時間已由呼叫端
- * 映射到 [0, control_point_count-degree] 的 spline domain。
- */
-bool evaluate_uniform_clamped_bspline(
-    const std::vector<std::array<float, 3>>& control_points,
-    std::size_t degree,
-    double domain_position,
-    std::array<float, 3>& position)
-{
-    const std::size_t point_count = control_points.size();
-    if (point_count == 0U || degree == 0U || degree >= point_count ||
-        !std::isfinite(domain_position))
-    {
-        return false;
-    }
-
-    const std::size_t last_domain = point_count - degree;
-    if (domain_position <= 0.0)
-    {
-        position = control_points.front();
-        return is_finite_control_point(position);
-    }
-    if (domain_position >= static_cast<double>(last_domain))
-    {
-        position = control_points.back();
-        return is_finite_control_point(position);
-    }
-
-    // Open uniform clamped knot vector:
-    // [0 ... 0, 1, 2, ..., last_domain-1, last_domain ... last_domain]
-    const std::size_t knot_count = point_count + degree + 1U;
-    std::vector<double> knots(knot_count, 0.0);
-    for (std::size_t index = 0U; index < knot_count; ++index)
-    {
-        if (index <= degree)
-        {
-            knots[index] = 0.0;
-        }
-        else if (index >= point_count)
-        {
-            knots[index] = static_cast<double>(last_domain);
-        }
-        else
-        {
-            knots[index] = static_cast<double>(index - degree);
-        }
-    }
-
-    std::size_t span = degree;
-    while (span + 1U < knot_count && domain_position >= knots[span + 1U])
-    {
-        ++span;
-    }
-    if (span >= point_count)
-    {
-        return false;
-    }
-
-    std::vector<std::array<double, 3>> de_boor(degree + 1U);
-    for (std::size_t index = 0U; index <= degree; ++index)
-    {
-        const auto& source = control_points[span - degree + index];
-        de_boor[index] = {
-            static_cast<double>(source[0]),
-            static_cast<double>(source[1]),
-            static_cast<double>(source[2])};
-    }
-
-    for (std::size_t recursion = 1U; recursion <= degree; ++recursion)
-    {
-        for (std::size_t index = degree + 1U; index-- > recursion;)
-        {
-            const std::size_t knot_index = span - degree + index;
-            const double denominator =
-                knots[knot_index + degree - recursion + 1U] -
-                knots[knot_index];
-            const double alpha = denominator > 0.0
-                ? (domain_position - knots[knot_index]) / denominator
-                : 0.0;
-
-            for (std::size_t axis = 0U; axis < 3U; ++axis)
-            {
-                de_boor[index][axis] =
-                    (1.0 - alpha) * de_boor[index - 1U][axis] +
-                    alpha * de_boor[index][axis];
-            }
-        }
-    }
-
-    position = {
-        static_cast<float>(de_boor[degree][0]),
-        static_cast<float>(de_boor[degree][1]),
-        static_cast<float>(de_boor[degree][2])};
-    return is_finite_control_point(position);
-}
-
-}  // namespace
-
 
 // =============================================================================
 // 建構子
@@ -905,7 +793,14 @@ void BasicController::publish_control_commands()
     msg.position[0] = hold_position[0];
     msg.position[1] = hold_position[1];
     msg.position[2] = hold_position[2];
+    for (std::size_t index = 0U; index < 3U; ++index)
+    {
+        msg.velocity[index] = 0.0F;
+        msg.acceleration[index] = 0.0F;
+        msg.jerk[index] = 0.0F;
+    }
     msg.yaw = 0.0F;
+    msg.yawspeed = 0.0F;
 
     auto mode_msg_local = px4_msgs::msg::OffboardControlMode();
     mode_msg_local.timestamp = node_->now().nanoseconds() / 1000ULL;
@@ -937,8 +832,11 @@ void BasicController::publish_control_commands()
         if (has_timed_trajectory())
         {
             std::array<float, 3> sampled_position = get_safe_hold_position();
+            std::array<float, 3> sampled_velocity{0.0F, 0.0F, 0.0F};
+            std::array<float, 3> sampled_acceleration{0.0F, 0.0F, 0.0F};
             const auto sample_result = sample_timed_trajectory(
-                node_->now(), sampled_position);
+                node_->now(), sampled_position, sampled_velocity,
+                sampled_acceleration);
             if (sample_result != TimedTrajectorySampleResult::VALID)
             {
                 RCLCPP_WARN_THROTTLE(
@@ -952,6 +850,11 @@ void BasicController::publish_control_commands()
             msg.position[0] = sampled_position[0];
             msg.position[1] = sampled_position[1];
             msg.position[2] = sampled_position[2];
+            for (std::size_t index = 0U; index < 3U; ++index)
+            {
+                msg.velocity[index] = sampled_velocity[index];
+                msg.acceleration[index] = sampled_acceleration[index];
+            }
         }
     }
 
@@ -970,10 +873,26 @@ void BasicController::publish_control_commands()
         {
             msg.position[index] = hold_position[index];
         }
+        if (!utils::is_valid_float(msg.velocity[index]))
+        {
+            msg.velocity[index] = 0.0F;
+        }
+        if (!utils::is_valid_float(msg.acceleration[index]))
+        {
+            msg.acceleration[index] = 0.0F;
+        }
+        if (!utils::is_valid_float(msg.jerk[index]))
+        {
+            msg.jerk[index] = 0.0F;
+        }
     }
     if (!utils::is_valid_float(msg.yaw))
     {
         msg.yaw = 0.0F;
+    }
+    if (!utils::is_valid_float(msg.yawspeed))
+    {
+        msg.yawspeed = 0.0F;
     }
 
     trajectory_setpoint_pub_->publish(msg);
@@ -1014,7 +933,9 @@ bool BasicController::validate_timed_trajectory(
 
     for (const auto& point : trajectory.control_points)
     {
-        if (!is_finite_control_point(point))
+        if (!std::isfinite(point[0]) ||
+            !std::isfinite(point[1]) ||
+            !std::isfinite(point[2]))
         {
             return false;
         }
@@ -1081,6 +1002,22 @@ TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
     const rclcpp::Time& sample_time,
     std::array<float, 3>& position) const
 {
+    std::array<float, 3> velocity{0.0F, 0.0F, 0.0F};
+    std::array<float, 3> acceleration{0.0F, 0.0F, 0.0F};
+    return sample_timed_trajectory(
+        sample_time, position, velocity, acceleration);
+}
+
+TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
+    const rclcpp::Time& sample_time,
+    std::array<float, 3>& position,
+    std::array<float, 3>& velocity,
+    std::array<float, 3>& acceleration) const
+{
+    position = {0.0F, 0.0F, 0.0F};
+    velocity = {0.0F, 0.0F, 0.0F};
+    acceleration = {0.0F, 0.0F, 0.0F};
+
     std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
     if (!has_timed_trajectory_)
     {
@@ -1118,12 +1055,54 @@ TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
     const std::size_t degree = static_cast<std::size_t>(trajectory.order);
     const double span_count = static_cast<double>(
         trajectory.control_points.size() - degree);
-    const double domain_position =
-        elapsed_s / static_cast<double>(trajectory.duration_s) * span_count;
-
-    if (!evaluate_uniform_clamped_bspline(
-            trajectory.control_points, degree, domain_position, position))
+    const double effective_knot_interval_s =
+        static_cast<double>(trajectory.duration_s) / span_count;
+    if (!std::isfinite(effective_knot_interval_s) ||
+        effective_knot_interval_s <= 0.0)
     {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    std::vector<ego_swarm::Vector3> control_points;
+    control_points.reserve(trajectory.control_points.size());
+    for (const auto& point : trajectory.control_points)
+    {
+        control_points.push_back(ego_swarm::Vector3{
+            static_cast<double>(point[0]),
+            static_cast<double>(point[1]),
+            static_cast<double>(point[2])});
+    }
+
+    const ego_swarm::BsplineTrajectory spline(
+        control_points, effective_knot_interval_s, degree);
+    if (!spline.is_valid())
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    const auto sample = spline.evaluate(elapsed_s);
+    if (!sample.is_valid)
+    {
+        return TimedTrajectorySampleResult::INVALID;
+    }
+
+    for (std::size_t index = 0U; index < 3U; ++index)
+    {
+        position[index] = static_cast<float>(sample.position.at(index));
+        velocity[index] = static_cast<float>(sample.velocity.at(index));
+        acceleration[index] = static_cast<float>(
+            sample.acceleration.at(index));
+    }
+    if (!std::isfinite(position[0]) || !std::isfinite(position[1]) ||
+        !std::isfinite(position[2]) || !std::isfinite(velocity[0]) ||
+        !std::isfinite(velocity[1]) || !std::isfinite(velocity[2]) ||
+        !std::isfinite(acceleration[0]) ||
+        !std::isfinite(acceleration[1]) ||
+        !std::isfinite(acceleration[2]))
+    {
+        position = {0.0F, 0.0F, 0.0F};
+        velocity = {0.0F, 0.0F, 0.0F};
+        acceleration = {0.0F, 0.0F, 0.0F};
         return TimedTrajectorySampleResult::INVALID;
     }
 

@@ -130,6 +130,51 @@ EGO-Swarm 目標執行鏈中，每台無人機包含：
 兩個 Node 已納入 `basic_controller.launch.py`；EGO planner 固定啟動，障礙物模擬器由
 `enable_obstacle_cloud_simulator` 控制。
 
+#### Compose 中個別控制障礙物模擬器
+
+`docker-compose.yml` 已為每台 Agent 提供獨立的自動啟動開關，預設值都是
+`false`。這是實機安全預設：沒有實際感測器時，不應自動用空障礙物地圖取代缺少的感測資料。
+
+SITL 若要讓四台 Agent 都自動啟動 `obstacle_cloud_simulator`，在宿主機執行：
+
+```bash
+FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+FMU3_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+FMU4_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+docker compose up -d
+```
+
+也可以只開啟指定 Agent，例如只啟動 fmu1 與 fmu2：
+
+```bash
+FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+docker compose up -d
+```
+
+各 Agent 的預設 `OBSTACLE_CLOUD_MODE` 為 `explicit_empty`，會持續發布有效的零點
+PointCloud2，讓 `planning/status.map_valid` 成為 `true`。需要實際 YAML 障礙物或感測器
+模擬時，可個別覆寫，例如：
+
+```bash
+FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+FMU1_OBSTACLE_CLOUD_MODE=synthetic_sensor \
+docker compose up -d fmu1_agent
+```
+
+這些 `FMU{N}_...` 變數也可以放在專案根目錄的 `.env`，之後直接執行
+`docker compose up -d`。修改開關後需要重新執行 `docker compose up -d`，讓 Compose
+重新建立受影響的 Agent 容器；啟動後可用下列指令確認：
+
+```bash
+docker compose exec fmu1_agent bash -c \
+  "source /opt/ros/humble/setup.bash && \
+   source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
+   source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
+   ros2 node list | grep obstacle_cloud_simulator"
+```
+
 ### 3. 設定飛行模式
 
 ```bash
@@ -508,7 +553,8 @@ docker compose exec fmu1_agent bash -c \
 ### EGO-Swarm 軌跡與舊 NED 目標 topic
 
 `/{agent_namespace}/planning/trajectory` 是 EGO-Swarm 規劃結果的目標 Topic，供
-`BasicController` 取樣後發布 PX4 `TrajectorySetpoint`。舊的
+`BasicController` 以 analytic B-spline derivative 取樣 p/v/a 後發布 PX4
+`TrajectorySetpoint`。舊的
 `/fmu{N}_agent/ned_target` 僅保留相容或純邏輯測試用途：
 
 EGO-Swarm Planner 另訂閱下列本機任務意圖 Topic：

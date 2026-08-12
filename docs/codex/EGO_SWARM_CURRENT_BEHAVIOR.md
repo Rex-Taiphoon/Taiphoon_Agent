@@ -2,7 +2,7 @@
 
 ## 文件狀態
 
-這是以 Phase 0 characterization baseline 為起點、並已納入 Phase 1 變更的
+這是以 Phase 0 characterization baseline 為起點、並已納入 Phase 1～3 變更的
 目前行為摘要。內容以目前 source code 與 Docker 內測試為準，不把尚未實作的
 後續安全契約描述成 runtime 保證。
 
@@ -28,13 +28,15 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 
 ### `BsplineTrajectory`
 
-- 僅接受至少四個有限控制點與正的 knot interval。
-- 使用均勻 clamped cubic B-spline；`knot_interval_s` 是最小基準 knot
+- 預設接受至少四個有限控制點與正的 knot interval；planner runtime 使用
+  cubic B-spline。
+- 使用 analytic derivative 由同一條 B-spline 產生 position、velocity、
+  acceleration 與 jerk；`knot_interval_s` 是最小基準 knot
   間隔，實際 duration 由候選路徑長度、`max_velocity_m_s` 與
   `max_acceleration_m_s2` 計算。
 - `evaluate()` 對有限的負時間與超過 duration 的時間夾到兩端點。
 - 無效軌跡或非有限取樣時間回傳 `is_valid == false`。
-- Phase 0 未加入 velocity、acceleration 或 jerk derivative。
+- endpoint 的 p/v/a/j 也由 analytic derivative 取樣；非 finite 結果會整筆拒絕。
 
 ### `PeerTrajectoryTable`
 
@@ -110,23 +112,26 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 ### `BasicController`
 
 - 是目前唯一發布 PX4 `TrajectorySetpoint` 的 runtime component。
-- 接收自身 `AgentTrajectory` 後取樣 position；frame revision 改變時先清除舊
-  軌跡，必須收到新 revision 的下一筆軌跡才重新啟用。
-- timed trajectory 尚未開始、取樣失敗或已過期時，發布目前位置的 finite hold
-  position。
-- 目前 `publish_control_commands()` 寫入 position 與 yaw；velocity、
-  acceleration、jerk、yawspeed 仍維持 PX4 ROS message 建構時的 finite zero
-  預設值，尚未提供 feed-forward derivative。
+- 接收自身 `AgentTrajectory` 後以同一條 analytic B-spline 取樣 position、
+  velocity、acceleration；frame revision 改變時先清除舊軌跡，必須收到新
+  revision 的下一筆軌跡才重新啟用。
+- 將位置控制點轉換到 local NED 後再取樣；位置 translation 不套用到 velocity
+  或 acceleration，因兩者是對時間的導數，axis convention 維持同一 NED 定義。
+- 只有 BasicController 寫入 PX4 `TrajectorySetpoint` 的 p/v/a；jerk 與 yawspeed
+  維持有限零值，避免無效 feed-forward 擴散到 PX4。
+- timed trajectory 尚未開始或取樣失敗時，發布目前位置的 finite hold position；
+  已過期時 position 固定在最後控制點。兩種降級都將 velocity／acceleration
+  歸零，不回退到即時 odometry 作為已完成軌跡的新目標。
 
 ## Baseline characterization tests
 
 Phase 0 鎖定下列行為：
 
-- B-spline endpoint、時間夾限與 invalid input。
+- B-spline endpoint、p/v/a/j derivative、時間夾限與 invalid input。
 - peer future trajectory 在目前位置造成距離衝突時，所有候選被拒絕並降為 hold。
 - 不同 frame origin 被視為不相容；BasicController frame revision 變更會清除舊軌跡。
-- 過期 timed trajectory 產生 finite current-position hold。
-- PX4 `TrajectorySetpoint` 的 position、velocity、acceleration、jerk、yaw 與
-  yawspeed 欄位均為有限值。
+- 過期 timed trajectory 產生 finite endpoint hold，且 p/v/a feed-forward 歸零。
+- PX4 `TrajectorySetpoint` 的 position、analytic velocity／acceleration、jerk、
+  yaw 與 yawspeed 欄位均為有限值。
 - 空障礙物輸入目前代表無障礙物；既有 PointCloud geometry、range/FOV、noise 與
   dropout 測試維持通過。

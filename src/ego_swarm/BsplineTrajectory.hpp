@@ -22,15 +22,26 @@ namespace taiphoon
 namespace ego_swarm
 {
 
-/// cubic B-spline 的固定階數。
+/// cubic B-spline 的預設階數。
 constexpr std::size_t BSPLINE_DEGREE = 3U;
 
-/// B-spline 評估結果。
-struct TrajectorySample
+/**
+ * @brief B-spline 在單一時間點的完整狀態。
+ *
+ * 所有導數都直接由同一組控制點的 analytic derivative 計算，避免控制
+ * 迴圈以 finite difference 估算速度、加速度或 jerk。
+ */
+struct TrajectoryState
 {
     Vector3 position{0.0, 0.0, 0.0};
+    Vector3 velocity{0.0, 0.0, 0.0};
+    Vector3 acceleration{0.0, 0.0, 0.0};
+    Vector3 jerk{0.0, 0.0, 0.0};
     bool is_valid{false};
 };
+
+/// 保留既有呼叫端名稱，讓 trajectory sampling API 向後相容。
+using TrajectorySample = TrajectoryState;
 
 /**
  * @brief 均勻 clamped cubic B-spline 軌跡
@@ -55,6 +66,21 @@ public:
     }
 
     /**
+     * @brief 使用控制點、knot interval 與階數建立軌跡
+     *
+     * @param control_points B-spline 控制點
+     * @param knot_interval_s 相鄰 knot 的時間間隔，單位為秒
+     * @param degree B-spline 多項式階數
+     */
+    BsplineTrajectory(
+        const std::vector<Vector3>& control_points,
+        const double knot_interval_s,
+        const std::size_t degree)
+    {
+        set_control_points(control_points, knot_interval_s, degree);
+    }
+
+    /**
      * @brief 建立空白無效軌跡
      */
     BsplineTrajectory() = default;
@@ -68,14 +94,17 @@ public:
      */
     bool set_control_points(
         const std::vector<Vector3>& control_points,
-        const double knot_interval_s)
+        const double knot_interval_s,
+        const std::size_t degree = BSPLINE_DEGREE)
     {
-        if (control_points.size() < BSPLINE_DEGREE + 1U ||
+        if (degree == 0U ||
+            control_points.size() <= degree ||
             !is_finite(knot_interval_s) ||
             knot_interval_s <= EGO_SWARM_EPSILON_M)
         {
             control_points_.clear();
             knot_interval_s_ = 0.0;
+            degree_ = BSPLINE_DEGREE;
             return false;
         }
 
@@ -91,6 +120,7 @@ public:
 
         control_points_ = control_points;
         knot_interval_s_ = knot_interval_s;
+        degree_ = degree;
         return true;
     }
 
@@ -101,7 +131,8 @@ public:
      */
     bool is_valid() const
     {
-        if (control_points_.size() < BSPLINE_DEGREE + 1U ||
+        if (degree_ == 0U ||
+            control_points_.size() <= degree_ ||
             !is_finite(knot_interval_s_) ||
             knot_interval_s_ <= EGO_SWARM_EPSILON_M)
         {
@@ -125,13 +156,14 @@ public:
      */
     double duration_s() const
     {
-        if (control_points_.size() < BSPLINE_DEGREE + 1U ||
+        if (degree_ == 0U ||
+            control_points_.size() <= degree_ ||
             !is_finite(knot_interval_s_))
         {
             return 0.0;
         }
-        return static_cast<double>(
-            control_points_.size() - BSPLINE_DEGREE) * knot_interval_s_;
+        return static_cast<double>(control_points_.size() - degree_) *
+            knot_interval_s_;
     }
 
     /**
@@ -142,48 +174,69 @@ public:
      */
     TrajectorySample evaluate(const double time_s) const
     {
-        TrajectorySample result;
+        return evaluate_state(time_s);
+    }
+
+    /**
+     * @brief 以相對時間評估位置、速度、加速度與 jerk
+     *
+     * @param time_s 相對軌跡起點時間，單位為秒
+     * @return 完整取樣狀態；輸入或軌跡無效時 is_valid 為 false
+     */
+    TrajectoryState evaluate_state(const double time_s) const
+    {
+        TrajectoryState result;
         if (!is_valid() || !is_finite(time_s))
         {
             return result;
         }
 
-        const double duration = duration_s();
-        const double clamped_time = std::max(0.0, std::min(time_s, duration));
-        if (clamped_time <= EGO_SWARM_EPSILON_M)
+        const double clamped_time = std::max(
+            0.0, std::min(time_s, duration_s()));
+        if (!evaluate_curve(
+                control_points_, degree_, knot_interval_s_, clamped_time,
+                result.position))
         {
-            result.position = control_points_.front();
-            result.is_valid = true;
-            return result;
-        }
-        if (duration - clamped_time <= EGO_SWARM_EPSILON_M)
-        {
-            result.position = control_points_.back();
-            result.is_valid = true;
-            return result;
+            return TrajectoryState{};
         }
 
-        const std::vector<double> knots = build_knots();
-        Vector3 position{0.0, 0.0, 0.0};
-        for (std::size_t index = 0; index < control_points_.size(); ++index)
+        std::vector<Vector3> derivative_control_points = control_points_;
+        std::size_t derivative_degree = degree_;
+        Vector3* derivative_outputs[] = {
+            &result.velocity, &result.acceleration, &result.jerk};
+
+        for (Vector3* derivative_output : derivative_outputs)
         {
-            const double basis = evaluate_basis(
-                index, BSPLINE_DEGREE, clamped_time, knots);
-            if (!is_finite(basis))
+            if (derivative_degree == 0U)
             {
-                return TrajectorySample{};
+                *derivative_output = Vector3{0.0, 0.0, 0.0};
+                continue;
             }
-            position.at(0) += basis * control_points_.at(index).at(0);
-            position.at(1) += basis * control_points_.at(index).at(1);
-            position.at(2) += basis * control_points_.at(index).at(2);
+
+            derivative_control_points = compute_derivative_control_points(
+                derivative_control_points, derivative_degree,
+                knot_interval_s_);
+            if (derivative_control_points.empty())
+            {
+                return TrajectoryState{};
+            }
+            --derivative_degree;
+            if (!evaluate_curve(
+                    derivative_control_points, derivative_degree,
+                    knot_interval_s_, clamped_time, *derivative_output))
+            {
+                return TrajectoryState{};
+            }
         }
 
-        if (!is_finite_vector(position))
+        result.is_valid = is_finite_vector(result.position) &&
+            is_finite_vector(result.velocity) &&
+            is_finite_vector(result.acceleration) &&
+            is_finite_vector(result.jerk);
+        if (!result.is_valid)
         {
-            return TrajectorySample{};
+            return TrajectoryState{};
         }
-        result.position = position;
-        result.is_valid = true;
         return result;
     }
 
@@ -207,35 +260,161 @@ public:
         return knot_interval_s_;
     }
 
+    /**
+     * @brief 取得 B-spline 多項式階數
+     * @return B-spline 階數
+     */
+    std::size_t degree() const
+    {
+        return degree_;
+    }
+
 private:
     /**
      * @brief 建立均勻 clamped knot 向量
      *
+     * @param control_point_count 控制點數量
+     * @param degree B-spline 階數
+     * @param knot_interval_s knot 間隔，單位為秒
      * @return knot 向量
      */
-    std::vector<double> build_knots() const
+    static std::vector<double> build_knots(
+        const std::size_t control_point_count,
+        const std::size_t degree,
+        const double knot_interval_s)
     {
         const std::size_t knot_count =
-            control_points_.size() + BSPLINE_DEGREE + 1U;
-        const double duration = duration_s();
+            control_point_count + degree + 1U;
+        const double duration = static_cast<double>(
+            control_point_count - degree) * knot_interval_s;
         std::vector<double> knots(knot_count, 0.0);
         for (std::size_t index = 0; index < knot_count; ++index)
         {
-            if (index <= BSPLINE_DEGREE)
+            if (index <= degree)
             {
                 knots.at(index) = 0.0;
             }
-            else if (index >= control_points_.size())
+            else if (index >= control_point_count)
             {
                 knots.at(index) = duration;
             }
             else
             {
                 knots.at(index) = static_cast<double>(
-                    index - BSPLINE_DEGREE) * knot_interval_s_;
+                    index - degree) * knot_interval_s;
             }
         }
         return knots;
+    }
+
+    /**
+     * @brief 評估任意階數的均勻 clamped B-spline curve
+     *
+     * @param control_points 曲線控制點
+     * @param degree 曲線階數
+     * @param knot_interval_s knot 間隔，單位為秒
+     * @param time_s 取樣時間，單位為秒
+     * @param[out] value 曲線取樣結果
+     * @return true 表示取樣成功
+     */
+    static bool evaluate_curve(
+        const std::vector<Vector3>& control_points,
+        const std::size_t degree,
+        const double knot_interval_s,
+        const double time_s,
+        Vector3& value)
+    {
+        if (degree >= control_points.size() ||
+            !is_finite(knot_interval_s) ||
+            knot_interval_s <= EGO_SWARM_EPSILON_M ||
+            !is_finite(time_s))
+        {
+            return false;
+        }
+
+        const double duration = static_cast<double>(
+            control_points.size() - degree) * knot_interval_s;
+        const double clamped_time = std::max(
+            0.0, std::min(time_s, duration));
+        if (clamped_time <= EGO_SWARM_EPSILON_M)
+        {
+            value = control_points.front();
+            return is_finite_vector(value);
+        }
+        if (duration - clamped_time <= EGO_SWARM_EPSILON_M)
+        {
+            value = control_points.back();
+            return is_finite_vector(value);
+        }
+
+        const std::vector<double> knots = build_knots(
+            control_points.size(), degree, knot_interval_s);
+        value = Vector3{0.0, 0.0, 0.0};
+        for (std::size_t index = 0U; index < control_points.size(); ++index)
+        {
+            const double basis = evaluate_basis(
+                index, degree, clamped_time, knots);
+            if (!is_finite(basis))
+            {
+                return false;
+            }
+            for (std::size_t axis = 0U; axis < 3U; ++axis)
+            {
+                value.at(axis) += basis * control_points.at(index).at(axis);
+            }
+        }
+        return is_finite_vector(value);
+    }
+
+    /**
+     * @brief 建立一階 analytic derivative 的控制點
+     *
+     * @param control_points 原始曲線控制點
+     * @param degree 原始曲線階數
+     * @param knot_interval_s knot 間隔，單位為秒
+     * @return 一階 derivative 控制點；輸入無效時回傳空列表
+     */
+    static std::vector<Vector3> compute_derivative_control_points(
+        const std::vector<Vector3>& control_points,
+        const std::size_t degree,
+        const double knot_interval_s)
+    {
+        std::vector<Vector3> derivative_control_points;
+        if (degree == 0U || degree >= control_points.size() ||
+            !is_finite(knot_interval_s) ||
+            knot_interval_s <= EGO_SWARM_EPSILON_M)
+        {
+            return derivative_control_points;
+        }
+
+        const std::vector<double> knots = build_knots(
+            control_points.size(), degree, knot_interval_s);
+        derivative_control_points.reserve(control_points.size() - 1U);
+        for (std::size_t index = 0U;
+             index + 1U < control_points.size();
+             ++index)
+        {
+            const double denominator = knots.at(index + degree + 1U) -
+                knots.at(index + 1U);
+            if (!is_finite(denominator) ||
+                denominator <= EGO_SWARM_EPSILON_M)
+            {
+                return std::vector<Vector3>{};
+            }
+
+            const double scale = static_cast<double>(degree) / denominator;
+            const Vector3 derivative = scale_vector(
+                subtract_vectors(
+                    control_points.at(index + 1U),
+                    control_points.at(index)),
+                scale);
+            if (!is_finite_vector(derivative))
+            {
+                return std::vector<Vector3>{};
+            }
+            derivative_control_points.push_back(derivative);
+        }
+        return derivative_control_points;
     }
 
     /**
@@ -286,6 +465,7 @@ private:
 
     std::vector<Vector3> control_points_{};
     double knot_interval_s_{0.0};
+    std::size_t degree_{BSPLINE_DEGREE};
 };
 
 }  // namespace ego_swarm

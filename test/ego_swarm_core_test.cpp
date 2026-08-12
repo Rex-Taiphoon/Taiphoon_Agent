@@ -234,6 +234,62 @@ TEST(BsplineTrajectoryTest, EvaluatesEndpointsAndFiniteValues)
     EXPECT_TRUE(std::isfinite(middle.position.at(1)));
 }
 
+TEST(BsplineTrajectoryTest, EvaluatesAnalyticCubicDerivatives)
+{
+    // 這組控制點形成 x(t) = t^3 的 cubic Bezier 曲線，方便驗證
+    // position、velocity、acceleration 與 jerk 的解析導數。
+    const std::vector<Vector3> control_points{
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{1.0, 0.0, 0.0}};
+    const BsplineTrajectory trajectory(control_points, 1.0);
+
+    const auto middle = trajectory.evaluate(0.5);
+    ASSERT_TRUE(middle.is_valid);
+    EXPECT_NEAR(middle.position.at(0), 0.125, 1.0e-9);
+    EXPECT_NEAR(middle.velocity.at(0), 0.75, 1.0e-9);
+    EXPECT_NEAR(middle.acceleration.at(0), 3.0, 1.0e-9);
+    EXPECT_NEAR(middle.jerk.at(0), 6.0, 1.0e-9);
+
+    const auto start = trajectory.evaluate(0.0);
+    const auto end = trajectory.evaluate(1.0);
+    ASSERT_TRUE(start.is_valid);
+    ASSERT_TRUE(end.is_valid);
+    EXPECT_NEAR(start.velocity.at(0), 0.0, 1.0e-9);
+    EXPECT_NEAR(start.acceleration.at(0), 0.0, 1.0e-9);
+    EXPECT_NEAR(start.jerk.at(0), 6.0, 1.0e-9);
+    EXPECT_NEAR(end.velocity.at(0), 3.0, 1.0e-9);
+    EXPECT_NEAR(end.acceleration.at(0), 6.0, 1.0e-9);
+    EXPECT_NEAR(end.jerk.at(0), 6.0, 1.0e-9);
+}
+
+TEST(BsplineTrajectoryTest, DerivativesAreContinuousAtInteriorKnot)
+{
+    const std::vector<Vector3> control_points{
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{1.0, 2.0, 0.0},
+        Vector3{2.0, -1.0, 0.0},
+        Vector3{3.0, 3.0, 0.0},
+        Vector3{4.0, 0.0, 0.0},
+        Vector3{5.0, 1.0, 0.0}};
+    const BsplineTrajectory trajectory(control_points, 1.0);
+
+    const auto before = trajectory.evaluate(1.0 - 1.0e-7);
+    const auto after = trajectory.evaluate(1.0 + 1.0e-7);
+    ASSERT_TRUE(before.is_valid);
+    ASSERT_TRUE(after.is_valid);
+    for (std::size_t axis = 0U; axis < 3U; ++axis)
+    {
+        EXPECT_NEAR(
+            before.position.at(axis), after.position.at(axis), 1.0e-5);
+        EXPECT_NEAR(
+            before.velocity.at(axis), after.velocity.at(axis), 1.0e-5);
+        EXPECT_NEAR(
+            before.acceleration.at(axis), after.acceleration.at(axis), 1.0e-5);
+    }
+}
+
 TEST(EgoSwarmPlannerTest, DurationScalesWithDistance)
 {
     PlannerConfig config;

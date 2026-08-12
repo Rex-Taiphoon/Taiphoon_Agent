@@ -313,6 +313,26 @@ public:
         std::array<float, 3>& position) const;
 
     /**
+     * @brief 依指定 ROS 時間取樣定時軌跡的 p/v/a。
+     *
+     * position 會套用已在 Node 完成的 local NED frame translation；velocity
+     * 與 acceleration 是對時間的 analytic derivative，不套用位置平移。
+     * 尚未開始或已過期時，輸出 derivative 會維持零向量，避免把無效的
+     * feed-forward 傳給 PX4。
+     *
+     * @param sample_time 取樣時間
+     * @param position 輸出的 NED 位置
+     * @param velocity 輸出的 NED 速度
+     * @param acceleration 輸出的 NED 加速度
+     * @return 取樣結果
+     */
+    TimedTrajectorySampleResult sample_timed_trajectory(
+        const rclcpp::Time& sample_time,
+        std::array<float, 3>& position,
+        std::array<float, 3>& velocity,
+        std::array<float, 3>& acceleration) const;
+
+    /**
      * @brief 檢查目前是否保留可取樣的定時軌跡。
      * @return true 表示緩衝區內有最新有效軌跡
      */

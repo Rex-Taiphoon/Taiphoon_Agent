@@ -388,7 +388,8 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態與 GPS common frame 所需位�
 ### 4.2.5 EGO-Swarm 編隊與避碰契約
 
 - GCS 命令先由 `ego_swarm_planner` 轉換為本機任務意圖與虛擬編隊槽位；規劃器輸出
-  未來軌跡，再由 `basic_controller_node` 取樣成 PX4 `TrajectorySetpoint`。
+  未來軌跡，再由 `basic_controller_node` 以 analytic B-spline derivative 取樣
+  p/v/a 成 PX4 `TrajectorySetpoint`。
 - 目前 EGO-Swarm 核心是 deterministic candidate baseline：建立固定候選 B-spline，
   依目標、平滑、障礙物與同儕距離成本選擇安全候選；不宣稱完整原始 EGO-Swarm
   nonlinear optimizer。

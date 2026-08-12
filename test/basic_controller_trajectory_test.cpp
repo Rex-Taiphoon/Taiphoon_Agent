@@ -197,7 +197,7 @@ TEST_F(BasicControllerTrajectoryTest, SamplesLinearTrajectoryAtRosTime)
     EXPECT_NEAR(position[2], -2.0F, POSITION_EPSILON_M);
 }
 
-TEST_F(BasicControllerTrajectoryTest, SamplesCubicTrajectoryWithDeBoor)
+TEST_F(BasicControllerTrajectoryTest, SamplesCubicTrajectoryWithAnalyticDerivatives)
 {
     TimedTrajectory trajectory;
     trajectory.stamp = node_->now();
@@ -217,13 +217,52 @@ TEST_F(BasicControllerTrajectoryTest, SamplesCubicTrajectoryWithDeBoor)
     ASSERT_TRUE(controller_->update_timed_trajectory(trajectory));
 
     std::array<float, 3> position{};
+    std::array<float, 3> velocity{};
+    std::array<float, 3> acceleration{};
     const auto result = controller_->sample_timed_trajectory(
-        trajectory.start_time + rclcpp::Duration::from_seconds(0.5), position);
+        trajectory.start_time + rclcpp::Duration::from_seconds(0.5), position,
+        velocity, acceleration);
 
     EXPECT_EQ(result, TimedTrajectorySampleResult::VALID);
     EXPECT_NEAR(position[0], 1.5F, POSITION_EPSILON_M);
     EXPECT_NEAR(position[1], 3.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(position[2], -1.5F, POSITION_EPSILON_M);
+    EXPECT_NEAR(velocity[0], 3.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(velocity[1], 6.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(velocity[2], -3.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(acceleration[0], 0.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(acceleration[1], 0.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(acceleration[2], 0.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerTrajectoryTest,
+       PublishesFiniteAnalyticFeedForwardToPx4)
+{
+    const auto start_time = node_->now() -
+        rclcpp::Duration::from_seconds(0.25);
+    TimedTrajectory trajectory;
+    trajectory.stamp = start_time;
+    trajectory.start_time = start_time;
+    trajectory.trajectory_id = 7U;
+    trajectory.agent_index = 1U;
+    trajectory.frame_revision = 1U;
+    trajectory.order = 3U;
+    trajectory.knot_interval_s = 1.0F;
+    trajectory.control_points = {
+        {0.0F, 0.0F, 0.0F},
+        {0.0F, 0.0F, 0.0F},
+        {0.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F}};
+    trajectory.duration_s = 1.0F;
+    trajectory.valid = true;
+    ASSERT_TRUE(controller_->update_timed_trajectory(trajectory));
+    ASSERT_TRUE(controller_->set_ned_target(1.0F, 0.0F, 0.0F, 0.0F));
+
+    publish_until_setpoint_received();
+
+    expect_finite_setpoint_fields();
+    EXPECT_GT(latest_setpoint_.velocity[0], 0.1F);
+    EXPECT_GT(latest_setpoint_.acceleration[0], 0.1F);
 }
 
 TEST_F(BasicControllerTrajectoryTest,
@@ -327,6 +366,14 @@ TEST_F(BasicControllerTrajectoryTest,
     EXPECT_NEAR(latest_setpoint_.position[0], 10.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[1], 20.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -3.0F, POSITION_EPSILON_M);
+    for (const float value : latest_setpoint_.velocity)
+    {
+        EXPECT_FLOAT_EQ(value, 0.0F);
+    }
+    for (const float value : latest_setpoint_.acceleration)
+    {
+        EXPECT_FLOAT_EQ(value, 0.0F);
+    }
 }
 
 }  // namespace

@@ -10,6 +10,10 @@
 #
 # 本機多機測試（四台同時模擬）：
 #   docker compose up -d
+#
+# PointCloud2 障礙物模擬器可由每台 Agent 個別控制。預設不自動啟動，
+# 以避免在實機沒有感測器時，誤以為空 PointCloud2 代表安全無障礙環境。
+# 需要啟動時，透過 FMU{N}_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true 開啟。
 # =============================================================================
 
 networks:
@@ -60,6 +64,8 @@ services:
       - TARGET_SYSTEM=1
       - UXRCE_PORT=8888
       - AGENT_NAMESPACE=fmu1_agent
+      - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
+      - OBSTACLE_CLOUD_MODE=${FMU1_OBSTACLE_CLOUD_MODE:-explicit_empty}
 
   fmu2_agent:
     <<: *agent-defaults
@@ -76,6 +82,8 @@ services:
       - TARGET_SYSTEM=2
       - UXRCE_PORT=8889
       - AGENT_NAMESPACE=fmu2_agent
+      - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
+      - OBSTACLE_CLOUD_MODE=${FMU2_OBSTACLE_CLOUD_MODE:-explicit_empty}
 
   fmu3_agent:
     <<: *agent-defaults
@@ -92,6 +100,8 @@ services:
       - TARGET_SYSTEM=3
       - UXRCE_PORT=8890
       - AGENT_NAMESPACE=fmu3_agent
+      - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU3_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
+      - OBSTACLE_CLOUD_MODE=${FMU3_OBSTACLE_CLOUD_MODE:-explicit_empty}
   fmu4_agent:
     <<: *agent-defaults
     container_name: fmu4_agent
@@ -107,3 +117,5 @@ services:
       - TARGET_SYSTEM=4
       - UXRCE_PORT=8891
       - AGENT_NAMESPACE=fmu4_agent
+      - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU4_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
+      - OBSTACLE_CLOUD_MODE=${FMU4_OBSTACLE_CLOUD_MODE:-explicit_empty}
