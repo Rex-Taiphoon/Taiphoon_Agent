@@ -44,6 +44,8 @@ constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
 constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
 constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
+constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 1.0;
+constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 0.5;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -115,6 +117,8 @@ private:
     int agent_index_{1};
     int swarm_origin_agent_index_{1};
     double planning_rate_hz_{DEFAULT_EGO_PLANNER_RATE_HZ};
+    double peer_trajectory_timeout_s_{DEFAULT_PEER_TRAJECTORY_TIMEOUT_S};
+    double max_peer_time_skew_s_{DEFAULT_MAX_PEER_TIME_SKEW_S};
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
     double local_arrival_tolerance_m_{DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M};
     double global_arrival_tolerance_m_{DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M};

@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 #include "ego_swarm/EgoSwarmTypes.hpp"
 
@@ -106,8 +107,14 @@ public:
             return false;
         }
 
+        if (has_origin_)
+        {
+            return are_origins_compatible(origin_, origin);
+        }
+
         origin_ = origin;
         has_origin_ = true;
+        frame_revision_ = 1U;
         return true;
     }
 
@@ -129,6 +136,19 @@ public:
     GeoCoordinate origin() const
     {
         return origin_;
+    }
+
+    /**
+     * @brief 取得共同座標系的 revision／epoch
+     *
+     * revision 在第一次成功設定 origin 時建立，之後 origin freeze，
+     * 因此同一個 frame lifetime 內不會改變。
+     *
+     * @return frame revision；尚未設定 origin 時為零
+     */
+    uint32_t frame_revision() const
+    {
+        return frame_revision_;
     }
 
     /**
@@ -212,6 +232,7 @@ private:
 
     GeoCoordinate origin_{};
     bool has_origin_{false};
+    uint32_t frame_revision_{0U};
 };
 
 }  // namespace ego_swarm

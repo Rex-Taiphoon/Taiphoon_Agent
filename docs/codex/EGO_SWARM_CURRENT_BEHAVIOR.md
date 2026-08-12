@@ -2,8 +2,9 @@
 
 ## 文件狀態
 
-這是 Phase 0 的 characterization baseline。內容以目前 source code 與 Docker
-內測試為準，不把尚未實作的安全契約描述成 runtime 保證。
+這是以 Phase 0 characterization baseline 為起點、並已納入 Phase 1 變更的
+目前行為摘要。內容以目前 source code 與 Docker 內測試為準，不把尚未實作的
+後續安全契約描述成 runtime 保證。
 
 ## Runtime data flow
 
@@ -37,16 +38,20 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 
 ### `PeerTrajectoryTable`
 
-- `update()` 只接受有限 `start_time_s` 與有效 B-spline。
-- 以 Agent ID 保存最後一份有效軌跡；無效更新不覆蓋舊資料。
-- 沒有 receive time、end time、prune、expiration 或 stale 狀態。
-- planner 會把表內軌跡依 `now + sample_time - start_time` 取樣；時間早於
-  軌跡起點時使用零相對時間，超過終點時由 B-spline endpoint 行為處理。
+- `update()` 只接受有效 B-spline、`frame_revision`、`message_time_s`、
+  `start_time_s`、`receive_time_s` 與 `end_time_s`，並檢查共同時間偏差。
+- 每筆 record 保存 `agent_id`、`trajectory_id`、`frame_revision`、message／start／
+  receive／end time；同一 Agent 的 trajectory ID 不可倒退。
+- `get_status()` 明確回傳 `ACTIVE`、`STALE`、`MISSING` 或 `INVALID`；`prune()`
+  清除非 ACTIVE record。
+- planner 只取得 ACTIVE 軌跡；若候選軌跡時間已超過 peer 的 `end_time_s`，
+  不再把 peer 的最後 endpoint 當成 ghost UAV。
 
 ### `SwarmFrame`
 
 - 使用 WGS84 局部近似將 GPS 轉換成 `swarm_ned`（North、East、Down）。
-- `set_origin()` 目前可覆寫原點；frame freeze 不是此類別的保證。
+- `set_origin()` 第一次成功後 freeze；不同 origin 會被拒絕，並以 `frame_revision()`
+  的非零值識別同一個座標 lifetime。
 - `are_origins_compatible()` 使用緯／經度 `1e-9` 度、高度 `1e-3` 公尺容差，
   供 Node 拒絕不同 frame origin 的 peer trajectory。
 
@@ -76,7 +81,8 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
   第一次建立後 freeze，不因 origin 移動或暫時離線而改選其他 Agent，並以
   `frame_revision` 識別同一個座標生命週期。
 - peer `AgentTrajectory` 必須通過 agent ID、valid、order、frame revision、
-  frame origin、knot／duration、控制點長度與有限值檢查。
+  frame origin、knot／duration、控制點長度、有限值、timestamp sanity、freshness
+  與 trajectory ID 單調性檢查；逾時或結束的資料不再參與 planner。
 - obstacle callback 只接受 `header.frame_id == "swarm_ned"` 且所有 x/y/z 有限的
   PointCloud2；成功收到空 cloud 會將 `has_obstacle_cloud_` 設為 true。
 - planner loop 沒有以 `has_obstacle_cloud_` 阻擋規劃；尚未收到 cloud 時仍把

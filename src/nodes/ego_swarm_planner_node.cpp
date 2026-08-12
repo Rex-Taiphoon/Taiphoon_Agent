@@ -90,6 +90,10 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("planning_rate_hz", DEFAULT_EGO_PLANNER_RATE_HZ);
+    declare_parameter<double>("peer_trajectory_timeout_s",
+                             DEFAULT_PEER_TRAJECTORY_TIMEOUT_S);
+    declare_parameter<double>("max_peer_time_skew_s",
+                             DEFAULT_MAX_PEER_TIME_SKEW_S);
     declare_parameter<double>("formation_min_distance_m",
                              DEFAULT_FORMATION_MIN_DISTANCE_M);
     declare_parameter<double>("peer_collision_min_distance_m",
@@ -123,6 +127,22 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     if (!std::isfinite(planning_rate_hz_) || planning_rate_hz_ <= 0.0)
     {
         planning_rate_hz_ = DEFAULT_EGO_PLANNER_RATE_HZ;
+    }
+
+    peer_trajectory_timeout_s_ = get_parameter(
+        "peer_trajectory_timeout_s").as_double();
+    if (!std::isfinite(peer_trajectory_timeout_s_) ||
+        peer_trajectory_timeout_s_ <= 0.0)
+    {
+        peer_trajectory_timeout_s_ = DEFAULT_PEER_TRAJECTORY_TIMEOUT_S;
+    }
+
+    max_peer_time_skew_s_ = get_parameter(
+        "max_peer_time_skew_s").as_double();
+    if (!std::isfinite(max_peer_time_skew_s_) ||
+        max_peer_time_skew_s_ < 0.0)
+    {
+        max_peer_time_skew_s_ = DEFAULT_MAX_PEER_TIME_SKEW_S;
     }
 
     formation_min_distance_m_ = get_parameter(
@@ -164,6 +184,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
         return;
     }
+    if (!peer_trajectories_.set_config(
+            ego_swarm::PeerTrajectoryTableConfig{
+                peer_trajectory_timeout_s_, max_peer_time_skew_s_}))
+    {
+        RCLCPP_ERROR(get_logger(),
+                     "Peer trajectory freshness parameters are invalid");
+        return;
+    }
 
     if (!initialize_subscribers() || !initialize_publishers())
     {
@@ -185,11 +213,13 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     RCLCPP_INFO(get_logger(),
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
                 "origin_agent=%d peer_distance=%.2f m "
-                "obstacle_clearance=%.2f m",
+                "obstacle_clearance=%.2f m peer_timeout=%.2f s "
+                "max_peer_time_skew=%.2f s",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
-                planner_config_.obstacle_clearance_m);
+                planner_config_.obstacle_clearance_m,
+                peer_trajectory_timeout_s_, max_peer_time_skew_s_);
 }
 
 bool EgoSwarmPlannerNode::initialize_subscribers()
@@ -488,7 +518,8 @@ void EgoSwarmPlannerNode::trajectory_cb(
         RCLCPP_WARN(get_logger(), "trajectory_cb received nullptr");
         return;
     }
-    if (msg->agent_index == static_cast<uint32_t>(agent_index_) ||
+    if (msg->agent_index == 0U ||
+        msg->agent_index == static_cast<uint32_t>(agent_index_) ||
         !msg->valid || msg->order != ego_swarm::BSPLINE_DEGREE)
     {
         return;
@@ -557,12 +588,22 @@ void EgoSwarmPlannerNode::trajectory_cb(
 
     ego_swarm::PeerTrajectory peer;
     peer.agent_id = static_cast<int>(msg->agent_index);
+    peer.trajectory_id = msg->trajectory_id;
+    peer.frame_revision = msg->frame_revision;
+    peer.message_time_s = static_cast<double>(msg->stamp.sec) +
+        static_cast<double>(msg->stamp.nanosec) * 1.0e-9;
     peer.start_time_s = static_cast<double>(msg->start_time.sec) +
         static_cast<double>(msg->start_time.nanosec) * 1.0e-9;
+    peer.receive_time_s = this->now().seconds();
     peer.trajectory = ego_swarm::BsplineTrajectory(
         points, static_cast<double>(msg->knot_interval_s));
+    peer.end_time_s = peer.start_time_s + peer.trajectory.duration_s();
 
-    if (!peer.trajectory.is_valid() ||
+    if (!std::isfinite(peer.message_time_s) ||
+        !std::isfinite(peer.start_time_s) ||
+        !std::isfinite(peer.receive_time_s) ||
+        !peer.trajectory.is_valid() ||
+        !std::isfinite(peer.end_time_s) ||
         !is_consistent_duration(
             static_cast<double>(msg->duration_s),
             peer.trajectory.duration_s()))
@@ -590,10 +631,18 @@ void EgoSwarmPlannerNode::trajectory_cb(
 void EgoSwarmPlannerNode::planner_loop_cb()
 {
     const rclcpp::Time now = this->now();
+    const double now_s = now.seconds();
+    if (!std::isfinite(now_s))
+    {
+        publish_status(PLANNER_STATE_HOLD, "Planner time unavailable",
+                       nullptr, false, false, now);
+        return;
+    }
+    (void)peer_trajectories_.prune(now_s);
     if (!has_own_state_ || !update_swarm_frame())
     {
         publish_status(PLANNER_STATE_HOLD, "GPS common frame unavailable",
-                       nullptr, false, !peers_.empty(), now);
+                       nullptr, false, peer_trajectories_.has_fresh(now_s), now);
         return;
     }
 
@@ -605,7 +654,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_status(
             PLANNER_STATE_HOLD,
             "No mission target; BasicController keeps its hold setpoint",
-            nullptr, true, !peers_.empty(), now);
+            nullptr, true, peer_trajectories_.has_fresh(now_s), now);
         return;
     }
 
@@ -613,7 +662,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     if (!get_position_in_swarm_frame(own_state_, current))
     {
         publish_status(PLANNER_STATE_HOLD, "Own GPS position unavailable",
-                       nullptr, false, !peers_.empty(), now);
+                       nullptr, false, peer_trajectories_.has_fresh(now_s), now);
         return;
     }
 
@@ -673,13 +722,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_status(
             active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
             active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
-            &active_plan_, true, !peers_.empty(), now);
+            &active_plan_, true, peer_trajectories_.has_fresh(now_s), now);
         return;
     }
 
     const auto result = planner_.plan(
         current, target, obstacle_points_, peer_trajectories_,
-        now.seconds(), agent_index_, preserve_altitude);
+        now_s, agent_index_, preserve_altitude);
     active_plan_ = result;
     active_plan_target_ = target;
     active_plan_start_time_ = now;
@@ -691,7 +740,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     publish_status(
         active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
         active_plan_.is_hold ? "No safe candidate; holding position" : "ok",
-        &active_plan_, true, !peers_.empty(), now);
+        &active_plan_, true, peer_trajectories_.has_fresh(now_s), now);
 }
 
 void EgoSwarmPlannerNode::scan_peers_cb()
@@ -726,6 +775,7 @@ void EgoSwarmPlannerNode::scan_peers_cb()
         if (discovered.find(iterator->first) == discovered.end())
         {
             peers_.erase(iterator->first);
+            peer_trajectories_.erase(iterator->first);
             iterator = peer_subscriptions_.erase(iterator);
         }
         else
@@ -777,11 +827,7 @@ bool EgoSwarmPlannerNode::update_swarm_frame()
 
     frame_origin_ = origin;
     frame_origin_agent_index_ = swarm_origin_agent_index_;
-    ++frame_revision_;
-    if (frame_revision_ == 0U)
-    {
-        frame_revision_ = 1U;
-    }
+    frame_revision_ = swarm_frame_.frame_revision();
     RCLCPP_INFO(
         get_logger(),
         "Selected and froze Agent %d as swarm_ned frame origin, revision=%u",

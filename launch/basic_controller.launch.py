@@ -148,6 +148,10 @@ def launch_nodes(context, *args, **kwargs):
                 {"agent_index": i},
                 {"swarm_origin_agent_index": LaunchConfiguration(
                     "swarm_origin_agent_index")},
+                {"peer_trajectory_timeout_s": LaunchConfiguration(
+                    "peer_trajectory_timeout_s")},
+                {"max_peer_time_skew_s": LaunchConfiguration(
+                    "max_peer_time_skew_s")},
                 {"planning_rate_hz": LaunchConfiguration(
                     "planning_rate_hz")},
                 {"formation_min_distance_m": LaunchConfiguration(
@@ -248,6 +252,14 @@ def generate_launch_description():
             "swarm_origin_agent_index",
             default_value="1",
             description="固定 swarm_ned 原點的 Agent 索引"),
+        DeclareLaunchArgument(
+            "peer_trajectory_timeout_s",
+            default_value="1.0",
+            description="同儕未來軌跡 freshness timeout（秒）"),
+        DeclareLaunchArgument(
+            "max_peer_time_skew_s",
+            default_value="0.5",
+            description="同儕軌跡時間戳允許的最大時鐘偏差（秒）"),
         DeclareLaunchArgument(
             "formation_min_distance_m",
             default_value="3.0",

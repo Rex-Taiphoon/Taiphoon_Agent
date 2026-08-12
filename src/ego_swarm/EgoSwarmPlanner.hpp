@@ -128,14 +128,14 @@ public:
     /**
      * @brief 產生一條避開障礙物與同儕未來軌跡的局部軌跡
      *
-     * 短暫缺少同儕新資料時，table 提供的最後有效 B-spline 會原樣
-     * 參與評估；此處不依資料年齡修改 peer_collision_min_distance_m。
+     * 只有 table 判定為 ACTIVE 的同儕軌跡會參與評估；資料逾時或
+     * trajectory 結束後不會把最後 endpoint 當成仍存在的 peer。
      * 若所有候選都不安全，回傳有限值 hold 軌跡並將 is_valid 設為 false。
      *
      * @param current_position 目前機體中心的 swarm_ned 位置
      * @param target_position 編隊槽位或任務目標的 swarm_ned 位置
      * @param obstacle_points PointCloud2 轉換後的障礙物點
-     * @param peer_table 最後有效同儕軌跡表
+     * @param peer_table 同儕軌跡生命週期表
      * @param now_s 目前共同時間，單位為秒
      * @param self_agent_id 自身 Agent ID，用於排除自身軌跡
      * @param preserve_altitude true 時只產生固定 Z 的水平候選
@@ -463,7 +463,7 @@ private:
         }
 
         std::vector<PeerTrajectory> peers;
-        peer_table.get_all(peers);
+        peer_table.get_active(now_s, peers);
         peers.erase(
             std::remove_if(
                 peers.begin(),
@@ -656,8 +656,18 @@ private:
             {
                 continue;
             }
+            const double absolute_sample_time_s = now_s + sample_time_s;
+            if (!is_finite(absolute_sample_time_s))
+            {
+                return false;
+            }
+            if (absolute_sample_time_s > peer.end_time_s +
+                EGO_SWARM_EPSILON_M)
+            {
+                continue;
+            }
             const double peer_relative_time = std::max(
-                0.0, now_s + sample_time_s - peer.start_time_s);
+                0.0, absolute_sample_time_s - peer.start_time_s);
             const TrajectorySample peer_sample =
                 peer.trajectory.evaluate(peer_relative_time);
             if (!peer_sample.is_valid)

@@ -82,13 +82,13 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、GPS common frame、PointCloud2 與同儕未來軌跡，輸出本機軌跡。 |
-| **參數** | `agent_namespace`、`agent_index`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
+| **參數** | `agent_namespace`、`agent_index`、`swarm_origin_agent_index`、`peer_trajectory_timeout_s`、`max_peer_time_skew_s`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
 
 **內部組件**：
 - `SwarmFrame`：共同 GPS／NED 座標框架
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalObstacleMap`：PointCloud2 局部障礙物資料處理
-- `PeerTrajectoryTable`：同儕未來軌跡保存
+- `PeerTrajectoryTable`：同儕未來軌跡保存、timestamp sanity、freshness 與 expiration；只有 ACTIVE 軌跡參與 planner，trajectory 結束後不把 endpoint 當成仍存在的 peer
 - `EgoSwarmPlanner`：deterministic candidate baseline 局部軌跡成本與安全評估；不宣稱完整原始 EGO-Swarm nonlinear optimizer
 
 **實際參數**：
@@ -98,6 +98,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
 | `agent_index` | `int` | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
 | `swarm_origin_agent_index` | `int` | `1` | 固定 `swarm_ned` 原點的 Agent 索引；等待其有效 GPS，建立後 freeze |
+| `peer_trajectory_timeout_s` | `double` | `1.0` | 同儕 `AgentTrajectory` 收到後可供 planner 使用的最長時間；逾時後標記為 stale |
+| `max_peer_time_skew_s` | `double` | `0.5` | `AgentTrajectory` message／start time 與本機 receive time 允許的最大共同時間偏差 |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |

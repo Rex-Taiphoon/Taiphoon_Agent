@@ -5,12 +5,13 @@
  * @date 2026-08-10
  *
  * 測試核心模組的 GPS 共同座標、非連續 Agent ID 槽位、B-spline、
- * 最後有效軌跡、機體中心距離與 deterministic 候選規劃行為。
+ * 同儕軌跡生命週期、機體中心距離與 deterministic 候選規劃行為。
  */
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -33,6 +34,7 @@ using taiphoon::ego_swarm::FormationSlotPlanner;
 using taiphoon::ego_swarm::FormationType;
 using taiphoon::ego_swarm::GeoCoordinate;
 using taiphoon::ego_swarm::PeerTrajectory;
+using taiphoon::ego_swarm::PeerTrajectoryStatus;
 using taiphoon::ego_swarm::PeerTrajectoryTable;
 using taiphoon::ego_swarm::PlannerConfig;
 using taiphoon::ego_swarm::SwarmFrame;
@@ -53,6 +55,25 @@ BsplineTrajectory make_test_trajectory(const double start_x)
         Vector3{start_x, 1.0, 0.0},
         Vector3{start_x, 2.0, 0.0}};
     return BsplineTrajectory(control_points, 1.0);
+}
+
+PeerTrajectory make_peer_trajectory(
+    const int agent_id,
+    const uint32_t trajectory_id,
+    const double start_time_s,
+    const double receive_time_s,
+    const double start_x)
+{
+    PeerTrajectory peer;
+    peer.agent_id = agent_id;
+    peer.trajectory_id = trajectory_id;
+    peer.frame_revision = 1U;
+    peer.message_time_s = receive_time_s;
+    peer.start_time_s = start_time_s;
+    peer.receive_time_s = receive_time_s;
+    peer.trajectory = make_test_trajectory(start_x);
+    peer.end_time_s = peer.start_time_s + peer.trajectory.duration_s();
+    return peer;
 }
 
 TEST(SwarmFrameTest, ConvertsGpsToCommonNed)
@@ -93,6 +114,33 @@ TEST(SwarmFrameTest, RejectsDifferentFrameOrigins)
         origin, compatible_origin));
     EXPECT_FALSE(SwarmFrame::are_origins_compatible(
         origin, different_origin));
+}
+
+TEST(SwarmFrameTest, FreezesOriginAndRevision)
+{
+    SwarmFrame frame;
+    const GeoCoordinate origin{25.0, 121.0, 100.0};
+    const GeoCoordinate different_origin{25.0001, 121.0, 100.0};
+
+    ASSERT_TRUE(frame.set_origin(origin));
+    EXPECT_TRUE(frame.has_origin());
+    EXPECT_EQ(frame.frame_revision(), 1U);
+    EXPECT_FALSE(frame.set_origin(different_origin));
+    EXPECT_TRUE(SwarmFrame::are_origins_compatible(frame.origin(), origin));
+    EXPECT_EQ(frame.frame_revision(), 1U);
+}
+
+TEST(SwarmFrameTest, DoesNotInventOriginWhenOriginIsUnavailable)
+{
+    SwarmFrame frame;
+    Vector3 ned{1.0, 2.0, 3.0};
+
+    EXPECT_FALSE(frame.has_origin());
+    EXPECT_EQ(frame.frame_revision(), 0U);
+    EXPECT_FALSE(frame.to_swarm_ned(
+        GeoCoordinate{25.0, 121.0, 100.0}, ned));
+    const Vector3 zero{0.0, 0.0, 0.0};
+    EXPECT_EQ(ned, zero);
 }
 
 TEST(FormationSlotPlannerTest, SupportsNonContiguousAgentIds)
@@ -286,10 +334,7 @@ TEST(BsplineTrajectoryTest, ClampsEvaluationTimeToFiniteEndpoints)
 TEST(PeerTrajectoryTableTest, PreservesLastValidTrajectory)
 {
     PeerTrajectoryTable table;
-    PeerTrajectory first;
-    first.agent_id = 17;
-    first.start_time_s = 10.0;
-    first.trajectory = make_test_trajectory(2.0);
+    PeerTrajectory first = make_peer_trajectory(17, 1U, 10.0, 10.0, 2.0);
     ASSERT_TRUE(table.update(first));
 
     PeerTrajectory result;
@@ -308,6 +353,70 @@ TEST(PeerTrajectoryTableTest, PreservesLastValidTrajectory)
         2.0,
         1.0e-9);
     EXPECT_FALSE(table.get_last_valid(99, result));
+}
+
+TEST(PeerTrajectoryTableTest, DistinguishesActiveStaleMissingAndInvalid)
+{
+    PeerTrajectoryTable table;
+    const PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 2.0);
+    ASSERT_TRUE(table.update(peer));
+
+    EXPECT_EQ(table.get_status(2, 0.5), PeerTrajectoryStatus::ACTIVE);
+    EXPECT_TRUE(table.is_fresh(2, 0.5));
+    EXPECT_EQ(table.get_status(2, 2.0), PeerTrajectoryStatus::STALE);
+    EXPECT_FALSE(table.is_fresh(2, 2.0));
+    EXPECT_EQ(table.get_status(99, 0.0), PeerTrajectoryStatus::MISSING);
+
+    PeerTrajectory invalid = peer;
+    invalid.agent_id = 3;
+    invalid.start_time_s = 10.0;
+    invalid.receive_time_s = 0.0;
+    invalid.message_time_s = 0.0;
+    invalid.end_time_s = invalid.start_time_s +
+        invalid.trajectory.duration_s();
+    EXPECT_FALSE(table.update(invalid));
+    EXPECT_EQ(table.get_status(3, 0.0), PeerTrajectoryStatus::INVALID);
+}
+
+TEST(PeerTrajectoryTableTest, PruneTurnsExpiredPeerIntoMissing)
+{
+    PeerTrajectoryTable table;
+    ASSERT_TRUE(table.update(
+        make_peer_trajectory(2, 1U, 0.0, 0.0, 2.0)));
+
+    EXPECT_EQ(table.prune(2.0), 1U);
+    EXPECT_EQ(table.get_status(2, 2.0), PeerTrajectoryStatus::MISSING);
+    EXPECT_FALSE(table.contains(2));
+}
+
+TEST(PeerTrajectoryTableTest, RejectsFutureAndReplayedTrajectory)
+{
+    PeerTrajectoryTable table;
+    PeerTrajectory future = make_peer_trajectory(2, 1U, 2.0, 0.0, 2.0);
+    EXPECT_FALSE(table.update(future));
+    EXPECT_EQ(table.get_status(2, 0.0), PeerTrajectoryStatus::INVALID);
+
+    ASSERT_TRUE(table.update(
+        make_peer_trajectory(2, 4U, 0.0, 0.0, 2.0)));
+    PeerTrajectory replay = make_peer_trajectory(2, 3U, 0.0, 0.1, 2.0);
+    EXPECT_FALSE(table.update(replay));
+    PeerTrajectory active;
+    ASSERT_TRUE(table.get_fresh(2, 0.1, active));
+    EXPECT_EQ(active.trajectory_id, 4U);
+}
+
+TEST(PeerTrajectoryTableTest, AllowsNewTrajectorySequenceAfterPeerErase)
+{
+    PeerTrajectoryTable table;
+    ASSERT_TRUE(table.update(
+        make_peer_trajectory(2, 4U, 0.0, 0.0, 2.0)));
+    ASSERT_TRUE(table.erase(2));
+
+    EXPECT_TRUE(table.update(
+        make_peer_trajectory(2, 1U, 0.0, 0.0, 3.0)));
+    PeerTrajectory active;
+    ASSERT_TRUE(table.get_fresh(2, 0.0, active));
+    EXPECT_EQ(active.trajectory_id, 1U);
 }
 
 TEST(EgoSwarmGeometryTest, UsesDirectCenterToCenterDistance)
@@ -349,11 +458,7 @@ TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
     EgoSwarmPlanner planner(config);
     PeerTrajectoryTable peers;
 
-    PeerTrajectory peer;
-    peer.agent_id = 2;
-    peer.start_time_s = 0.0;
-    peer.trajectory = BsplineTrajectory(
-        std::vector<Vector3>(4U, Vector3{0.0, 0.0, 0.0}), 1.0);
+    PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 0.0);
     ASSERT_TRUE(peers.update(peer));
 
     const auto result = planner.plan(
@@ -368,6 +473,21 @@ TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
     EXPECT_TRUE(result.is_hold);
     EXPECT_TRUE(result.trajectory.is_valid());
     EXPECT_TRUE(result.has_finite_output());
+}
+
+TEST(EgoSwarmPlannerTest, DoesNotUsePeerEndpointAfterTrajectoryEnd)
+{
+    EgoSwarmPlanner planner;
+    PeerTrajectoryTable peers;
+    const PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 10.0);
+    ASSERT_TRUE(peers.update(peer));
+
+    const auto result = planner.plan(
+        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, {}, peers,
+        0.0, 1);
+
+    EXPECT_TRUE(result.is_valid);
+    EXPECT_FALSE(result.is_hold);
 }
 
 TEST(EgoSwarmPlannerTest, EmptyObstacleInputIsAcceptedAsCurrentBaseline)

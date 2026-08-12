@@ -569,6 +569,8 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
 | `agent_index` | int | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
 | `swarm_origin_agent_index` | int | `1` | 固定 `swarm_ned` 原點的 Agent 索引；尚未取得該 Agent 有效 GPS 前保持 HOLD，原點建立後不再切換 |
+| `peer_trajectory_timeout_s` | double | `1.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
+| `max_peer_time_skew_s` | double | `0.5` | 同儕軌跡 message／start time 與本機 receive time 允許的最大時間偏差 |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | double | `3.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
 | `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
@@ -586,6 +588,9 @@ EGO-Swarm 會依候選路徑長度、最大速度與最大加速度計算每條 
 planning cycle 重置進度。Planner 同時檢查 PX4 local NED 與 GPS common NED；兩者都在
 容許誤差內才視為到達。到達後發布一次目標位置 hold trajectory，清除任務並停止產生
 新的移動軌跡；沒有移動或編隊目標時，BasicController 維持 finite hold setpoint。
+同儕 `AgentTrajectory` 另受 `peer_trajectory_timeout_s`、`max_peer_time_skew_s`、
+軌跡 `end_time` 與 `frame_revision` 約束；只有 ACTIVE 資料參與 peer collision
+評估，逾時或結束後不會永久使用最後一個控制點。
 
 ### ObstacleCloudSimulator 實際參數
 
