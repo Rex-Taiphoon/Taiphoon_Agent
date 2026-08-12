@@ -230,6 +230,17 @@ public:
     bool rotate_yaw(float degrees) override;
 
     /**
+     * @brief 設定絕對偏航角，不改變目前的位置目標
+     *
+     * 供 MOVE_POINT 的 yaw 欄位使用；與 rotate_yaw() 的相對角度
+     * 語意不同。PX4 NED yaw 以順時針為正。
+     *
+     * @param degrees 絕對偏航角 (度)
+     * @return true 目標設定成功
+     */
+    bool set_absolute_yaw(float degrees);
+
+    /**
      * @brief 設定 NED 絕對座標目標位置與航向
      *
      * 直接寫入目標 NED 位置，控制器持續發布 TrajectorySetpoint
@@ -294,7 +305,8 @@ public:
      *
      * @param sample_time 取樣時間
      * @param position 輸出的 NED 位置
-     * @return 取樣結果；只有 VALID 時 position 才是軌跡取樣結果
+     * @return 取樣結果；VALID 時 position 是軌跡取樣結果，EXPIRED 時
+     *         position 是最後控制點，供到達目標後固定 hold 使用
      */
     TimedTrajectorySampleResult sample_timed_trajectory(
         const rclcpp::Time& sample_time,

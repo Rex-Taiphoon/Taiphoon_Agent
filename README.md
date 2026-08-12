@@ -39,7 +39,7 @@ docker compose exec fmu1_agent bash -c \
    colcon build --symlink-install --packages-select taiphoon_agent"
 
 # 7. 快速起飛（使用 CycloneDDS）
-bash AutoTest/quick_takeoff.sh
+bash AutoTest/scripts/quick_takeoff.sh
 ```
 
 > **實機模式**：加上 `--profile hw` 啟動 uXRCE-DDS Agent 常駐服務。
@@ -275,7 +275,7 @@ docker exec fmu1_agent bash -c "
     /fmu_all_agent/command std_msgs/msg/String 'data: MOVE_UP 5'"
 ```
 
-> 也可直接執行一鍵腳本：`bash AutoTest/quick_takeoff.sh`
+> 也可直接執行一鍵腳本：`bash AutoTest/scripts/quick_takeoff.sh`
 
 ---
 
@@ -466,8 +466,8 @@ EGO planner Subscriber 均使用 best_effort QoS depth 10。
 | `MOVE_RIGHT` | 向右移動 | 距離 (m) | `MOVE_RIGHT 3` |
 | `MOVE_UP` | 向上移動 | 距離 (m) | `MOVE_UP 5` |
 | `MOVE_DOWN` | 向下移動 | 距離 (m) | `MOVE_DOWN 2` |
-| `YAW` | 順時針旋轉 | 角度 (°) | `YAW 90` |
-| `MOVE_POINT` | 移動至指定 NED 絕對位置 | x y z yaw | `MOVE_POINT 10 5 -15 90` |
+| `YAW` | 以目前航向為基準順時針旋轉（直接由 BasicController 發布 PX4 yaw） | 相對角度 (°) | `YAW 90` |
+| `MOVE_POINT` | 移動至指定 NED 絕對位置並設定絕對航向 | x y z yaw | `MOVE_POINT 10 5 -15 90` |
 
 ### 編隊命令
 
@@ -516,6 +516,15 @@ std_msgs/msg/String
 QoS: reliable, depth 10
 ```
 
+`/{agent_namespace}/command` 的 `MOVE_*` 與 `MOVE_POINT` 位置欄位會由 EGO-Swarm
+Planner 接收並轉換成目標；`MODE_*`、`ARM`、`TAKEOFF`、`LAND`、`YAW` 仍只由
+BasicController 執行。`MOVE_POINT` 的 yaw 欄位也由 BasicController 直接設定為
+PX4 絕對 yaw，避免 Planner 忽略航向欄位。
+
+到達目標後，Planner 會以目標座標填滿固定 hold B-spline，並發布
+`No mission target; BasicController keeps its hold setpoint`。軌跡逾時後，
+BasicController 仍鎖定最後控制點，不會改用漂移中的即時 odometry 作為新目標。
+
 ```bash
 # 手動發布 NED 目標（Debug）
 ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
@@ -559,14 +568,24 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 |------|------|--------|------|
 | `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
 | `agent_index` | int | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
+| `swarm_origin_agent_index` | int | `1` | 固定 `swarm_ned` 原點的 Agent 索引；尚未取得該 Agent 有效 GPS 前保持 HOLD，原點建立後不再切換 |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | double | `3.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
 | `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
 | `obstacle_clearance_m` | double | `1.0` | EGO-Swarm 與局部障礙物的安全間距 |
-| `knot_interval_s` | double | `1.0` | B-spline knot 間隔 |
+| `knot_interval_s` | double | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由 EGO-Swarm 依候選路徑長度與限制計算 |
+| `max_velocity_m_s` | double | `2.0` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
+| `max_acceleration_m_s2` | double | `1.0` | EGO-Swarm 計算軌跡 duration 使用的最大加速度（公尺/秒^2） |
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
+| `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
+| `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |
 
 目前核心是 deterministic candidate baseline，並非完整原始 EGO-Swarm nonlinear optimizer。
+EGO-Swarm 會依候選路徑長度、最大速度與最大加速度計算每條 B-spline 的 duration。
+同一條 active trajectory 在執行期間保留原始 `start_time` 與 `trajectory_id`，不會每個
+planning cycle 重置進度。Planner 同時檢查 PX4 local NED 與 GPS common NED；兩者都在
+容許誤差內才視為到達。到達後發布一次目標位置 hold trajectory，清除任務並停止產生
+新的移動軌跡；沒有移動或編隊目標時，BasicController 維持 finite hold setpoint。
 
 ### ObstacleCloudSimulator 實際參數
 

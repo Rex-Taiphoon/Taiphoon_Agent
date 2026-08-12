@@ -852,8 +852,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::YAW:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "YAW " + std::to_string(cmd.param_value));
+                // YAW 是 BasicController 的相對偏航命令，不是位置規劃
+                // 目標；直接更新 PX4 TrajectorySetpoint 的 yaw。
+                result = controller_->rotate_yaw(cmd.param_value);
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -863,11 +864,15 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_POINT:
             if (cmd.has_multi_params)
             {
+                // MOVE_POINT 的位置交由 Planner 產生軌跡；yaw 是絕對
+                // 航向，直接交由 BasicController 保留並發布給 PX4。
+                const bool yaw_result = controller_->set_absolute_yaw(
+                    cmd.param4);
                 std::ostringstream stream;
                 stream << "MOVE_POINT " << cmd.param_value << " "
                        << cmd.param2 << " " << cmd.param3 << " "
                        << cmd.param4;
-                result = publish_mission_intent(stream.str());
+                result = yaw_result && publish_mission_intent(stream.str());
             }
             else
                 RCLCPP_WARN(this->get_logger(),

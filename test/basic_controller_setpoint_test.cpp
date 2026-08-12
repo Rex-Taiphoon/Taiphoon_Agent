@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -107,6 +108,23 @@ protected:
         return odometry;
     }
 
+    /**
+     * @brief 建立含指定偏航角的 NED 里程計
+     * @param x NED X（公尺）
+     * @param y NED Y（公尺）
+     * @param z NED Z（公尺）
+     * @param yaw_rad 偏航角（弧度）
+     * @return 含指定偏航角的 VehicleOdometry
+     */
+    px4_msgs::msg::VehicleOdometry make_odometry_with_yaw(
+        float x, float y, float z, float yaw_rad) const
+    {
+        auto odometry = make_odometry(x, y, z);
+        odometry.q[0] = std::cos(yaw_rad * 0.5F);
+        odometry.q[3] = std::sin(yaw_rad * 0.5F);
+        return odometry;
+    }
+
     /** @brief 發布控制命令直到測試訂閱者收到第一筆設定點 */
     void publish_until_setpoint_received()
     {
@@ -160,6 +178,37 @@ TEST_F(BasicControllerSetpointTest, HoldPositionLocksAllAxesAgainstOdometryDrift
     EXPECT_NEAR(latest_setpoint_.position[0], 3.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       RelativeYawStartsFromCurrentHeadingAndUsesNedClockwisePositive)
+{
+    constexpr float PI = 3.14159265358979323846F;
+    constexpr float INITIAL_YAW_RAD = 30.0F * PI / 180.0F;
+    constexpr float EXPECTED_YAW_RAD = 120.0F * PI / 180.0F;
+
+    controller_->update_odometry(make_odometry_with_yaw(
+        3.0F, 4.0F, -5.0F, INITIAL_YAW_RAD));
+    ASSERT_TRUE(controller_->hold_position(2.0F));
+    ASSERT_TRUE(controller_->rotate_yaw(90.0F));
+
+    publish_until_setpoint_received();
+
+    EXPECT_NEAR(latest_setpoint_.yaw, EXPECTED_YAW_RAD, 1.0e-5F);
+}
+
+TEST_F(BasicControllerSetpointTest, AbsoluteYawSetsMovePointHeading)
+{
+    constexpr float PI = 3.14159265358979323846F;
+    constexpr float EXPECTED_YAW_RAD = -160.0F * PI / 180.0F;
+
+    controller_->update_odometry(make_odometry(3.0F, 4.0F, -5.0F));
+    ASSERT_TRUE(controller_->hold_position(2.0F));
+    ASSERT_TRUE(controller_->set_absolute_yaw(200.0F));
+
+    publish_until_setpoint_received();
+
+    EXPECT_NEAR(latest_setpoint_.yaw, EXPECTED_YAW_RAD, 1.0e-5F);
 }
 
 TEST_F(BasicControllerSetpointTest,

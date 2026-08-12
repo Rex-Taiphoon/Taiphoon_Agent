@@ -650,18 +650,63 @@ bool BasicController::rotate_yaw(float degrees)
         return false;
     }
 
-    constexpr float DEG_TO_RAD = 3.14159265358979323846F / 180.0F;
-    float delta_rad = degrees * DEG_TO_RAD;
+    constexpr float PI = 3.14159265358979323846F;
+    constexpr float TWO_PI = 2.0F * PI;
+    constexpr float DEG_TO_RAD = PI / 180.0F;
+    const float delta_rad = degrees * DEG_TO_RAD;
 
-    if (std::isnan(target_yaw_rad_))
+    // YAW 為相對目前航向的命令。PX4 NED yaw 的正方向是順時針，
+    // 與 move_forward/move_right 使用的 NED 幾何一致，因此使用 +=。
+    if (!utils::is_valid_float(target_yaw_rad_))
     {
-        target_yaw_rad_ = 0.0F;
+        target_yaw_rad_ = current_yaw_rad_.load();
+        if (!utils::is_valid_float(target_yaw_rad_))
+        {
+            target_yaw_rad_ = 0.0F;
+        }
     }
-    target_yaw_rad_ -= delta_rad;
+    target_yaw_rad_ += delta_rad;
+    target_yaw_rad_ = std::fmod(target_yaw_rad_ + PI, TWO_PI);
+    if (target_yaw_rad_ < 0.0F)
+    {
+        target_yaw_rad_ += TWO_PI;
+    }
+    target_yaw_rad_ -= PI;
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
                 degrees, target_yaw_rad_ / DEG_TO_RAD, target_system_);
+    return true;
+}
+
+bool BasicController::set_absolute_yaw(float degrees)
+{
+    if (!is_initialized_.load())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Cannot set absolute yaw: not initialized");
+        return false;
+    }
+    if (!utils::is_valid_float(degrees))
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Absolute yaw angle invalid (NaN or Inf)");
+        return false;
+    }
+
+    constexpr float PI = 3.14159265358979323846F;
+    constexpr float TWO_PI = 2.0F * PI;
+    constexpr float DEG_TO_RAD = PI / 180.0F;
+    target_yaw_rad_ = std::fmod(degrees * DEG_TO_RAD + PI, TWO_PI);
+    if (target_yaw_rad_ < 0.0F)
+    {
+        target_yaw_rad_ += TWO_PI;
+    }
+    target_yaw_rad_ -= PI;
+
+    RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                "Absolute yaw target %.1f deg (target_system=%d)",
+                target_yaw_rad_ / DEG_TO_RAD, target_system_);
     return true;
 }
 
@@ -687,8 +732,7 @@ bool BasicController::set_ned_target(float x, float y, float z, float yaw_deg)
 
     if (!std::isnan(yaw_deg) && utils::is_valid_float(yaw_deg))
     {
-        constexpr float DEG_TO_RAD = 3.14159265358979323846F / 180.0F;
-        target_yaw_rad_ = yaw_deg * DEG_TO_RAD;
+        (void)set_absolute_yaw(yaw_deg);
     }
 
     flight_state_.store(FlightState::MOVING);
@@ -885,7 +929,8 @@ void BasicController::publish_control_commands()
 
     // 只有收到定時軌跡時才覆寫 MOVING/HOVER 的狀態機目標；沒有軌跡時
     // 保留原有狀態機語意。軌跡尚未開始、取樣失敗、座標版本切換或超出
-    // duration 時，送出目前位置的有限 hold setpoint。
+    // duration 尚未開始或取樣失敗時，送出有限 hold setpoint；軌跡
+    // 已逾時時則由 sample_timed_trajectory 提供其固定端點。
     if (current_state == FlightState::MOVING ||
         current_state == FlightState::HOVER)
     {
@@ -900,7 +945,7 @@ void BasicController::publish_control_commands()
                     rclcpp::get_logger("BasicController"), *node_->get_clock(),
                     2000,
                     "Timed trajectory unavailable (result=%d); "
-                    "holding current position",
+                    "holding the safe trajectory fallback",
                     static_cast<int>(sample_result));
             }
 
@@ -1064,6 +1109,9 @@ TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
     }
     if (elapsed_s > static_cast<double>(trajectory.duration_s))
     {
+        // 逾時後不可回退到 current_position_ned_，否則到達目標後的
+        // setpoint 會追著 odometry 漂移。以最後控制點作為永久 hold。
+        position = trajectory.control_points.back();
         return TimedTrajectorySampleResult::EXPIRED;
     }
 

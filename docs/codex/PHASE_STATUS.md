@@ -37,7 +37,8 @@ Accepted
 ## Known Risks
 
 - `PeerTrajectoryTable` 目前沒有 receive time、expiration 或 stale 狀態；留待 Phase 1。
-- `SwarmFrame` 目前可在 origin Agent 不可用時改選新 origin；origin freeze 留待 Phase 1。
+- `SwarmFrame` 的 frame freeze 由 planner node 以 `swarm_origin_agent_index`
+  （預設 1）實作：等待指定 origin 的有效 GPS，建立後不因移動或離線改選新 origin。
 - 尚未收到 obstacle cloud 時 planner 仍把空列表當成無障礙物；freshness／require policy 留待 Phase 2。
 - synthetic sensor pose 目前固定在 `(0, 0, 0)`，尚未跟隨 UAV；留待 Phase 2。
 - B-spline 尚未提供 analytic p/v/a/j derivative，PX4 feed-forward 留待 Phase 3。

@@ -19,6 +19,10 @@ networks:
 
 x-agent-defaults: &agent-defaults
   image: taiphoon-agent:dev
+  # 開發容器以 bind mount 的目前 entrypoint 為準，避免沿用 image 建置時
+  # 可能已過期的 /home/taiphoon/entrypoint.sh。
+  entrypoint:
+    - /home/taiphoon/Taiphoon_Agent/docker/entrypoint.sh
   user: taiphoon
   working_dir: /home/taiphoon/Taiphoon_Agent
   networks:

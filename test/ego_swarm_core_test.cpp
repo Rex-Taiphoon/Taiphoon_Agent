@@ -19,6 +19,7 @@
 #include "ego_swarm/EgoSwarmTypes.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 
 namespace
@@ -156,6 +157,82 @@ TEST(BsplineTrajectoryTest, EvaluatesEndpointsAndFiniteValues)
     EXPECT_NEAR(end.position.at(0), 3.0, 1.0e-9);
     EXPECT_TRUE(std::isfinite(middle.position.at(0)));
     EXPECT_TRUE(std::isfinite(middle.position.at(1)));
+}
+
+TEST(EgoSwarmPlannerTest, DurationScalesWithDistance)
+{
+    PlannerConfig config;
+    config.knot_interval_s = 1.0;
+    config.max_velocity_m_s = 2.0;
+    config.max_acceleration_m_s2 = 1.0;
+    config.candidate_offset_m = 0.0;
+    EgoSwarmPlanner planner(config);
+    PeerTrajectoryTable peers;
+
+    const auto short_plan = planner.plan(
+        Vector3{0.0, 0.0, 0.0}, Vector3{1.0, 0.0, 0.0}, {}, peers,
+        0.0, 1, true);
+    const auto long_plan = planner.plan(
+        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, {}, peers,
+        0.0, 1, true);
+
+    ASSERT_TRUE(short_plan.trajectory.is_valid());
+    ASSERT_TRUE(long_plan.trajectory.is_valid());
+    EXPECT_NEAR(short_plan.trajectory.duration_s(), 3.0, 1.0e-9);
+    EXPECT_GT(long_plan.trajectory.duration_s(),
+              short_plan.trajectory.duration_s());
+    EXPECT_GE(long_plan.trajectory.duration_s(), 5.0);
+    EXPECT_GE(long_plan.trajectory.duration_s(),
+              2.0 * std::sqrt(10.0));
+}
+
+TEST(EgoSwarmPlannerTest, ExactHoldLocksEveryControlPointToTarget)
+{
+    PlannerConfig config;
+    config.knot_interval_s = 0.5;
+    config.control_point_count = 6U;
+    EgoSwarmPlanner planner(config);
+
+    const Vector3 target{12.345678, -6.789012, -15.25};
+    const auto result = planner.make_exact_hold_result(target);
+
+    ASSERT_TRUE(result.is_valid);
+    ASSERT_TRUE(result.is_hold);
+    ASSERT_TRUE(result.trajectory.is_valid());
+    ASSERT_EQ(result.trajectory.control_points().size(), 6U);
+    for (const auto& point : result.trajectory.control_points())
+    {
+        EXPECT_NEAR(point.at(0), target.at(0), 1.0e-12);
+        EXPECT_NEAR(point.at(1), target.at(1), 1.0e-12);
+        EXPECT_NEAR(point.at(2), target.at(2), 1.0e-12);
+    }
+}
+
+TEST(PositionArrivalTest, RequiresLocalAndGlobalPositions)
+{
+    const Vector3 current_local{10.0, 20.0, -5.0};
+    const Vector3 target_local{10.2, 20.2, -5.1};
+    const Vector3 current_global{1.0, 2.0, 3.0};
+    const Vector3 target_global{1.2, 2.2, 3.1};
+
+    const auto reached = taiphoon::ego_swarm::evaluate_position_arrival(
+        current_local, target_local, current_global, target_global,
+        0.5, 0.5);
+    EXPECT_TRUE(reached.local_valid);
+    EXPECT_TRUE(reached.global_valid);
+    EXPECT_TRUE(reached.reached);
+
+    const auto local_missed =
+        taiphoon::ego_swarm::evaluate_position_arrival(
+            Vector3{11.0, 20.0, -5.0}, target_local,
+            current_global, target_global, 0.5, 0.5);
+    EXPECT_FALSE(local_missed.reached);
+
+    const auto global_missed =
+        taiphoon::ego_swarm::evaluate_position_arrival(
+            current_local, target_local,
+            Vector3{2.0, 2.0, 3.0}, target_global, 0.5, 0.5);
+    EXPECT_FALSE(global_missed.reached);
 }
 
 TEST(BsplineTrajectoryTest, RejectsNonFiniteControlPoint)
@@ -310,6 +387,24 @@ TEST(EgoSwarmPlannerTest, EmptyObstacleInputIsAcceptedAsCurrentBaseline)
     EXPECT_FALSE(result.is_hold);
     EXPECT_DOUBLE_EQ(result.minimum_obstacle_distance_m, 0.0);
     EXPECT_TRUE(result.has_finite_output());
+}
+
+TEST(EgoSwarmPlannerTest, HorizontalPlanPreservesAltitude)
+{
+    EgoSwarmPlanner planner;
+    PeerTrajectoryTable peers;
+    const Vector3 current{0.0, 0.0, -8.0};
+    const Vector3 target{0.0, -15.0, -8.0};
+
+    const auto result = planner.plan(
+        current, target, {}, peers, 0.0, 1, true);
+
+    ASSERT_TRUE(result.is_valid);
+    ASSERT_FALSE(result.is_hold);
+    for (const Vector3& point : result.trajectory.control_points())
+    {
+        EXPECT_NEAR(point.at(2), -8.0, 1.0e-9);
+    }
 }
 
 }  // namespace

@@ -28,8 +28,9 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 ### `BsplineTrajectory`
 
 - 僅接受至少四個有限控制點與正的 knot interval。
-- 使用均勻 clamped cubic B-spline；duration 為
-  `(control_point_count - 3) * knot_interval_s`。
+- 使用均勻 clamped cubic B-spline；`knot_interval_s` 是最小基準 knot
+  間隔，實際 duration 由候選路徑長度、`max_velocity_m_s` 與
+  `max_acceleration_m_s2` 計算。
 - `evaluate()` 對有限的負時間與超過 duration 的時間夾到兩端點。
 - 無效軌跡或非有限取樣時間回傳 `is_valid == false`。
 - Phase 0 未加入 velocity、acceleration 或 jerk derivative。
@@ -71,9 +72,9 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 
 ### `EgoSwarmPlannerNode`
 
-- 啟動時以最低可用 Agent ID 選擇共同 frame origin；若目前 origin 仍有有效
-  GPS，planner loop 會保留它。origin 消失時目前實作可能改選另一個 Agent 並
-  增加 frame revision。
+- 依 `swarm_origin_agent_index`（預設 Agent 1）等待指定 origin 的有效 GPS；
+  第一次建立後 freeze，不因 origin 移動或暫時離線而改選其他 Agent，並以
+  `frame_revision` 識別同一個座標生命週期。
 - peer `AgentTrajectory` 必須通過 agent ID、valid、order、frame revision、
   frame origin、knot／duration、控制點長度與有限值檢查。
 - obstacle callback 只接受 `header.frame_id == "swarm_ned"` 且所有 x/y/z 有限的
@@ -83,6 +84,18 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
   false，但 planner 仍可能輸出 valid trajectory。
 - planner result 發布至 `/fmu_all_agent/swarm/agent_trajectories` 與本機
   `/planning/trajectory`；status 發布至本機 `/planning/status`。
+- `/{agent_namespace}/command` 中的 `MOVE_*`、`MOVE_POINT` 與
+  `FORMATION_CANCEL` 會交由 Planner 設定目標；`MODE_*`、`ARM`、`TAKEOFF`、
+  `LAND`、`YAW` 仍只由 BasicController 執行。
+- active trajectory 重發時保留原始 `start_time` 與 `trajectory_id`，直到
+  軌跡完成或目標／座標生命週期改變，避免每個 planning cycle 重置軌跡進度。
+- Planner 同時以 PX4 local NED 與 GPS 轉換出的 common NED 判斷到達；兩者都在
+  各自容許誤差內時，以目標座標填滿控制點發布一次固定 hold trajectory、清除
+  任務並停止新的移動軌跡。status reason 為
+  `No mission target; BasicController keeps its hold setpoint`；軌跡逾時後
+  BasicController 仍使用最後控制點，不回退至即時 odometry。
+- 沒有 mission goal 或 formation goal 時，planner 只發布 HOLD status，不發布
+  `AgentTrajectory`；BasicController 保留其固定位置／高度 setpoint。
 
 ### `BasicController`
 
@@ -107,4 +120,3 @@ Phase 0 鎖定下列行為：
   yawspeed 欄位均為有限值。
 - 空障礙物輸入目前代表無障礙物；既有 PointCloud geometry、range/FOV、noise 與
   dropout 測試維持通過。
-

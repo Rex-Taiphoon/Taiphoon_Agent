@@ -27,6 +27,7 @@
 #include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "formation/PeerMatcher.hpp"
 
@@ -41,6 +42,8 @@ constexpr double DEFAULT_PEER_COLLISION_MIN_DISTANCE_M = 3.0;
 constexpr double DEFAULT_OBSTACLE_CLEARANCE_M = 1.0;
 constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
+constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
+constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -69,6 +72,7 @@ private:
         const taiphoon_agent::msg::AgentState::SharedPtr msg);
     void ned_target_cb(const taiphoon_agent::msg::NedTarget::SharedPtr msg);
     void mission_intent_cb(const std_msgs::msg::String::SharedPtr msg);
+    void agent_command_cb(const std_msgs::msg::String::SharedPtr msg);
     void all_agent_command_cb(const std_msgs::msg::String::SharedPtr msg);
     void obstacle_cb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     void trajectory_cb(
@@ -79,15 +83,25 @@ private:
     bool initialize_subscribers();
     bool initialize_publishers();
     bool update_swarm_frame();
+    bool update_local_swarm_transform();
     bool get_position_in_swarm_frame(
         const taiphoon_agent::msg::AgentState& state,
         ego_swarm::Vector3& position) const;
+    bool get_target_in_local_ned(
+        const ego_swarm::Vector3& target,
+        ego_swarm::Vector3& local_target) const;
+    ego_swarm::PositionArrivalResult evaluate_target_arrival(
+        const ego_swarm::Vector3& current_global_ned,
+        const ego_swarm::Vector3& target) const;
+    void invalidate_active_plan();
     bool get_current_target(ego_swarm::Vector3& target) const;
     void set_goal_from_command(const std::string& command);
     void publish_plan(
         const ego_swarm::PlannerResult& result,
         const ego_swarm::Vector3& origin_position,
-        const rclcpp::Time& now);
+        const rclcpp::Time& now,
+        const rclcpp::Time& start_time,
+        uint32_t trajectory_id);
     void publish_status(
         uint8_t state,
         const std::string& reason,
@@ -99,8 +113,11 @@ private:
 
     std::string agent_namespace_{"fmu1_agent"};
     int agent_index_{1};
+    int swarm_origin_agent_index_{1};
     double planning_rate_hz_{DEFAULT_EGO_PLANNER_RATE_HZ};
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
+    double local_arrival_tolerance_m_{DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M};
+    double global_arrival_tolerance_m_{DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M};
 
     ego_swarm::PlannerConfig planner_config_{};
     ego_swarm::EgoSwarmPlanner planner_{};
@@ -110,13 +127,22 @@ private:
     /// 目前固定 swarm_ned 原點的 Agent ID；-1 表示尚未選定原點。
     int frame_origin_agent_index_{-1};
     uint32_t frame_revision_{0U};
+    bool has_local_swarm_transform_{false};
+    ego_swarm::Vector3 local_swarm_offset_{0.0, 0.0, 0.0};
 
     bool has_own_state_{false};
     bool has_goal_{false};
     bool has_obstacle_cloud_{false};
     bool has_formation_{false};
+    bool preserve_altitude_{false};
+    bool has_active_plan_{false};
     taiphoon_agent::msg::AgentState own_state_{};
     ego_swarm::Vector3 goal_position_{0.0, 0.0, 0.0};
+    ego_swarm::PlannerResult active_plan_{};
+    ego_swarm::Vector3 active_plan_target_{0.0, 0.0, 0.0};
+    rclcpp::Time active_plan_start_time_{
+        static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
+    uint32_t active_plan_trajectory_id_{0U};
     std::vector<ego_swarm::Vector3> obstacle_points_{};
     ego_swarm::FormationConfig formation_config_{};
     ego_swarm::Vector3 formation_center_{0.0, 0.0, 0.0};
@@ -129,6 +155,7 @@ private:
     rclcpp::Subscription<taiphoon_agent::msg::AgentState>::SharedPtr own_state_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::NedTarget>::SharedPtr ned_target_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_intent_sub_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr agent_command_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr all_command_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::AgentTrajectory>::SharedPtr

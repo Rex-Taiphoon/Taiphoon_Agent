@@ -304,7 +304,7 @@ TEST_F(BasicControllerTrajectoryTest,
 }
 
 TEST_F(BasicControllerTrajectoryTest,
-       ExpiredTrajectoryPublishesFiniteCurrentPositionHold)
+       ExpiredTrajectoryPublishesTrajectoryEndpointHold)
 {
     controller_->update_odometry(make_odometry(4.0F, -2.0F, -3.0F));
     ASSERT_TRUE(controller_->set_ned_target(100.0F, 100.0F, -3.0F, 0.0F));
@@ -322,8 +322,10 @@ TEST_F(BasicControllerTrajectoryTest,
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[0]));
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[1]));
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[2]));
-    EXPECT_NEAR(latest_setpoint_.position[0], 4.0F, POSITION_EPSILON_M);
-    EXPECT_NEAR(latest_setpoint_.position[1], -2.0F, POSITION_EPSILON_M);
+    // 軌跡抵達終點後，hold setpoint 必須鎖在軌跡終點，不能因即時
+    // odometry 漂移而改變。
+    EXPECT_NEAR(latest_setpoint_.position[0], 10.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 20.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -3.0F, POSITION_EPSILON_M);
 }
 

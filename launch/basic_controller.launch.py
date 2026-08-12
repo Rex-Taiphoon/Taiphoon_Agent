@@ -146,6 +146,8 @@ def launch_nodes(context, *args, **kwargs):
             parameters=[
                 {"agent_namespace": agent_ns},
                 {"agent_index": i},
+                {"swarm_origin_agent_index": LaunchConfiguration(
+                    "swarm_origin_agent_index")},
                 {"planning_rate_hz": LaunchConfiguration(
                     "planning_rate_hz")},
                 {"formation_min_distance_m": LaunchConfiguration(
@@ -156,8 +158,16 @@ def launch_nodes(context, *args, **kwargs):
                     "obstacle_clearance_m")},
                 {"knot_interval_s": LaunchConfiguration(
                     "knot_interval_s")},
+                {"max_velocity_m_s": LaunchConfiguration(
+                    "max_velocity_m_s")},
+                {"max_acceleration_m_s2": LaunchConfiguration(
+                    "max_acceleration_m_s2")},
                 {"candidate_offset_m": LaunchConfiguration(
                     "candidate_offset_m")},
+                {"local_arrival_tolerance_m": LaunchConfiguration(
+                    "local_arrival_tolerance_m")},
+                {"global_arrival_tolerance_m": LaunchConfiguration(
+                    "global_arrival_tolerance_m")},
             ],
             output="screen",
             emulate_tty=True,
@@ -235,17 +245,37 @@ def generate_launch_description():
             default_value="10.0",
             description="EGO-Swarm 規劃頻率（Hz）"),
         DeclareLaunchArgument(
+            "swarm_origin_agent_index",
+            default_value="1",
+            description="固定 swarm_ned 原點的 Agent 索引"),
+        DeclareLaunchArgument(
             "formation_min_distance_m",
             default_value="3.0",
             description="編隊槽位中心到中心最小距離（公尺），可降至 1.5 或 2"),
         DeclareLaunchArgument(
             "knot_interval_s",
             default_value="1.0",
-            description="B-spline knot 間隔（秒）"),
+            description="B-spline 最小基準 knot 間隔（秒）"),
+        DeclareLaunchArgument(
+            "max_velocity_m_s",
+            default_value="2.0",
+            description="EGO-Swarm 軌跡最大速度（公尺/秒）"),
+        DeclareLaunchArgument(
+            "max_acceleration_m_s2",
+            default_value="1.0",
+            description="EGO-Swarm 軌跡最大加速度（公尺/秒^2）"),
         DeclareLaunchArgument(
             "candidate_offset_m",
             default_value="3.0",
             description="局部候選軌跡側向／垂直偏移（公尺）"),
+        DeclareLaunchArgument(
+            "local_arrival_tolerance_m",
+            default_value="0.5",
+            description="PX4 local NED 到達容許誤差（公尺）"),
+        DeclareLaunchArgument(
+            "global_arrival_tolerance_m",
+            default_value="1.0",
+            description="GPS 共同 NED 到達容許誤差（公尺）"),
         DeclareLaunchArgument(
             "obstacle_clearance_m",
             default_value="1.0",

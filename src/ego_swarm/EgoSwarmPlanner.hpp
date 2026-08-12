@@ -30,6 +30,8 @@ struct PlannerConfig
     double knot_interval_s{1.0};
     std::size_t control_point_count{6U};
     double sample_interval_s{0.1};
+    double max_velocity_m_s{2.0};
+    double max_acceleration_m_s2{1.0};
     double candidate_offset_m{3.0};
     double obstacle_clearance_m{1.0};
     double peer_collision_min_distance_m{3.0};
@@ -136,6 +138,7 @@ public:
      * @param peer_table 最後有效同儕軌跡表
      * @param now_s 目前共同時間，單位為秒
      * @param self_agent_id 自身 Agent ID，用於排除自身軌跡
+     * @param preserve_altitude true 時只產生固定 Z 的水平候選
      * @return 規劃結果；所有輸出數值都會維持有限
      */
     PlannerResult plan(
@@ -144,7 +147,8 @@ public:
         const std::vector<Vector3>& obstacle_points,
         const PeerTrajectoryTable& peer_table,
         const double now_s,
-        const int self_agent_id) const
+        const int self_agent_id,
+        const bool preserve_altitude = false) const
     {
         PlannerResult result;
         if (!is_valid_config(config_) ||
@@ -156,15 +160,23 @@ public:
             return result;
         }
 
-        const std::vector<Vector3> offsets =
-            build_candidate_offsets(current_position, target_position);
+        const std::vector<Vector3> offsets = build_candidate_offsets(
+            current_position, target_position, preserve_altitude);
         bool has_best = false;
         CandidateEvaluation best_evaluation;
         BsplineTrajectory best_trajectory;
         for (const Vector3& offset : offsets)
         {
-            const BsplineTrajectory candidate = build_candidate(
+            const double path_length_m = estimate_candidate_path_length_m(
                 current_position, target_position, offset);
+            const double duration_s = compute_trajectory_duration_s(
+                path_length_m);
+            const double span_count = static_cast<double>(
+                config_.control_point_count - BSPLINE_DEGREE);
+            const double candidate_knot_interval_s = duration_s / span_count;
+            const BsplineTrajectory candidate = build_candidate(
+                current_position, target_position, offset,
+                candidate_knot_interval_s);
             const CandidateEvaluation evaluation = evaluate_candidate(
                 candidate,
                 target_position,
@@ -201,6 +213,34 @@ public:
         return result;
     }
 
+    /**
+     * @brief 建立精確鎖定指定座標的 hold 軌跡
+     *
+     * 到達任務目標後不能以即時位置重新建立 hold，否則 odometry 的微小
+     * 漂移會讓下一個 setpoint 跟著移動。此方法以指定座標填滿所有
+     * B-spline 控制點，使軌跡在整個有效時間窗與逾時後的端點都固定。
+     *
+     * @param hold_position 要鎖定的 swarm NED 座標
+     * @return 有效的固定 hold 軌跡；輸入或設定無效時回傳空結果
+     */
+    PlannerResult make_exact_hold_result(const Vector3& hold_position) const
+    {
+        PlannerResult result;
+        if (!is_finite_vector(hold_position) ||
+            !is_valid_config(config_))
+        {
+            return result;
+        }
+
+        const std::vector<Vector3> hold_points(
+            config_.control_point_count, hold_position);
+        result.trajectory = BsplineTrajectory(
+            hold_points, config_.knot_interval_s);
+        result.is_valid = result.trajectory.is_valid();
+        result.is_hold = true;
+        return result;
+    }
+
 private:
     /// 候選軌跡的安全與成本評估結果。
     struct CandidateEvaluation
@@ -225,6 +265,10 @@ private:
                config.control_point_count <= EGO_SWARM_MAX_SAMPLE_COUNT &&
                is_finite(config.sample_interval_s) &&
                config.sample_interval_s > EGO_SWARM_EPSILON_M &&
+               is_finite(config.max_velocity_m_s) &&
+               config.max_velocity_m_s > EGO_SWARM_EPSILON_M &&
+               is_finite(config.max_acceleration_m_s2) &&
+               config.max_acceleration_m_s2 > EGO_SWARM_EPSILON_M &&
                is_finite(config.candidate_offset_m) &&
                config.candidate_offset_m >= 0.0 &&
                is_finite(config.obstacle_clearance_m) &&
@@ -271,11 +315,13 @@ private:
      *
      * @param current_position 起點位置
      * @param target_position 終點位置
+     * @param preserve_altitude 是否排除垂直繞行候選
      * @return 固定順序的候選彎曲偏移列表
      */
     std::vector<Vector3> build_candidate_offsets(
         const Vector3& current_position,
-        const Vector3& target_position) const
+        const Vector3& target_position,
+        const bool preserve_altitude) const
     {
         const Vector3 direction = subtract_vectors(
             target_position, current_position);
@@ -297,6 +343,13 @@ private:
             lateral, config_.candidate_offset_m);
         const Vector3 vertical_offset = scale_vector(
             vertical, config_.candidate_offset_m);
+        if (preserve_altitude)
+        {
+            return std::vector<Vector3>{
+                zero,
+                lateral_offset,
+                scale_vector(lateral_offset, -1.0)};
+        }
         return std::vector<Vector3>{
             zero,
             lateral_offset,
@@ -316,7 +369,8 @@ private:
     BsplineTrajectory build_candidate(
         const Vector3& current_position,
         const Vector3& target_position,
-        const Vector3& bend_offset) const
+        const Vector3& bend_offset,
+        const double knot_interval_s) const
     {
         std::vector<Vector3> control_points;
         control_points.reserve(config_.control_point_count);
@@ -333,7 +387,54 @@ private:
             control_points.push_back(add_vectors(
                 line_position, scale_vector(bend_offset, profile)));
         }
-        return BsplineTrajectory(control_points, config_.knot_interval_s);
+        return BsplineTrajectory(control_points, knot_interval_s);
+    }
+
+    /**
+     * @brief 依候選路徑長度與動力學上限決定軌跡時間
+     *
+     * knot_interval_s 是最小基準 knot 間隔；實際時間由候選路徑長度、
+     * 最大速度與最大加速度共同決定。這使 EGO-Swarm 不再對所有距離
+     * 使用固定 3 秒軌跡。
+     *
+     * @param path_length_m 候選路徑估計長度（公尺）
+     * @return 有限且大於零的軌跡時間（秒）
+     */
+    double compute_trajectory_duration_s(const double path_length_m) const
+    {
+        if (!is_finite(path_length_m) || path_length_m < 0.0)
+        {
+            return 0.0;
+        }
+
+        const double span_count = static_cast<double>(
+            config_.control_point_count - BSPLINE_DEGREE);
+        const double minimum_duration =
+            span_count * config_.knot_interval_s;
+        const double velocity_duration =
+            path_length_m / config_.max_velocity_m_s;
+        const double acceleration_duration = 2.0 * std::sqrt(
+            path_length_m / config_.max_acceleration_m_s2);
+        return std::max(
+            minimum_duration,
+            std::max(velocity_duration, acceleration_duration));
+    }
+
+    /**
+     * @brief 估計含中段偏移候選的路徑長度
+     *
+     * 直線距離加上兩倍中段偏移量，作為保守且 deterministic 的局部
+     * 路徑長度估計；後續 Phase 可替換為完整弧長積分。
+     */
+    double estimate_candidate_path_length_m(
+        const Vector3& current_position,
+        const Vector3& target_position,
+        const Vector3& bend_offset) const
+    {
+        const double direct_distance = distance_between_centers(
+            current_position, target_position);
+        const double bend_distance = std::sqrt(squared_norm(bend_offset));
+        return direct_distance + 2.0 * bend_distance;
     }
 
     /**
@@ -589,18 +690,9 @@ private:
      */
     PlannerResult make_hold_result(const Vector3& current_position) const
     {
-        PlannerResult result;
-        if (!is_finite_vector(current_position) ||
-            !is_valid_config(config_))
-        {
-            return result;
-        }
-
-        std::vector<Vector3> hold_points(
-            config_.control_point_count, current_position);
-        result.trajectory = BsplineTrajectory(
-            hold_points, config_.knot_interval_s);
-        result.is_hold = true;
+        PlannerResult result = make_exact_hold_result(current_position);
+        // 無安全候選時仍保留既有語意：這是 planner failure 的 hold，
+        // 而非已確認任務完成的有效結果。
         result.is_valid = false;
         return result;
     }

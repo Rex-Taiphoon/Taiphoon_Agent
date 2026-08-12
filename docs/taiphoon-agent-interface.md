@@ -82,7 +82,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、GPS common frame、PointCloud2 與同儕未來軌跡，輸出本機軌跡。 |
-| **參數** | `agent_namespace`、`agent_index`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`candidate_offset_m` |
+| **參數** | `agent_namespace`、`agent_index`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
 
 **內部組件**：
 - `SwarmFrame`：共同 GPS／NED 座標框架
@@ -97,12 +97,17 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 |------|------|-------------|------|
 | `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
 | `agent_index` | `int` | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
+| `swarm_origin_agent_index` | `int` | `1` | 固定 `swarm_ned` 原點的 Agent 索引；等待其有效 GPS，建立後 freeze |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
-| `knot_interval_s` | `double` | `1.0` | B-spline knot 間隔 |
+| `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
+| `max_velocity_m_s` | `double` | `2.0` | duration 計算使用的最大速度 |
+| `max_acceleration_m_s2` | `double` | `1.0` | duration 計算使用的最大加速度 |
 | `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
+| `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
+| `global_arrival_tolerance_m` | `double` | `1.0` | GPS common NED 到達容許誤差 |
 
 ### 2.3 obstacle_cloud_simulator
 
@@ -243,14 +248,14 @@ ROSIDL 對 `control_points` 產生 `std::vector<float>`；欄位採扁平化格�
 | 欄位 | 型別 | 說明 |
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 發布時間 |
-| `start_time` | `builtin_interfaces/Time` | 軌跡起始時間 |
-| `trajectory_id` | `uint32` | 單調遞增的軌跡識別碼 |
+| `start_time` | `builtin_interfaces/Time` | 軌跡起始時間；active trajectory 重發時保持不變 |
+| `trajectory_id` | `uint32` | 單調遞增的軌跡識別碼；同一條 active trajectory 重發時保持不變 |
 | `agent_index` | `uint32` | 發布者 Agent 索引 |
 | `frame_revision` | `uint32` | `swarm_ned` 座標版本 |
 | `order` | `uint8` | B-spline 階數 |
 | `knot_interval_s` | `float32` | knot 間隔（秒） |
 | `control_points` | `float32[]` | 扁平化 `swarm_ned` 控制點；每 3 個連續元素為一個 `[x, y, z]`，排列為 `[x0,y0,z0,x1,y1,z1,...]`，長度必須為 3 的倍數 |
-| `duration_s` | `float32` | 軌跡有效時間（秒） |
+| `duration_s` | `float32` | 由 EGO-Swarm 依候選路徑長度與最大速度／加速度計算的軌跡有效時間（秒） |
 | `frame_origin_global` | `float64[3]` | 共同座標原點 `[lat, lon, alt]` |
 | `valid` | `bool` | 軌跡是否可供同儕使用 |
 
@@ -358,6 +363,7 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態與 GPS common frame 所需位�
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/state`、`/{peer_namespace}/state` | 取得自身與同儕位置、GPS common frame 資料 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/ned_target` | 接收既有 NED 目標相容輸入 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/planning/mission_intent` | 接收本機任務意圖 |
+| `ego_swarm_planner`（訂閱） | `/{agent_namespace}/command` | 接收本機 `MOVE_*`、`MOVE_POINT` 與 `FORMATION_CANCEL`，轉換為 EGO-Swarm 目標；模式、起飛與 YAW 仍由 BasicController 處理 |
 | `ego_swarm_planner`（訂閱） | `/fmu_all_agent/command` | 接收全體編隊與同步命令 |
 | `ego_swarm_planner`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
 | `ego_swarm_planner`（發布） | `/fmu_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
@@ -464,8 +470,8 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `MOVE_RIGHT <x>` | 距離 (公尺) | 向右移動 |
 | `MOVE_UP <x>` | 距離 (公尺) | 向上移動 |
 | `MOVE_DOWN <x>` | 距離 (公尺) | 向下移動 |
-| `YAW <angle>` | 角度 (度) | 順時針旋轉 |
-| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 偏航 | 移動至絕對位置 |
+| `YAW <angle>` | 相對角度 (度) | 以目前航向為基準順時針旋轉，由 BasicController 直接發布 |
+| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 位置由 Planner 規劃，yaw 由 BasicController 直接設定 |
 
 #### 基礎控制命令
 

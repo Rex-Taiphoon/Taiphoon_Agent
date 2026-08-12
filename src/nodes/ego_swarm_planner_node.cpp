@@ -88,6 +88,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
 {
     declare_parameter<std::string>("agent_namespace", "fmu1_agent");
     declare_parameter<int>("agent_index", 1);
+    declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("planning_rate_hz", DEFAULT_EGO_PLANNER_RATE_HZ);
     declare_parameter<double>("formation_min_distance_m",
                              DEFAULT_FORMATION_MIN_DISTANCE_M);
@@ -96,13 +97,26 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>("obstacle_clearance_m",
                              DEFAULT_OBSTACLE_CLEARANCE_M);
     declare_parameter<double>("knot_interval_s", 1.0);
+    declare_parameter<double>("max_velocity_m_s", 2.0);
+    declare_parameter<double>("max_acceleration_m_s2", 1.0);
     declare_parameter<double>("candidate_offset_m", 3.0);
+    declare_parameter<double>("local_arrival_tolerance_m",
+                             DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M);
+    declare_parameter<double>("global_arrival_tolerance_m",
+                             DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M);
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     agent_index_ = get_parameter("agent_index").as_int();
     if (agent_index_ <= 0)
     {
         agent_index_ = compute_self_index();
+    }
+
+    swarm_origin_agent_index_ = get_parameter(
+        "swarm_origin_agent_index").as_int();
+    if (swarm_origin_agent_index_ <= 0)
+    {
+        swarm_origin_agent_index_ = 1;
     }
 
     planning_rate_hz_ = get_parameter("planning_rate_hz").as_double();
@@ -125,8 +139,26 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         "obstacle_clearance_m").as_double();
     planner_config_.knot_interval_s = get_parameter(
         "knot_interval_s").as_double();
+    planner_config_.max_velocity_m_s = get_parameter(
+        "max_velocity_m_s").as_double();
+    planner_config_.max_acceleration_m_s2 = get_parameter(
+        "max_acceleration_m_s2").as_double();
     planner_config_.candidate_offset_m = get_parameter(
         "candidate_offset_m").as_double();
+    local_arrival_tolerance_m_ = get_parameter(
+        "local_arrival_tolerance_m").as_double();
+    global_arrival_tolerance_m_ = get_parameter(
+        "global_arrival_tolerance_m").as_double();
+    if (!std::isfinite(local_arrival_tolerance_m_) ||
+        local_arrival_tolerance_m_ < 0.0)
+    {
+        local_arrival_tolerance_m_ = DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M;
+    }
+    if (!std::isfinite(global_arrival_tolerance_m_) ||
+        global_arrival_tolerance_m_ < 0.0)
+    {
+        global_arrival_tolerance_m_ = DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M;
+    }
     if (!planner_.set_config(planner_config_))
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
@@ -152,8 +184,10 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
 
     RCLCPP_INFO(get_logger(),
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
-                "peer_distance=%.2f m obstacle_clearance=%.2f m",
+                "origin_agent=%d peer_distance=%.2f m "
+                "obstacle_clearance=%.2f m",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
+                swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
                 planner_config_.obstacle_clearance_m);
 }
@@ -174,6 +208,10 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         rclcpp::QoS(10),
         std::bind(&EgoSwarmPlannerNode::mission_intent_cb, this,
                   std::placeholders::_1));
+    agent_command_sub_ = create_subscription<std_msgs::msg::String>(
+        "/" + agent_namespace_ + "/command", rclcpp::QoS(10),
+        std::bind(&EgoSwarmPlannerNode::agent_command_cb, this,
+                  std::placeholders::_1));
     all_command_sub_ = create_subscription<std_msgs::msg::String>(
         "/fmu_all_agent/command", rclcpp::QoS(10),
         std::bind(&EgoSwarmPlannerNode::all_agent_command_cb, this,
@@ -190,7 +228,8 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
                   std::placeholders::_1));
 
     return own_state_sub_ != nullptr && ned_target_sub_ != nullptr &&
-        mission_intent_sub_ != nullptr && all_command_sub_ != nullptr &&
+        mission_intent_sub_ != nullptr && agent_command_sub_ != nullptr &&
+        all_command_sub_ != nullptr &&
         obstacle_sub_ != nullptr && trajectory_sub_ != nullptr;
 }
 
@@ -265,6 +304,34 @@ void EgoSwarmPlannerNode::mission_intent_cb(
     set_goal_from_command(msg->data);
 }
 
+void EgoSwarmPlannerNode::agent_command_cb(
+    const std_msgs::msg::String::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "agent_command_cb received nullptr");
+        return;
+    }
+
+    const auto parsed = utils::parse_command_string(msg->data);
+    switch (parsed.command)
+    {
+        case utils::AgentCommand::MOVE_FORWARD:
+        case utils::AgentCommand::MOVE_BACKWARD:
+        case utils::AgentCommand::MOVE_LEFT:
+        case utils::AgentCommand::MOVE_RIGHT:
+        case utils::AgentCommand::MOVE_UP:
+        case utils::AgentCommand::MOVE_DOWN:
+        case utils::AgentCommand::MOVE_POINT:
+        case utils::AgentCommand::FORMATION_CANCEL:
+            set_goal_from_command(msg->data);
+            break;
+        default:
+            // MODE_*, ARM, TAKEOFF, LAND 與 YAW 由 BasicController 處理。
+            break;
+    }
+}
+
 void EgoSwarmPlannerNode::all_agent_command_cb(
     const std_msgs::msg::String::SharedPtr msg)
 {
@@ -278,6 +345,8 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
         has_formation_ = false;
+        preserve_altitude_ = false;
+        invalidate_active_plan();
         return;
     }
 
@@ -312,6 +381,8 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         formation_config_.spacing_m = parsed.param_value;
         formation_config_.vertical_offset_m = 0.0;
     }
+    preserve_altitude_ = false;
+    invalidate_active_plan();
 
     if (!update_swarm_frame())
     {
@@ -526,6 +597,18 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
+    // 沒有任務或編隊目標時，不應把每一回合的目前位置重新發布成
+    // timed trajectory。那會讓 BasicController 追蹤一個隨漂移移動的
+    // 目標，失去起飛後固定 hold position／altitude 的錨點。
+    if (!has_goal_ && !has_formation_)
+    {
+        publish_status(
+            PLANNER_STATE_HOLD,
+            "No mission target; BasicController keeps its hold setpoint",
+            nullptr, true, !peers_.empty(), now);
+        return;
+    }
+
     ego_swarm::Vector3 current{};
     if (!get_position_in_swarm_frame(own_state_, current))
     {
@@ -540,14 +623,75 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         target = current;
     }
 
+    const auto arrival = evaluate_target_arrival(current, target);
+    if (arrival.reached)
+    {
+        // 先發布一條以「目標座標」填滿控制點的固定 hold。不能使用
+        // current，因為到達判斷允許誤差，且即時 odometry 仍可能漂移。
+        const auto hold_result = planner_.make_exact_hold_result(target);
+        has_goal_ = false;
+        has_formation_ = false;
+        preserve_altitude_ = false;
+        invalidate_active_plan();
+        if (hold_result.trajectory.is_valid())
+        {
+            const uint32_t hold_id = ++trajectory_id_;
+            publish_plan(hold_result, target, now, now, hold_id);
+        }
+        publish_status(
+            PLANNER_STATE_HOLD,
+            "No mission target; BasicController keeps its hold setpoint",
+            nullptr, true, !peers_.empty(), now);
+        return;
+    }
+
+    const bool preserve_altitude = preserve_altitude_ && !has_formation_;
+    if (preserve_altitude)
+    {
+        // 水平移動只改變 X/Y；使用命令建立時的目標 Z 作為整條
+        // trajectory 的固定高度，避免 GPS callback 延遲把水平命令
+        // 轉成非預期的垂直修正。
+        current.at(2) = target.at(2);
+    }
+
+    const bool target_unchanged = has_active_plan_ &&
+        ego_swarm::distance_between_centers(
+            active_plan_target_, target) <= 1.0e-3;
+    const double active_elapsed_s = has_active_plan_
+        ? (now - active_plan_start_time_).seconds() : 0.0;
+    const bool active_plan_running = has_active_plan_ && target_unchanged &&
+        active_plan_.trajectory.is_valid() &&
+        std::isfinite(active_elapsed_s) && active_elapsed_s <=
+            active_plan_.trajectory.duration_s();
+    if (active_plan_running)
+    {
+        // 重新發布同一條軌跡時保留原始 start_time 與 trajectory_id，讓
+        // BasicController 依原本的時間軸持續取樣，不會每 100 ms 重置進度。
+        publish_plan(
+            active_plan_, current, now, active_plan_start_time_,
+            active_plan_trajectory_id_);
+        publish_status(
+            active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
+            active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
+            &active_plan_, true, !peers_.empty(), now);
+        return;
+    }
+
     const auto result = planner_.plan(
         current, target, obstacle_points_, peer_trajectories_,
-        now.seconds(), agent_index_);
-    publish_plan(result, current, now);
+        now.seconds(), agent_index_, preserve_altitude);
+    active_plan_ = result;
+    active_plan_target_ = target;
+    active_plan_start_time_ = now;
+    active_plan_trajectory_id_ = ++trajectory_id_;
+    has_active_plan_ = active_plan_.trajectory.is_valid();
+    publish_plan(
+        active_plan_, current, now, active_plan_start_time_,
+        active_plan_trajectory_id_);
     publish_status(
-        result.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-        result.is_hold ? "No safe candidate; holding position" : "ok",
-        &result, true, !peers_.empty(), now);
+        active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
+        active_plan_.is_hold ? "No safe candidate; holding position" : "ok",
+        &active_plan_, true, !peers_.empty(), now);
 }
 
 void EgoSwarmPlannerNode::scan_peers_cb()
@@ -611,48 +755,70 @@ bool EgoSwarmPlannerNode::update_swarm_frame()
         return false;
     }
 
-    // 原點 Agent 仍有有效 GPS 時，固定既有 swarm_ned 原點；不能以其
-    // 移動中的最新 GPS 重新設定原點，否則每次更新都會產生新 revision。
-    const auto current_origin = candidates.find(frame_origin_agent_index_);
-    if (current_origin != candidates.end() && swarm_frame_.has_origin())
+    // 第一次只接受指定的 deterministic origin。所有 Agent 都等待同一個
+    // origin GPS，避免因啟動順序不同而各自選出不同的 swarm_ned frame。
+    if (swarm_frame_.has_origin())
     {
-        return true;
+        return update_local_swarm_transform();
     }
 
-    const auto next_origin = candidates.begin();
-    const int next_origin_agent_index = next_origin->first;
-    const ego_swarm::GeoCoordinate origin = next_origin->second;
+    const auto origin_candidate = candidates.find(swarm_origin_agent_index_);
+    if (origin_candidate == candidates.end())
+    {
+        return false;
+    }
+
+    const ego_swarm::GeoCoordinate origin = origin_candidate->second;
     if (!ego_swarm::SwarmFrame::is_valid_geodetic(origin) ||
         !swarm_frame_.set_origin(origin))
     {
         return false;
     }
 
-    const int previous_origin_agent_index = frame_origin_agent_index_;
     frame_origin_ = origin;
-    frame_origin_agent_index_ = next_origin_agent_index;
+    frame_origin_agent_index_ = swarm_origin_agent_index_;
     ++frame_revision_;
     if (frame_revision_ == 0U)
     {
         frame_revision_ = 1U;
     }
-    if (previous_origin_agent_index < 0)
+    RCLCPP_INFO(
+        get_logger(),
+        "Selected and froze Agent %d as swarm_ned frame origin, revision=%u",
+        frame_origin_agent_index_, frame_revision_);
+    return swarm_frame_.has_origin() && update_local_swarm_transform();
+}
+
+bool EgoSwarmPlannerNode::update_local_swarm_transform()
+{
+    if (has_local_swarm_transform_)
     {
-        RCLCPP_INFO(
-            get_logger(),
-            "Selected Agent %d as swarm_ned frame origin, revision=%u",
-            frame_origin_agent_index_, frame_revision_);
+        return true;
     }
-    else
+    if (!has_own_state_ ||
+        !ego_swarm::is_finite_vector({
+            static_cast<double>(own_state_.position_ned[0]),
+            static_cast<double>(own_state_.position_ned[1]),
+            static_cast<double>(own_state_.position_ned[2])}))
     {
-        RCLCPP_WARN(
-            get_logger(),
-            "Swarm_ned frame origin Agent %d unavailable; switched to "
-            "Agent %d, revision=%u",
-            previous_origin_agent_index, frame_origin_agent_index_,
-            frame_revision_);
+        return false;
     }
-    return swarm_frame_.has_origin();
+
+    ego_swarm::Vector3 current_swarm{};
+    if (!get_position_in_swarm_frame(own_state_, current_swarm))
+    {
+        return false;
+    }
+
+    const ego_swarm::Vector3 current_local{
+        static_cast<double>(own_state_.position_ned[0]),
+        static_cast<double>(own_state_.position_ned[1]),
+        static_cast<double>(own_state_.position_ned[2])};
+    local_swarm_offset_ = ego_swarm::subtract_vectors(
+        current_local, current_swarm);
+    has_local_swarm_transform_ =
+        ego_swarm::is_finite_vector(local_swarm_offset_);
+    return has_local_swarm_transform_;
 }
 
 bool EgoSwarmPlannerNode::get_position_in_swarm_frame(
@@ -665,6 +831,49 @@ bool EgoSwarmPlannerNode::get_position_in_swarm_frame(
         return false;
     }
     return swarm_frame_.to_swarm_ned(to_geo(state), position);
+}
+
+bool EgoSwarmPlannerNode::get_target_in_local_ned(
+    const ego_swarm::Vector3& target,
+    ego_swarm::Vector3& local_target) const
+{
+    local_target = ego_swarm::Vector3{0.0, 0.0, 0.0};
+    if (!has_local_swarm_transform_ || !ego_swarm::is_finite_vector(target))
+    {
+        return false;
+    }
+    local_target = ego_swarm::add_vectors(target, local_swarm_offset_);
+    return ego_swarm::is_finite_vector(local_target);
+}
+
+ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
+    const ego_swarm::Vector3& current_global_ned,
+    const ego_swarm::Vector3& target) const
+{
+    ego_swarm::PositionArrivalResult result;
+    ego_swarm::Vector3 target_local{};
+    if (!get_target_in_local_ned(target, target_local))
+    {
+        return result;
+    }
+
+    const ego_swarm::Vector3 current_local{
+        static_cast<double>(own_state_.position_ned[0]),
+        static_cast<double>(own_state_.position_ned[1]),
+        static_cast<double>(own_state_.position_ned[2])};
+    return ego_swarm::evaluate_position_arrival(
+        current_local, target_local, current_global_ned, target,
+        local_arrival_tolerance_m_, global_arrival_tolerance_m_);
+}
+
+void EgoSwarmPlannerNode::invalidate_active_plan()
+{
+    has_active_plan_ = false;
+    active_plan_ = ego_swarm::PlannerResult{};
+    active_plan_target_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
+    active_plan_start_time_ = rclcpp::Time(
+        static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
+    active_plan_trajectory_id_ = 0U;
 }
 
 bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
@@ -713,6 +922,8 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     {
         has_formation_ = false;
         has_goal_ = false;
+        preserve_altitude_ = false;
+        invalidate_active_plan();
         return;
     }
     if (!has_own_state_ || !update_swarm_frame())
@@ -735,6 +946,8 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
             parsed.param_value, parsed.param2, parsed.param3};
         has_goal_ = ego_swarm::is_finite_vector(goal_position_);
         has_formation_ = false;
+        preserve_altitude_ = false;
+        invalidate_active_plan();
         return;
     }
 
@@ -743,19 +956,24 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         return;
     }
     goal_position_ = current;
+    bool preserve_altitude = false;
     switch (parsed.command)
     {
         case utils::AgentCommand::MOVE_FORWARD:
             goal_position_.at(0) += parsed.param_value;
+            preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_BACKWARD:
             goal_position_.at(0) -= parsed.param_value;
+            preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_LEFT:
             goal_position_.at(1) -= parsed.param_value;
+            preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_RIGHT:
             goal_position_.at(1) += parsed.param_value;
+            preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_UP:
             goal_position_.at(2) -= parsed.param_value;
@@ -768,12 +986,16 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     }
     has_goal_ = ego_swarm::is_finite_vector(goal_position_);
     has_formation_ = false;
+    preserve_altitude_ = preserve_altitude;
+    invalidate_active_plan();
 }
 
 void EgoSwarmPlannerNode::publish_plan(
     const ego_swarm::PlannerResult& result,
     const ego_swarm::Vector3& origin_position,
-    const rclcpp::Time& now)
+    const rclcpp::Time& now,
+    const rclcpp::Time& start_time,
+    const uint32_t trajectory_id)
 {
     if (!result.has_finite_output())
     {
@@ -787,8 +1009,8 @@ void EgoSwarmPlannerNode::publish_plan(
 
     taiphoon_agent::msg::AgentTrajectory message;
     message.stamp = now;
-    message.start_time = now;
-    message.trajectory_id = ++trajectory_id_;
+    message.start_time = start_time;
+    message.trajectory_id = trajectory_id;
     message.agent_index = static_cast<uint32_t>(agent_index_);
     message.frame_revision = frame_revision_;
     message.order = static_cast<uint8_t>(ego_swarm::BSPLINE_DEGREE);
