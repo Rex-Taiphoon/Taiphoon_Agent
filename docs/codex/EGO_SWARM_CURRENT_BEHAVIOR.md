@@ -1,0 +1,110 @@
+# EGO-Swarm Current Behavior Baseline
+
+## 文件狀態
+
+這是 Phase 0 的 characterization baseline。內容以目前 source code 與 Docker
+內測試為準，不把尚未實作的安全契約描述成 runtime 保證。
+
+## Runtime data flow
+
+```text
+AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
+                         ↓
+              EgoSwarmPlannerNode callbacks
+                         ↓
+      swarm_ned position + raw obstacle points + peer table
+                         ↓
+              EgoSwarmPlanner::plan
+                         ↓
+        AgentTrajectory（valid 或 current-position hold）
+                         ↓
+       BasicController timed B-spline sampling
+                         ↓
+          PX4 TrajectorySetpoint（唯一發布端）
+```
+
+## Pure C++ components
+
+### `BsplineTrajectory`
+
+- 僅接受至少四個有限控制點與正的 knot interval。
+- 使用均勻 clamped cubic B-spline；duration 為
+  `(control_point_count - 3) * knot_interval_s`。
+- `evaluate()` 對有限的負時間與超過 duration 的時間夾到兩端點。
+- 無效軌跡或非有限取樣時間回傳 `is_valid == false`。
+- Phase 0 未加入 velocity、acceleration 或 jerk derivative。
+
+### `PeerTrajectoryTable`
+
+- `update()` 只接受有限 `start_time_s` 與有效 B-spline。
+- 以 Agent ID 保存最後一份有效軌跡；無效更新不覆蓋舊資料。
+- 沒有 receive time、end time、prune、expiration 或 stale 狀態。
+- planner 會把表內軌跡依 `now + sample_time - start_time` 取樣；時間早於
+  軌跡起點時使用零相對時間，超過終點時由 B-spline endpoint 行為處理。
+
+### `SwarmFrame`
+
+- 使用 WGS84 局部近似將 GPS 轉換成 `swarm_ned`（North、East、Down）。
+- `set_origin()` 目前可覆寫原點；frame freeze 不是此類別的保證。
+- `are_origins_compatible()` 使用緯／經度 `1e-9` 度、高度 `1e-3` 公尺容差，
+  供 Node 拒絕不同 frame origin 的 peer trajectory。
+
+### `FormationSlotPlanner`
+
+- 將 Agent ID 排序後以 rank 產生 CIRCLE、HORI_LINEAR、VERT_LINEAR 槽位。
+- 對重複 ID、空成員及非法幾何參數回傳失敗。
+- `are_slots_safe()` 使用機體中心三維距離與呼叫端提供的門檻。
+- 尚無 persistent assignment 或 FormationEpoch。
+
+### `EgoSwarmPlanner`
+
+- 保留 deterministic candidate baseline：直線、左右側向、上下垂直共五種
+  中段偏移候選。
+- 依目標距離、控制點平滑性、障礙物距離與 peer 距離成本選擇候選。
+- 每個候選以固定 sample interval 評估；任一 sample 低於 obstacle clearance
+  或 peer collision distance 即拒絕。
+- 沒有安全候選時回傳由目前位置構成的有限 hold B-spline，但 `is_valid` 為
+  false、`is_hold` 為 true。
+- `obstacle_points` 是 raw `vector<Vector3>`；空列表代表沒有障礙物。
+
+## ROS2 assembly behavior
+
+### `EgoSwarmPlannerNode`
+
+- 啟動時以最低可用 Agent ID 選擇共同 frame origin；若目前 origin 仍有有效
+  GPS，planner loop 會保留它。origin 消失時目前實作可能改選另一個 Agent 並
+  增加 frame revision。
+- peer `AgentTrajectory` 必須通過 agent ID、valid、order、frame revision、
+  frame origin、knot／duration、控制點長度與有限值檢查。
+- obstacle callback 只接受 `header.frame_id == "swarm_ned"` 且所有 x/y/z 有限的
+  PointCloud2；成功收到空 cloud 會將 `has_obstacle_cloud_` 設為 true。
+- planner loop 沒有以 `has_obstacle_cloud_` 阻擋規劃；尚未收到 cloud 時仍把
+  `obstacle_points_` 的初始空列表傳給 planner。status 的 `map_valid` 此時是
+  false，但 planner 仍可能輸出 valid trajectory。
+- planner result 發布至 `/fmu_all_agent/swarm/agent_trajectories` 與本機
+  `/planning/trajectory`；status 發布至本機 `/planning/status`。
+
+### `BasicController`
+
+- 是目前唯一發布 PX4 `TrajectorySetpoint` 的 runtime component。
+- 接收自身 `AgentTrajectory` 後取樣 position；frame revision 改變時先清除舊
+  軌跡，必須收到新 revision 的下一筆軌跡才重新啟用。
+- timed trajectory 尚未開始、取樣失敗或已過期時，發布目前位置的 finite hold
+  position。
+- 目前 `publish_control_commands()` 寫入 position 與 yaw；velocity、
+  acceleration、jerk、yawspeed 仍維持 PX4 ROS message 建構時的 finite zero
+  預設值，尚未提供 feed-forward derivative。
+
+## Baseline characterization tests
+
+Phase 0 鎖定下列行為：
+
+- B-spline endpoint、時間夾限與 invalid input。
+- peer future trajectory 在目前位置造成距離衝突時，所有候選被拒絕並降為 hold。
+- 不同 frame origin 被視為不相容；BasicController frame revision 變更會清除舊軌跡。
+- 過期 timed trajectory 產生 finite current-position hold。
+- PX4 `TrajectorySetpoint` 的 position、velocity、acceleration、jerk、yaw 與
+  yawspeed 欄位均為有限值。
+- 空障礙物輸入目前代表無障礙物；既有 PointCloud geometry、range/FOV、noise 與
+  dropout 測試維持通過。
+

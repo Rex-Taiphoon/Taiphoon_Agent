@@ -28,8 +28,6 @@ constexpr uint8_t PLANNER_STATE_IDLE = 0U;
 constexpr uint8_t PLANNER_STATE_RUNNING = 1U;
 constexpr uint8_t PLANNER_STATE_HOLD = 2U;
 constexpr uint8_t PLANNER_STATE_ERROR = 3U;
-constexpr double FRAME_ORIGIN_LAT_LON_EPSILON_DEG = 1.0e-9;
-constexpr double FRAME_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
 constexpr double TRAJECTORY_DURATION_ABSOLUTE_EPSILON_S = 1.0e-4;
 constexpr double TRAJECTORY_DURATION_RELATIVE_EPSILON = 1.0e-5;
 
@@ -56,24 +54,6 @@ std::string command_to_text(const taiphoon_agent::msg::NedTarget& target)
     stream << "MOVE_POINT " << target.x << " " << target.y << " "
            << target.z << " " << target.yaw;
     return stream.str();
-}
-
-/**
- * @brief 比較兩個 swarm_ned 原點是否代表同一個地理座標。
- *
- * AgentTrajectory 經過 ROS 訊息序列化後可能產生極小浮點誤差，因此
- * 使用與座標尺度相稱的 epsilon；超出範圍即視為不同 frame。
- */
-bool is_same_frame_origin(
-    const ego_swarm::GeoCoordinate& left,
-    const ego_swarm::GeoCoordinate& right)
-{
-    return std::abs(left.latitude_deg - right.latitude_deg) <=
-               FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
-        std::abs(left.longitude_deg - right.longitude_deg) <=
-            FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
-        std::abs(left.altitude_m - right.altitude_m) <=
-            FRAME_ORIGIN_ALTITUDE_EPSILON_M;
 }
 
 /**
@@ -457,9 +437,8 @@ void EgoSwarmPlannerNode::trajectory_cb(
         msg->frame_origin_global[0],
         msg->frame_origin_global[1],
         msg->frame_origin_global[2]};
-    if (!ego_swarm::SwarmFrame::is_valid_geodetic(frame_origin_) ||
-        !ego_swarm::SwarmFrame::is_valid_geodetic(message_origin) ||
-        !is_same_frame_origin(frame_origin_, message_origin))
+    if (!ego_swarm::SwarmFrame::are_origins_compatible(
+            frame_origin_, message_origin))
     {
         RCLCPP_WARN(
             get_logger(),

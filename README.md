@@ -3,9 +3,14 @@
 **無人機任務與感測器執行中樞**，基於 ROS2 (Humble) + PX4 的自主飛行控制系統，
 以 EGO-Swarm 實作多機編隊、局部障礙物避讓與同儕未來軌跡避碰，並支援邊緣運算與即時影像處理。
 
-> 本 README 已反映 EGO-Swarm 目標架構。本次只更新文件，不新增或修改 Node、`.msg`、
-> CMake、launch 或 Docker。三個 EGO-Swarm 訊息的欄位以目前 workspace 的 `.msg`
-> 定義為準；新 Node 的啟動方式與 QoS 以本文件及介面規格書列出的實作為準。
+> 本 README 已反映 EGO-Swarm 目標架構。Phase 0 只補充 characterization tests、
+> 設計基線與現況文件，不新增 ROS2 topic／message 或改變 PX4 runtime 資料流。
+> 三個 EGO-Swarm 訊息的欄位以目前 workspace 的 `.msg` 定義為準；Node 的啟動方式
+> 與 QoS 以本文件及介面規格書列出的實作為準。
+
+EGO-Swarm 的 Phase 0 基線請參閱 [`docs/codex/README.md`](docs/codex/README.md)；其中
+[`EGO_SWARM_CURRENT_BEHAVIOR.md`](docs/codex/EGO_SWARM_CURRENT_BEHAVIOR.md) 記錄目前
+runtime 行為與已知限制。
 
 ---
 

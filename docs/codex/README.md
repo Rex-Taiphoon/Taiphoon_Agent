@@ -99,6 +99,16 @@
 - emergency brake
 - BasicController / PX4 output
 
+## Phase 0 基線文件
+
+Phase 0 的設計與現況基線分開記錄：
+
+- [`PLANNING_SNAPSHOT.md`](PLANNING_SNAPSHOT.md)：單一 planner cycle 的資料 freeze seam。
+- [`EGO_SWARM_CURRENT_BEHAVIOR.md`](EGO_SWARM_CURRENT_BEHAVIOR.md)：以 source code
+  與 characterization tests 為準的 runtime 行為。
+- [`SIMULATION_PROFILE_CONTRACT.md`](SIMULATION_PROFILE_CONTRACT.md)：目前障礙物
+  模擬 profile、PointCloud contract 與已知限制。
+
 ---
 
 ## 目前重要架構決策

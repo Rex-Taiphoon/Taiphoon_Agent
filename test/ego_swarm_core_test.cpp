@@ -82,6 +82,18 @@ TEST(SwarmFrameTest, RejectsNonFiniteGps)
     EXPECT_NEAR(ned.at(2), 0.0, 1.0e-12);
 }
 
+TEST(SwarmFrameTest, RejectsDifferentFrameOrigins)
+{
+    const GeoCoordinate origin{25.0, 121.0, 100.0};
+    const GeoCoordinate compatible_origin{25.0, 121.0, 100.0005};
+    const GeoCoordinate different_origin{25.0001, 121.0, 100.0};
+
+    EXPECT_TRUE(SwarmFrame::are_origins_compatible(
+        origin, compatible_origin));
+    EXPECT_FALSE(SwarmFrame::are_origins_compatible(
+        origin, different_origin));
+}
+
 TEST(FormationSlotPlannerTest, SupportsNonContiguousAgentIds)
 {
     const std::vector<int> agent_ids{42, 3, 10};
@@ -160,6 +172,40 @@ TEST(BsplineTrajectoryTest, RejectsNonFiniteControlPoint)
     EXPECT_FALSE(trajectory.evaluate(0.5).is_valid);
 }
 
+TEST(BsplineTrajectoryTest, RejectsInvalidInputAndNonFiniteEvaluationTime)
+{
+    const std::vector<Vector3> control_points{
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{1.0, 0.0, 0.0},
+        Vector3{2.0, 1.0, 0.0},
+        Vector3{3.0, 1.0, 0.0}};
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    EXPECT_FALSE(BsplineTrajectory(control_points, 0.0).is_valid());
+    EXPECT_FALSE(BsplineTrajectory(
+        std::vector<Vector3>(3U, Vector3{0.0, 0.0, 0.0}), 1.0).is_valid());
+
+    const BsplineTrajectory trajectory(control_points, 1.0);
+    EXPECT_FALSE(trajectory.evaluate(nan).is_valid);
+}
+
+TEST(BsplineTrajectoryTest, ClampsEvaluationTimeToFiniteEndpoints)
+{
+    const std::vector<Vector3> control_points{
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{1.0, 0.0, 0.0},
+        Vector3{2.0, 1.0, 0.0},
+        Vector3{3.0, 1.0, 0.0}};
+    const BsplineTrajectory trajectory(control_points, 1.0);
+
+    const auto before_start = trajectory.evaluate(-1.0);
+    const auto after_end = trajectory.evaluate(2.0);
+    ASSERT_TRUE(before_start.is_valid);
+    ASSERT_TRUE(after_end.is_valid);
+    EXPECT_EQ(before_start.position, control_points.front());
+    EXPECT_EQ(after_end.position, control_points.back());
+}
+
 TEST(PeerTrajectoryTableTest, PreservesLastValidTrajectory)
 {
     PeerTrajectoryTable table;
@@ -217,6 +263,53 @@ TEST(EgoSwarmPlannerTest, SelectsDeterministicObstacleAvoidingCandidate)
     EXPECT_GT(std::abs(
         result.trajectory.control_points().at(2).at(1)), 0.1);
     EXPECT_GE(result.minimum_obstacle_distance_m, 1.0);
+}
+
+TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
+{
+    PlannerConfig config;
+    config.peer_collision_min_distance_m = 3.0;
+    EgoSwarmPlanner planner(config);
+    PeerTrajectoryTable peers;
+
+    PeerTrajectory peer;
+    peer.agent_id = 2;
+    peer.start_time_s = 0.0;
+    peer.trajectory = BsplineTrajectory(
+        std::vector<Vector3>(4U, Vector3{0.0, 0.0, 0.0}), 1.0);
+    ASSERT_TRUE(peers.update(peer));
+
+    const auto result = planner.plan(
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{10.0, 0.0, 0.0},
+        {},
+        peers,
+        0.0,
+        1);
+
+    EXPECT_FALSE(result.is_valid);
+    EXPECT_TRUE(result.is_hold);
+    EXPECT_TRUE(result.trajectory.is_valid());
+    EXPECT_TRUE(result.has_finite_output());
+}
+
+TEST(EgoSwarmPlannerTest, EmptyObstacleInputIsAcceptedAsCurrentBaseline)
+{
+    EgoSwarmPlanner planner;
+    PeerTrajectoryTable peers;
+
+    const auto result = planner.plan(
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{5.0, 0.0, 0.0},
+        {},
+        peers,
+        0.0,
+        1);
+
+    ASSERT_TRUE(result.is_valid);
+    EXPECT_FALSE(result.is_hold);
+    EXPECT_DOUBLE_EQ(result.minimum_obstacle_distance_m, 0.0);
+    EXPECT_TRUE(result.has_finite_output());
 }
 
 }  // namespace

@@ -149,6 +149,29 @@ protected:
         ASSERT_TRUE(has_setpoint_);
     }
 
+    /** @brief 驗證目前 PX4 設定點各數值欄位均為有限值。 */
+    void expect_finite_setpoint_fields() const
+    {
+        for (const float value : latest_setpoint_.position)
+        {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+        for (const float value : latest_setpoint_.velocity)
+        {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+        for (const float value : latest_setpoint_.acceleration)
+        {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+        for (const float value : latest_setpoint_.jerk)
+        {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.yaw));
+        EXPECT_TRUE(std::isfinite(latest_setpoint_.yawspeed));
+    }
+
     rclcpp::Node::SharedPtr node_;
     rclcpp::executors::SingleThreadedExecutor executor_;
     std::unique_ptr<BasicController> controller_;
@@ -295,6 +318,7 @@ TEST_F(BasicControllerTrajectoryTest,
 
     publish_until_setpoint_received();
 
+    expect_finite_setpoint_fields();
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[0]));
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[1]));
     EXPECT_TRUE(std::isfinite(latest_setpoint_.position[2]));

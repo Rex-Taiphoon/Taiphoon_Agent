@@ -25,6 +25,10 @@ constexpr double WGS84_SEMI_MAJOR_AXIS_M = 6378137.0;
 constexpr double WGS84_FIRST_ECCENTRICITY_SQUARED = 6.6943799901413165e-3;
 /// 角度轉弧度常數。
 constexpr double DEGREES_TO_RADIANS = 0.017453292519943295;
+/// 緯度／經度原點相容性容差，單位為度。
+constexpr double SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG = 1.0e-9;
+/// 高度原點相容性容差，單位為公尺。
+constexpr double SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
 
 /**
  * @brief 共同 swarm_ned 座標轉換器
@@ -60,6 +64,33 @@ public:
                coordinate.latitude_deg <= MAX_LATITUDE_DEG &&
                coordinate.longitude_deg >= MIN_LONGITUDE_DEG &&
                coordinate.longitude_deg <= MAX_LONGITUDE_DEG;
+    }
+
+    /**
+     * @brief 檢查兩個 GPS 原點是否代表同一個共同座標系
+     *
+     * 訊息序列化可能造成極小浮點誤差；集中使用相同容差，避免不同
+     * ROS2 組裝層對 frame identity 得出不一致結果。
+     *
+     * @param left 第一個 GPS 原點
+     * @param right 第二個 GPS 原點
+     * @return true 表示兩個原點有效且在相容容差內
+     */
+    static bool are_origins_compatible(
+        const GeoCoordinate& left,
+        const GeoCoordinate& right)
+    {
+        if (!is_valid_geodetic(left) || !is_valid_geodetic(right))
+        {
+            return false;
+        }
+
+        return std::abs(left.latitude_deg - right.latitude_deg) <=
+                   SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
+            std::abs(left.longitude_deg - right.longitude_deg) <=
+                SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
+            std::abs(left.altitude_m - right.altitude_m) <=
+                SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M;
     }
 
     /**
