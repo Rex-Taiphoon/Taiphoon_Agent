@@ -4,14 +4,15 @@
  * @author Taiphoon Agent Team
  * @date 2026-08-10
  *
- * 測試幾何採樣、ground_truth_map、sensor_emulation、range/FOV 與有限數值。
- * 本測試檔案依使用者限制建立，但尚未接入 CMake，避免修改建置設定。
+ * 測試幾何採樣、三種 source、range/FOV 與有限數值。
+ * 測試三種 simulation source 與其共同 PointCloud2 資料契約。
  */
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -168,6 +169,24 @@ TEST(ObstacleCloudTest, GroundTruthMapIgnoresSensorRangeAndFov)
     EXPECT_EQ(result.second.dropped_points, 0U);
 }
 
+TEST(ObstacleCloudTest, ExplicitEmptyCreatesFreshZeroPointSource)
+{
+    auto config = make_ground_truth_config();
+    config.mode = CloudMode::ExplicitEmpty;
+    config.sensor.range_m = 0.0F;
+    config.sensor.dropout_ratio = 1.0F;
+
+    const auto result = ObstacleCloudGenerator::generate(
+        {make_box({5.0F, 0.0F, 0.0F})}, config,
+        SensorPose{{std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F},
+                   0.0F, 0.0F});
+
+    EXPECT_TRUE(result.first.points.empty());
+    EXPECT_TRUE(result.first.has_only_finite_points());
+    EXPECT_EQ(result.second.sampled_points, 0U);
+    EXPECT_EQ(result.second.selected_points, 0U);
+}
+
 TEST(ObstacleCloudTest, SensorEmulationFiltersRangeAndHorizontalFov)
 {
     auto config = make_ground_truth_config();
@@ -193,6 +212,27 @@ TEST(ObstacleCloudTest, SensorEmulationFiltersRangeAndHorizontalFov)
         EXPECT_LT(point.at(0), 10.0F);
     }
     EXPECT_GT(result.second.dropped_points, 0U);
+}
+
+TEST(ObstacleCloudTest, SensorEmulationUsesMovingSensorPose)
+{
+    auto config = make_ground_truth_config();
+    config.mode = CloudMode::SyntheticSensor;
+    config.sensor.range_m = 3.0F;
+    config.sensor.horizontal_fov_deg = 360.0F;
+    config.sensor.vertical_fov_deg = 180.0F;
+    config.sensor.noise_std_m = 0.0F;
+    config.sensor.dropout_ratio = 0.0F;
+
+    const auto obstacles = std::vector<ObstacleDefinition>{
+        make_box({5.0F, 0.0F, 0.0F})};
+    const auto away = ObstacleCloudGenerator::generate(
+        obstacles, config, SensorPose{{0.0F, 0.0F, 0.0F}, 0.0F, 0.0F});
+    const auto near = ObstacleCloudGenerator::generate(
+        obstacles, config, SensorPose{{4.0F, 0.0F, 0.0F}, 0.0F, 0.0F});
+
+    EXPECT_TRUE(away.first.points.empty());
+    EXPECT_FALSE(near.first.points.empty());
 }
 
 TEST(ObstacleCloudTest, SensorEmulationAppliesNoiseWithoutNonFiniteValues)

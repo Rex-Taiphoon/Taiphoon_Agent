@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 
@@ -78,6 +79,36 @@ std::string scalar_text(const std::string& line)
     return colon == std::string::npos ? std::string{} :
         trim(line.substr(colon + 1U));
 }
+
+perception::CloudMode parse_cloud_mode(const std::string& value)
+{
+    if (value == "explicit_empty")
+    {
+        return perception::CloudMode::ExplicitEmpty;
+    }
+    if (value == "ground_truth" || value == "ground_truth_map")
+    {
+        return perception::CloudMode::GroundTruth;
+    }
+    return perception::CloudMode::SyntheticSensor;
+}
+
+bool is_valid_global_state(const taiphoon_agent::msg::AgentState& state)
+{
+    return state.online && state.px4_state_valid &&
+        std::isfinite(state.position_global.at(0)) &&
+        std::isfinite(state.position_global.at(1)) &&
+        std::isfinite(state.position_global.at(2));
+}
+
+ego_swarm::GeoCoordinate to_geo(
+    const taiphoon_agent::msg::AgentState& state)
+{
+    return ego_swarm::GeoCoordinate{
+        static_cast<double>(state.position_global.at(0)),
+        static_cast<double>(state.position_global.at(1)),
+        static_cast<double>(state.position_global.at(2))};
+}
 }
 
 ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
@@ -85,6 +116,8 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
 {
     declare_parameter<std::string>("agent_namespace", "fmu1_agent");
     declare_parameter<std::string>("config_file", "");
+    declare_parameter<int>("agent_index", 1);
+    declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("publish_rate_hz", 15.0);
     declare_parameter<std::string>("mode", "sensor_emulation");
     declare_parameter<double>("range_m", 20.0);
@@ -96,10 +129,20 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     config_file_ = get_parameter("config_file").as_string();
+    agent_index_ = get_parameter("agent_index").as_int();
+    if (agent_index_ <= 0)
+    {
+        agent_index_ = compute_agent_index();
+    }
+    swarm_origin_agent_index_ = get_parameter(
+        "swarm_origin_agent_index").as_int();
+    if (swarm_origin_agent_index_ <= 0)
+    {
+        swarm_origin_agent_index_ = 1;
+    }
     publish_rate_hz_ = get_parameter("publish_rate_hz").as_double();
-    generation_config_.mode = get_parameter("mode").as_string() ==
-        "ground_truth_map" ? perception::CloudMode::GroundTruthMap :
-        perception::CloudMode::SensorEmulation;
+    generation_config_.mode = parse_cloud_mode(
+        get_parameter("mode").as_string());
     generation_config_.sensor.range_m = static_cast<float>(
         get_parameter("range_m").as_double());
     generation_config_.sensor.horizontal_fov_deg = static_cast<float>(
@@ -119,7 +162,8 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
                     "Could not load obstacle config '%s'; using parameters",
                     config_file_.c_str());
     }
-    if (obstacles_.empty())
+    if (obstacles_.empty() &&
+        generation_config_.mode != perception::CloudMode::ExplicitEmpty)
     {
         perception::ObstacleDefinition obstacle;
         obstacle.type = perception::ObstacleType::Box;
@@ -134,6 +178,14 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
     if (cloud_pub_ == nullptr)
     {
         RCLCPP_ERROR(get_logger(), "Failed to create obstacle cloud publisher");
+        return;
+    }
+
+    if (generation_config_.mode == perception::CloudMode::SyntheticSensor &&
+        !initialize_pose_subscribers())
+    {
+        RCLCPP_ERROR(get_logger(),
+                     "Failed to initialize synthetic sensor pose subscribers");
         return;
     }
 
@@ -172,9 +224,7 @@ bool ObstacleCloudSimulatorNode::load_scene_file(const std::string& path)
         }
         else if (clean.find("mode:") == 0U)
         {
-            generation_config_.mode = scalar_text(clean) ==
-                "ground_truth_map" ? perception::CloudMode::GroundTruthMap :
-                perception::CloudMode::SensorEmulation;
+            generation_config_.mode = parse_cloud_mode(scalar_text(clean));
         }
         else if (clean.find("publish_rate_hz:") == 0U)
         {
@@ -252,10 +302,154 @@ bool ObstacleCloudSimulatorNode::load_scene_file(const std::string& path)
     return !file.bad() && !obstacles_.empty();
 }
 
+bool ObstacleCloudSimulatorNode::initialize_pose_subscribers()
+{
+    own_state_sub_ = create_subscription<taiphoon_agent::msg::AgentState>(
+        "/" + agent_namespace_ + "/state", rclcpp::QoS(10).best_effort(),
+        std::bind(&ObstacleCloudSimulatorNode::own_state_cb, this,
+                  std::placeholders::_1));
+    attitude_sub_ = create_subscription<taiphoon_agent::msg::AgentAttitude>(
+        "/" + agent_namespace_ + "/attitude", rclcpp::QoS(10).best_effort(),
+        std::bind(&ObstacleCloudSimulatorNode::attitude_cb, this,
+                  std::placeholders::_1));
+
+    if (agent_index_ != swarm_origin_agent_index_)
+    {
+        const std::string origin_topic = "/fmu" +
+            std::to_string(swarm_origin_agent_index_) + "_agent/state";
+        origin_state_sub_ = create_subscription<
+            taiphoon_agent::msg::AgentState>(
+                origin_topic, rclcpp::QoS(10).best_effort(),
+                std::bind(&ObstacleCloudSimulatorNode::origin_state_cb, this,
+                          std::placeholders::_1));
+    }
+
+    return own_state_sub_ != nullptr && attitude_sub_ != nullptr &&
+        (agent_index_ == swarm_origin_agent_index_ ||
+         origin_state_sub_ != nullptr);
+}
+
+void ObstacleCloudSimulatorNode::own_state_cb(
+    const taiphoon_agent::msg::AgentState::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "own_state_cb received nullptr");
+        return;
+    }
+    own_state_ = *msg;
+    has_own_state_ = true;
+    if (agent_index_ == swarm_origin_agent_index_)
+    {
+        origin_state_ = *msg;
+        has_origin_state_ = true;
+    }
+    update_sensor_pose();
+}
+
+void ObstacleCloudSimulatorNode::origin_state_cb(
+    const taiphoon_agent::msg::AgentState::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "origin_state_cb received nullptr");
+        return;
+    }
+    origin_state_ = *msg;
+    has_origin_state_ = true;
+    update_sensor_pose();
+}
+
+void ObstacleCloudSimulatorNode::attitude_cb(
+    const taiphoon_agent::msg::AgentAttitude::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "attitude_cb received nullptr");
+        return;
+    }
+    for (const float component : msg->q)
+    {
+        if (!std::isfinite(component))
+        {
+            RCLCPP_WARN(get_logger(), "Rejecting non-finite sensor attitude");
+            return;
+        }
+    }
+
+    const double w = static_cast<double>(msg->q.at(0));
+    const double x = static_cast<double>(msg->q.at(1));
+    const double y = static_cast<double>(msg->q.at(2));
+    const double z = static_cast<double>(msg->q.at(3));
+    const double norm = std::sqrt(w * w + x * x + y * y + z * z);
+    if (!std::isfinite(norm) || norm <= 1.0e-6)
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting zero-length sensor attitude");
+        return;
+    }
+
+    const double normalized_w = w / norm;
+    const double normalized_x = x / norm;
+    const double normalized_y = y / norm;
+    const double normalized_z = z / norm;
+    const double pitch_argument = std::max(
+        -1.0, std::min(1.0, 2.0 * (
+            normalized_w * normalized_y - normalized_z * normalized_x)));
+    const double heading = std::atan2(
+        2.0 * (normalized_w * normalized_z +
+               normalized_x * normalized_y),
+        1.0 - 2.0 * (normalized_y * normalized_y +
+                      normalized_z * normalized_z));
+    const double pitch = std::asin(pitch_argument);
+    if (!std::isfinite(heading) || !std::isfinite(pitch))
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting invalid sensor attitude angles");
+        return;
+    }
+    sensor_pose_.heading_rad = static_cast<float>(heading);
+    sensor_pose_.pitch_rad = static_cast<float>(pitch);
+}
+
+void ObstacleCloudSimulatorNode::update_sensor_pose()
+{
+    if (!has_own_state_ || !is_valid_global_state(own_state_))
+    {
+        return;
+    }
+
+    if (!swarm_frame_.has_origin())
+    {
+        if (!has_origin_state_ || !is_valid_global_state(origin_state_) ||
+            !swarm_frame_.set_origin(to_geo(origin_state_)))
+        {
+            return;
+        }
+    }
+
+    ego_swarm::Vector3 position{};
+    if (!swarm_frame_.to_swarm_ned(to_geo(own_state_), position))
+    {
+        return;
+    }
+    sensor_pose_.position_ned = {
+        static_cast<float>(position.at(0)),
+        static_cast<float>(position.at(1)),
+        static_cast<float>(position.at(2))};
+    has_sensor_pose_ = true;
+}
+
 void ObstacleCloudSimulatorNode::publish_cloud_cb()
 {
     if (cloud_pub_ == nullptr)
     {
+        return;
+    }
+    if (generation_config_.mode == perception::CloudMode::SyntheticSensor &&
+        !has_sensor_pose_)
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 3000,
+            "Synthetic sensor is waiting for the current UAV pose");
         return;
     }
     try
@@ -272,6 +466,27 @@ void ObstacleCloudSimulatorNode::publish_cloud_cb()
         RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 3000,
                               "Obstacle cloud generation failed: %s",
                               error.what());
+    }
+}
+
+int ObstacleCloudSimulatorNode::compute_agent_index() const
+{
+    const std::size_t underscore = agent_namespace_.find('_');
+    if (underscore == std::string::npos ||
+        agent_namespace_.substr(0, 3) != "fmu")
+    {
+        return 1;
+    }
+    try
+    {
+        return std::max(1, std::stoi(agent_namespace_.substr(
+            3, underscore - 3)));
+    }
+    catch (const std::exception& error)
+    {
+        RCLCPP_WARN(get_logger(), "Cannot parse agent index: %s",
+                    error.what());
+        return 1;
     }
 }
 

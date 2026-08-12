@@ -80,6 +80,7 @@ ament_target_dependencies(agent_supervisor
 add_executable(ego_swarm_planner
   src/main_ego_swarm_planner.cpp
   src/nodes/ego_swarm_planner_node.cpp
+  src/perception/RawPointObstacleMap.cpp
 )
 
 target_include_directories(ego_swarm_planner PRIVATE
@@ -111,6 +112,8 @@ ament_target_dependencies(obstacle_cloud_simulator
   rclcpp
   sensor_msgs
 )
+
+target_link_libraries(obstacle_cloud_simulator ${cpp_typesupport_target})
 
 # --- 安裝 ---
 install(TARGETS basic_controller agent_supervisor ego_swarm_planner
@@ -234,6 +237,7 @@ if(BUILD_TESTING)
   # EGO-Swarm 核心測試
   ament_add_gtest(test_ego_swarm_core
     test/ego_swarm_core_test.cpp
+    src/perception/RawPointObstacleMap.cpp
   )
 
   target_include_directories(test_ego_swarm_core PRIVATE
@@ -244,6 +248,16 @@ if(BUILD_TESTING)
   ament_add_gtest(test_obstacle_cloud
     test/obstacle_cloud_test.cpp
     src/perception/ObstacleCloudGenerator.cpp
+  )
+
+  # LocalObstacleMap freshness 與幾何查詢測試
+  ament_add_gtest(test_obstacle_map
+    test/obstacle_map_test.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_obstacle_map PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
   target_include_directories(test_obstacle_cloud PRIVATE

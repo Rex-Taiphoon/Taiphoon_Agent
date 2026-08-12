@@ -22,6 +22,7 @@
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
+#include "perception/RawPointObstacleMap.hpp"
 
 namespace
 {
@@ -40,6 +41,7 @@ using taiphoon::ego_swarm::PlannerConfig;
 using taiphoon::ego_swarm::SwarmFrame;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::ego_swarm::distance_between_centers;
+using taiphoon::perception::RawPointObstacleMap;
 
 /**
  * @brief 建立同儕軌跡表測試用的有限 B-spline
@@ -74,6 +76,31 @@ PeerTrajectory make_peer_trajectory(
     peer.trajectory = make_test_trajectory(start_x);
     peer.end_time_s = peer.start_time_s + peer.trajectory.duration_s();
     return peer;
+}
+
+/**
+ * @brief 建立測試用 fresh explicit empty obstacle map
+ * @return 可供 planner 使用的空障礙物地圖
+ */
+RawPointObstacleMap make_empty_obstacle_map()
+{
+    RawPointObstacleMap map;
+    const bool updated = map.set_explicit_empty(0.0);
+    EXPECT_TRUE(updated);
+    return map;
+}
+
+/**
+ * @brief 建立測試用 fresh raw point obstacle map
+ * @param points 障礙物點
+ * @return 可供 planner 使用的障礙物地圖
+ */
+RawPointObstacleMap make_obstacle_map(const std::vector<Vector3>& points)
+{
+    RawPointObstacleMap map;
+    const bool updated = map.update(points, 0.0);
+    EXPECT_TRUE(updated);
+    return map;
 }
 
 TEST(SwarmFrameTest, ConvertsGpsToCommonNed)
@@ -216,12 +243,13 @@ TEST(EgoSwarmPlannerTest, DurationScalesWithDistance)
     config.candidate_offset_m = 0.0;
     EgoSwarmPlanner planner(config);
     PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
 
     const auto short_plan = planner.plan(
-        Vector3{0.0, 0.0, 0.0}, Vector3{1.0, 0.0, 0.0}, {}, peers,
+        Vector3{0.0, 0.0, 0.0}, Vector3{1.0, 0.0, 0.0}, empty_map, peers,
         0.0, 1, true);
     const auto long_plan = planner.plan(
-        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, {}, peers,
+        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, empty_map, peers,
         0.0, 1, true);
 
     ASSERT_TRUE(short_plan.trajectory.is_valid());
@@ -435,12 +463,12 @@ TEST(EgoSwarmPlannerTest, SelectsDeterministicObstacleAvoidingCandidate)
     config.peer_collision_min_distance_m = 1.5;
     EgoSwarmPlanner planner(config);
     PeerTrajectoryTable peers;
+    const auto obstacle_map = make_obstacle_map({Vector3{5.0, 0.0, 0.0}});
 
     const Vector3 current{0.0, 0.0, 0.0};
     const Vector3 target{10.0, 0.0, 0.0};
-    const std::vector<Vector3> obstacles{Vector3{5.0, 0.0, 0.0}};
     const auto result = planner.plan(
-        current, target, obstacles, peers, 0.0, 1);
+        current, target, obstacle_map, peers, 0.0, 1);
 
     ASSERT_TRUE(result.is_valid);
     EXPECT_FALSE(result.is_hold);
@@ -457,6 +485,7 @@ TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
     config.peer_collision_min_distance_m = 3.0;
     EgoSwarmPlanner planner(config);
     PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
 
     PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 0.0);
     ASSERT_TRUE(peers.update(peer));
@@ -464,7 +493,7 @@ TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
     const auto result = planner.plan(
         Vector3{0.0, 0.0, 0.0},
         Vector3{10.0, 0.0, 0.0},
-        {},
+        empty_map,
         peers,
         0.0,
         1);
@@ -479,11 +508,12 @@ TEST(EgoSwarmPlannerTest, DoesNotUsePeerEndpointAfterTrajectoryEnd)
 {
     EgoSwarmPlanner planner;
     PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
     const PeerTrajectory peer = make_peer_trajectory(2, 1U, 0.0, 0.0, 10.0);
     ASSERT_TRUE(peers.update(peer));
 
     const auto result = planner.plan(
-        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, {}, peers,
+        Vector3{0.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}, empty_map, peers,
         0.0, 1);
 
     EXPECT_TRUE(result.is_valid);
@@ -494,11 +524,12 @@ TEST(EgoSwarmPlannerTest, EmptyObstacleInputIsAcceptedAsCurrentBaseline)
 {
     EgoSwarmPlanner planner;
     PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
 
     const auto result = planner.plan(
         Vector3{0.0, 0.0, 0.0},
         Vector3{5.0, 0.0, 0.0},
-        {},
+        empty_map,
         peers,
         0.0,
         1);
@@ -509,15 +540,34 @@ TEST(EgoSwarmPlannerTest, EmptyObstacleInputIsAcceptedAsCurrentBaseline)
     EXPECT_TRUE(result.has_finite_output());
 }
 
+TEST(EgoSwarmPlannerTest, RejectsMissingOrStaleObstacleMap)
+{
+    EgoSwarmPlanner planner;
+    PeerTrajectoryTable peers;
+    RawPointObstacleMap map(1.0);
+
+    const auto missing_result = planner.plan(
+        Vector3{0.0, 0.0, 0.0}, Vector3{5.0, 0.0, 0.0}, map, peers,
+        0.0, 1);
+    EXPECT_FALSE(missing_result.is_valid);
+
+    ASSERT_TRUE(map.set_explicit_empty(0.0));
+    const auto stale_result = planner.plan(
+        Vector3{0.0, 0.0, 0.0}, Vector3{5.0, 0.0, 0.0}, map, peers,
+        2.0, 1);
+    EXPECT_FALSE(stale_result.is_valid);
+}
+
 TEST(EgoSwarmPlannerTest, HorizontalPlanPreservesAltitude)
 {
     EgoSwarmPlanner planner;
     PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
     const Vector3 current{0.0, 0.0, -8.0};
     const Vector3 target{0.0, -15.0, -8.0};
 
     const auto result = planner.plan(
-        current, target, {}, peers, 0.0, 1, true);
+        current, target, empty_map, peers, 0.0, 1, true);
 
     ASSERT_TRUE(result.is_valid);
     ASSERT_FALSE(result.is_hold);

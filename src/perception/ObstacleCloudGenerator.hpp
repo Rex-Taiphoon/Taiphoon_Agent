@@ -51,8 +51,11 @@ enum class ObstacleType
  */
 enum class CloudMode
 {
-    GroundTruthMap,
-    SensorEmulation
+    ExplicitEmpty,
+    GroundTruth,
+    SyntheticSensor,
+    GroundTruthMap = GroundTruth,
+    SensorEmulation = SyntheticSensor
 };
 
 /**
@@ -84,7 +87,7 @@ struct SensorPose
 };
 
 /**
- * @brief sensor_emulation 的感測模型參數
+ * @brief synthetic_sensor 的感測模型參數
  */
 struct SensorModel
 {
@@ -104,7 +107,7 @@ struct SensorModel
 struct GenerationConfig
 {
     std::string frame_id{"swarm_ned"};
-    CloudMode mode{CloudMode::GroundTruthMap};
+    CloudMode mode{CloudMode::GroundTruth};
     float sample_spacing_m{OBSTACLE_CLOUD_DEFAULT_SAMPLE_SPACING_M};
     SensorModel sensor{};
     std::uint32_t random_seed{OBSTACLE_CLOUD_DEFAULT_RANDOM_SEED};

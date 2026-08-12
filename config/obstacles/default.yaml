@@ -4,7 +4,7 @@
 # taiphoon::perception::GenerationConfig 與 std::vector<ObstacleDefinition>。
 
 frame_id: swarm_ned
-mode: sensor_emulation
+mode: synthetic_sensor
 sample_spacing_m: 0.5
 publish_rate_hz: 15.0
 random_seed: 20260810

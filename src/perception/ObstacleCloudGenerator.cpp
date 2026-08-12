@@ -345,7 +345,7 @@ bool validate_obstacle(
 }
 
 /**
- * @brief 將點加入輸出並套用 sensor_emulation 的雜訊
+ * @brief 將點加入輸出並套用 synthetic_sensor 的雜訊
  *
  * @param point 原始幾何點
  * @param config 生成設定
@@ -361,7 +361,7 @@ void select_point(
     GenerationReport& report)
 {
     ++report.sampled_points;
-    if (config.mode == CloudMode::SensorEmulation)
+    if (config.mode == CloudMode::SyntheticSensor)
     {
         std::uniform_real_distribution<float> dropout_distribution(0.0F, 1.0F);
         if (dropout_distribution(random_engine) < config.sensor.dropout_ratio)
@@ -372,7 +372,7 @@ void select_point(
     }
 
     Point3f selected = point;
-    if (config.mode == CloudMode::SensorEmulation &&
+    if (config.mode == CloudMode::SyntheticSensor &&
         config.sensor.noise_std_m > 0.0F)
     {
         std::normal_distribution<float> noise_distribution(
@@ -532,6 +532,11 @@ bool ObstacleCloudGenerator::validate_config(
         return false;
     }
 
+    if (config.mode == CloudMode::ExplicitEmpty)
+    {
+        return true;
+    }
+
     const auto& sensor = config.sensor;
     if (!is_finite_positive(sensor.range_m))
     {
@@ -576,11 +581,17 @@ std::pair<PointCloud2Data, GenerationReport> ObstacleCloudGenerator::generate(
     {
         throw std::invalid_argument(error);
     }
-    if (!is_finite(sensor_pose.position_ned) ||
-        !std::isfinite(sensor_pose.heading_rad) ||
-        !std::isfinite(sensor_pose.pitch_rad))
+    if (config.mode != CloudMode::ExplicitEmpty &&
+        (!is_finite(sensor_pose.position_ned) ||
+         !std::isfinite(sensor_pose.heading_rad) ||
+         !std::isfinite(sensor_pose.pitch_rad)))
     {
         throw std::invalid_argument("sensor_pose 含有非有限值");
+    }
+
+    if (config.mode == CloudMode::ExplicitEmpty)
+    {
+        return {make_cloud(config.frame_id, {}), GenerationReport{}};
     }
 
     std::vector<Point3f> samples;
@@ -601,7 +612,7 @@ std::pair<PointCloud2Data, GenerationReport> ObstacleCloudGenerator::generate(
         sample_obstacle(obstacle, config.sample_spacing_m, obstacle_points);
         for (const auto& point : obstacle_points)
         {
-            if (config.mode == CloudMode::SensorEmulation &&
+            if (config.mode == CloudMode::SyntheticSensor &&
                 !is_visible(point, sensor_pose, config.sensor))
             {
                 ++report.sampled_points;

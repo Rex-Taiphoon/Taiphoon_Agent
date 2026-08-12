@@ -30,6 +30,7 @@
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "formation/PeerMatcher.hpp"
+#include "perception/RawPointObstacleMap.hpp"
 
 namespace taiphoon
 {
@@ -46,6 +47,7 @@ constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
 constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
 constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 1.0;
 constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 0.5;
+constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -111,6 +113,7 @@ private:
         bool localization_valid,
         bool peer_data_valid,
         const rclcpp::Time& stamp);
+    std::string obstacle_map_status_reason(double now_s) const;
     int compute_self_index() const;
 
     std::string agent_namespace_{"fmu1_agent"};
@@ -119,6 +122,8 @@ private:
     double planning_rate_hz_{DEFAULT_EGO_PLANNER_RATE_HZ};
     double peer_trajectory_timeout_s_{DEFAULT_PEER_TRAJECTORY_TIMEOUT_S};
     double max_peer_time_skew_s_{DEFAULT_MAX_PEER_TIME_SKEW_S};
+    double obstacle_cloud_timeout_s_{DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S};
+    bool require_obstacle_cloud_{true};
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
     double local_arrival_tolerance_m_{DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M};
     double global_arrival_tolerance_m_{DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M};
@@ -136,7 +141,6 @@ private:
 
     bool has_own_state_{false};
     bool has_goal_{false};
-    bool has_obstacle_cloud_{false};
     bool has_formation_{false};
     bool preserve_altitude_{false};
     bool has_active_plan_{false};
@@ -147,7 +151,7 @@ private:
     rclcpp::Time active_plan_start_time_{
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
     uint32_t active_plan_trajectory_id_{0U};
-    std::vector<ego_swarm::Vector3> obstacle_points_{};
+    perception::RawPointObstacleMap obstacle_map_{};
     ego_swarm::FormationConfig formation_config_{};
     ego_swarm::Vector3 formation_center_{0.0, 0.0, 0.0};
 

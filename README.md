@@ -413,13 +413,16 @@ ego_swarm_planner
 sensor_msgs/msg/PointCloud2
 ```
 
-目標支援 `box`、`cylinder`、`wall`，以及 `ground_truth_map`、`sensor_emulation`。
+支援 `box`、`cylinder`、`wall`，以及 `explicit_empty`、`ground_truth`、
+`synthetic_sensor` 三種障礙物來源（亦相容 `ground_truth_map`、
+`sensor_emulation` 舊名稱）。Synthetic sensor 會從 AgentState／AgentAttitude
+更新 UAV 在 `swarm_ned` 的目前 pose；尚未取得 pose 時不發布固定原點的假資料。
 可直接從 [`config/obstacles/default.yaml`](config/obstacles/default.yaml) 複製場景再
 修改；Launch 可使用 `enable_obstacle_cloud_simulator:=true` 啟動模擬器：
 
 ```yaml
 frame_id: swarm_ned
-mode: sensor_emulation
+mode: synthetic_sensor
 sample_spacing_m: 0.5
 publish_rate_hz: 15.0
 random_seed: 20260810
@@ -571,6 +574,8 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 | `swarm_origin_agent_index` | int | `1` | 固定 `swarm_ned` 原點的 Agent 索引；尚未取得該 Agent 有效 GPS 前保持 HOLD，原點建立後不再切換 |
 | `peer_trajectory_timeout_s` | double | `1.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
 | `max_peer_time_skew_s` | double | `0.5` | 同儕軌跡 message／start time 與本機 receive time 允許的最大時間偏差 |
+| `obstacle_cloud_timeout_s` | double | `1.0` | 局部障礙物地圖 freshness timeout；逾時後 planner 進入 HOLD |
+| `require_obstacle_cloud` | bool | `true` | 是否要求 fresh obstacle map；missing/stale 不會被當成 explicit empty |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | double | `3.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
 | `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
@@ -599,13 +604,20 @@ planning cycle 重置進度。Planner 同時檢查 PX4 local NED 與 GPS common 
 | `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
 | `config_file` | string | 空字串 | YAML 場景檔；Launch 預設為 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | double | `15.0` | PointCloud2 發布頻率 |
-| `mode` | string | `sensor_emulation` | `ground_truth_map` 或 `sensor_emulation` |
+| `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
+| `swarm_origin_agent_index` | int | `1` | synthetic sensor 使用的固定 `swarm_ned` 原點 Agent |
+| `mode` | string | `synthetic_sensor` | `explicit_empty`、`ground_truth` 或 `synthetic_sensor`；相容舊名稱 |
 | `range_m` | double | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | double | `270.0` | 水平視野 |
 | `vertical_fov_deg` | double | `90.0` | 垂直視野 |
 | `noise_std_m` | double | `0.02` | 感測位置雜訊標準差 |
 | `dropout_ratio` | double | `0.05` | 點雲 dropout 比例 |
 | `sample_spacing_m` | double | `0.5` | 障礙物表面採樣間距 |
+
+Planner 只接受 `IObstacleMap` 的 fresh map。未收到 cloud 是 `missing`，收到但超過
+`obstacle_cloud_timeout_s` 是 `stale`；只有 `explicit_empty` source 產生的 zero-point
+map 才是 `fresh + valid + empty`。因此啟動 obstacle simulator 時，無障礙場景應明確使用
+`obstacle_mode:=explicit_empty`，不能以停發 PointCloud2 代表空環境。
 
 範例：停用自動 Offboard 並設定起飛高度 5m：
 

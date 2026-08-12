@@ -94,6 +94,9 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_PEER_TRAJECTORY_TIMEOUT_S);
     declare_parameter<double>("max_peer_time_skew_s",
                              DEFAULT_MAX_PEER_TIME_SKEW_S);
+    declare_parameter<double>("obstacle_cloud_timeout_s",
+                             DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S);
+    declare_parameter<bool>("require_obstacle_cloud", true);
     declare_parameter<double>("formation_min_distance_m",
                              DEFAULT_FORMATION_MIN_DISTANCE_M);
     declare_parameter<double>("peer_collision_min_distance_m",
@@ -145,6 +148,16 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         max_peer_time_skew_s_ = DEFAULT_MAX_PEER_TIME_SKEW_S;
     }
 
+    obstacle_cloud_timeout_s_ = get_parameter(
+        "obstacle_cloud_timeout_s").as_double();
+    if (!std::isfinite(obstacle_cloud_timeout_s_) ||
+        obstacle_cloud_timeout_s_ <= 0.0)
+    {
+        obstacle_cloud_timeout_s_ = DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S;
+    }
+    require_obstacle_cloud_ = get_parameter(
+        "require_obstacle_cloud").as_bool();
+
     formation_min_distance_m_ = get_parameter(
         "formation_min_distance_m").as_double();
     if (!std::isfinite(formation_min_distance_m_) ||
@@ -184,6 +197,11 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
         return;
     }
+    if (!obstacle_map_.set_freshness_timeout(obstacle_cloud_timeout_s_))
+    {
+        RCLCPP_ERROR(get_logger(), "Obstacle map freshness parameters are invalid");
+        return;
+    }
     if (!peer_trajectories_.set_config(
             ego_swarm::PeerTrajectoryTableConfig{
                 peer_trajectory_timeout_s_, max_peer_time_skew_s_}))
@@ -214,12 +232,15 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
                 "origin_agent=%d peer_distance=%.2f m "
                 "obstacle_clearance=%.2f m peer_timeout=%.2f s "
-                "max_peer_time_skew=%.2f s",
+                "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
+                "require_obstacle_cloud=%s",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
                 planner_config_.obstacle_clearance_m,
-                peer_trajectory_timeout_s_, max_peer_time_skew_s_);
+                peer_trajectory_timeout_s_, max_peer_time_skew_s_,
+                obstacle_cloud_timeout_s_,
+                require_obstacle_cloud_ ? "true" : "false");
 }
 
 bool EgoSwarmPlannerNode::initialize_subscribers()
@@ -506,8 +527,15 @@ void EgoSwarmPlannerNode::obstacle_cb(
         return;
     }
 
-    obstacle_points_ = points;
-    has_obstacle_cloud_ = true;
+    const double stamp_s = static_cast<double>(msg->header.stamp.sec) +
+        static_cast<double>(msg->header.stamp.nanosec) * 1.0e-9;
+    if (!std::isfinite(stamp_s) || stamp_s < 0.0 ||
+        !obstacle_map_.update(points, stamp_s))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Rejecting obstacle cloud with invalid timestamp or data");
+        return;
+    }
 }
 
 void EgoSwarmPlannerNode::trajectory_cb(
@@ -694,6 +722,16 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
+    const auto obstacle_status = obstacle_map_.status(now_s);
+    if (obstacle_status != perception::ObstacleMapStatus::Fresh)
+    {
+        const std::string reason = obstacle_map_status_reason(now_s);
+        publish_status(
+            PLANNER_STATE_HOLD, reason, nullptr, true,
+            peer_trajectories_.has_fresh(now_s), now);
+        return;
+    }
+
     const bool preserve_altitude = preserve_altitude_ && !has_formation_;
     if (preserve_altitude)
     {
@@ -727,7 +765,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
 
     const auto result = planner_.plan(
-        current, target, obstacle_points_, peer_trajectories_,
+        current, target, obstacle_map_, peer_trajectories_,
         now_s, agent_index_, preserve_altitude);
     active_plan_ = result;
     active_plan_target_ = target;
@@ -1079,6 +1117,41 @@ void EgoSwarmPlannerNode::publish_plan(
     local_trajectory_pub_->publish(message);
 }
 
+std::string EgoSwarmPlannerNode::obstacle_map_status_reason(
+    const double now_s) const
+{
+    const auto status = obstacle_map_.status(now_s);
+    if (require_obstacle_cloud_)
+    {
+        switch (status)
+        {
+            case perception::ObstacleMapStatus::Missing:
+                return "Required obstacle map is missing";
+            case perception::ObstacleMapStatus::Stale:
+                return "Required obstacle map is stale";
+            case perception::ObstacleMapStatus::Invalid:
+                return "Required obstacle map is invalid";
+            case perception::ObstacleMapStatus::Fresh:
+                return "ok";
+        }
+    }
+    else
+    {
+        switch (status)
+        {
+            case perception::ObstacleMapStatus::Missing:
+                return "Obstacle map missing; waiting for explicit_empty source";
+            case perception::ObstacleMapStatus::Stale:
+                return "Obstacle map stale; waiting for a fresh source";
+            case perception::ObstacleMapStatus::Invalid:
+                return "Obstacle map invalid; waiting for a valid source";
+            case perception::ObstacleMapStatus::Fresh:
+                return "ok";
+        }
+    }
+    return "Obstacle map status unavailable";
+}
+
 void EgoSwarmPlannerNode::publish_status(
     const uint8_t state,
     const std::string& reason,
@@ -1095,7 +1168,7 @@ void EgoSwarmPlannerNode::publish_status(
     status.stamp = stamp;
     status.state = state;
     status.trajectory_id = trajectory_id_;
-    status.map_valid = has_obstacle_cloud_;
+    status.map_valid = obstacle_map_.is_fresh(stamp.seconds());
     status.localization_valid = localization_valid;
     status.peer_data_valid = peer_data_valid;
     status.planning_time_ms = 0.0F;

@@ -82,7 +82,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、GPS common frame、PointCloud2 與同儕未來軌跡，輸出本機軌跡。 |
-| **參數** | `agent_namespace`、`agent_index`、`swarm_origin_agent_index`、`peer_trajectory_timeout_s`、`max_peer_time_skew_s`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
+| **參數** | `agent_namespace`、`agent_index`、`swarm_origin_agent_index`、`peer_trajectory_timeout_s`、`max_peer_time_skew_s`、`obstacle_cloud_timeout_s`、`require_obstacle_cloud`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
 
 **內部組件**：
 - `SwarmFrame`：共同 GPS／NED 座標框架
@@ -100,6 +100,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `swarm_origin_agent_index` | `int` | `1` | 固定 `swarm_ned` 原點的 Agent 索引；等待其有效 GPS，建立後 freeze |
 | `peer_trajectory_timeout_s` | `double` | `1.0` | 同儕 `AgentTrajectory` 收到後可供 planner 使用的最長時間；逾時後標記為 stale |
 | `max_peer_time_skew_s` | `double` | `0.5` | `AgentTrajectory` message／start time 與本機 receive time 允許的最大共同時間偏差 |
+| `obstacle_cloud_timeout_s` | `double` | `1.0` | 局部障礙物地圖 freshness timeout；逾時後不再規劃 |
+| `require_obstacle_cloud` | `bool` | `true` | 要求 fresh obstacle map；missing/stale 不得當成空環境 |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
@@ -119,10 +121,11 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `obstacle_cloud_simulator` |
 | **命名空間** | 依啟動設定決定 |
 | **描述** | 讀取 YAML 幾何障礙物，產生 `sensor_msgs/msg/PointCloud2`，供 EGO-Swarm 局部障礙物地圖使用。 |
-| **參數** | `agent_namespace`、`config_file`、`publish_rate_hz`、`mode`、`range_m`、`horizontal_fov_deg`、`vertical_fov_deg`、`noise_std_m`、`dropout_ratio`、`sample_spacing_m` |
+| **參數** | `agent_namespace`、`agent_index`、`swarm_origin_agent_index`、`config_file`、`publish_rate_hz`、`mode`、`range_m`、`horizontal_fov_deg`、`vertical_fov_deg`、`noise_std_m`、`dropout_ratio`、`sample_spacing_m` |
 
-支援的目標場景類型為 `box`、`cylinder` 與 `wall`，並規劃支援 `ground_truth_map`
-與 `sensor_emulation` 兩種資料模式。輸出 Topic 固定為
+支援的目標場景類型為 `box`、`cylinder` 與 `wall`，資料模式為
+`explicit_empty`、`ground_truth` 與 `synthetic_sensor`（相容
+`ground_truth_map`／`sensor_emulation`）。輸出 Topic 固定為
 `/{agent_namespace}/perception/obstacles`。
 
 **實際參數**：
@@ -130,9 +133,11 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | 參數 | 型別 | Node 預設值 | 說明 |
 |------|------|-------------|------|
 | `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_index` | `int` | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
+| `swarm_origin_agent_index` | `int` | `1` | synthetic sensor 的固定 `swarm_ned` 原點 Agent |
 | `config_file` | `string` | 空字串 | YAML 場景檔；Launch 預設使用 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | `double` | `15.0` | PointCloud2 發布頻率 |
-| `mode` | `string` | `sensor_emulation` | `ground_truth_map` 或 `sensor_emulation` |
+| `mode` | `string` | `synthetic_sensor` | `explicit_empty`、`ground_truth` 或 `synthetic_sensor`；相容舊名稱 |
 | `range_m` | `double` | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | `double` | `270.0` | 水平視野 |
 | `vertical_fov_deg` | `double` | `90.0` | 垂直視野 |

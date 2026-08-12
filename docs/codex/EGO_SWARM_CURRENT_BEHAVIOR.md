@@ -13,7 +13,7 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
                          ↓
               EgoSwarmPlannerNode callbacks
                          ↓
-      swarm_ned position + raw obstacle points + peer table
+      swarm_ned position + fresh LocalObstacleMap + peer table
                          ↓
               EgoSwarmPlanner::plan
                          ↓
@@ -71,7 +71,9 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
   或 peer collision distance 即拒絕。
 - 沒有安全候選時回傳由目前位置構成的有限 hold B-spline，但 `is_valid` 為
   false、`is_hold` 為 true。
-- `obstacle_points` 是 raw `vector<Vector3>`；空列表代表沒有障礙物。
+- `EgoSwarmPlanner` 只依賴 `IObstacleMap`；目前 backend 是
+  `RawPointObstacleMap`。只有 `explicit_empty` source 產生的 valid empty map
+  代表沒有障礙物。
 
 ## ROS2 assembly behavior
 
@@ -83,11 +85,13 @@ AgentState / GPS / mission intent / PointCloud2 / peer AgentTrajectory
 - peer `AgentTrajectory` 必須通過 agent ID、valid、order、frame revision、
   frame origin、knot／duration、控制點長度、有限值、timestamp sanity、freshness
   與 trajectory ID 單調性檢查；逾時或結束的資料不再參與 planner。
-- obstacle callback 只接受 `header.frame_id == "swarm_ned"` 且所有 x/y/z 有限的
-  PointCloud2；成功收到空 cloud 會將 `has_obstacle_cloud_` 設為 true。
-- planner loop 沒有以 `has_obstacle_cloud_` 阻擋規劃；尚未收到 cloud 時仍把
-  `obstacle_points_` 的初始空列表傳給 planner。status 的 `map_valid` 此時是
-  false，但 planner 仍可能輸出 valid trajectory。
+- obstacle callback 只接受 `header.frame_id == "swarm_ned"`、合法 timestamp 且所有
+  x/y/z 有限的 PointCloud2；成功收到空 cloud 會建立 valid empty map。
+- planner loop 以 `obstacle_cloud_timeout_s` 區分 `missing`、`fresh` 與 `stale`。
+  尚未收到或已過期的 map 都會阻擋新的移動規劃並發布 HOLD status，不會被視為空
+  障礙物；`require_obstacle_cloud` 只影響降級原因文字，Phase 2 維持 fail-closed。
+- `obstacle_cloud_simulator` 的 `synthetic_sensor` 從 AgentState／AgentAttitude 更新
+  UAV 在 `swarm_ned` 的 pose；尚未取得 pose 時不發布固定原點資料。
 - planner result 發布至 `/fmu_all_agent/swarm/agent_trajectories` 與本機
   `/planning/trajectory`；status 發布至本機 `/planning/status`。
 - `/{agent_namespace}/command` 中的 `MOVE_*`、`MOVE_POINT` 與

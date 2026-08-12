@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "perception/IObstacleMap.hpp"
 
 namespace taiphoon
 {
@@ -79,7 +80,7 @@ struct PlannerResult
 /**
  * @brief EGO-Swarm 風格局部規劃深層模組
  *
- * 對外只需要目前位置、編隊槽位目標、障礙物點雲、同儕軌跡表與
+ * 對外只需要目前位置、編隊槽位目標、局部障礙物地圖、同儕軌跡表與
  * 時間，即可取得一條 deterministic B-spline。完整梯度最佳化可在
  * build_candidates 與 evaluate_candidate 的內部 seam 後續替換。
  */
@@ -134,7 +135,7 @@ public:
      *
      * @param current_position 目前機體中心的 swarm_ned 位置
      * @param target_position 編隊槽位或任務目標的 swarm_ned 位置
-     * @param obstacle_points PointCloud2 轉換後的障礙物點
+     * @param obstacle_map 已驗證且具 freshness 狀態的局部障礙物地圖
      * @param peer_table 同儕軌跡生命週期表
      * @param now_s 目前共同時間，單位為秒
      * @param self_agent_id 自身 Agent ID，用於排除自身軌跡
@@ -144,7 +145,7 @@ public:
     PlannerResult plan(
         const Vector3& current_position,
         const Vector3& target_position,
-        const std::vector<Vector3>& obstacle_points,
+        const perception::IObstacleMap& obstacle_map,
         const PeerTrajectoryTable& peer_table,
         const double now_s,
         const int self_agent_id,
@@ -155,7 +156,8 @@ public:
             !is_finite_vector(current_position) ||
             !is_finite_vector(target_position) ||
             !is_finite(now_s) ||
-            !are_finite_points(obstacle_points))
+            !obstacle_map.is_valid() ||
+            !obstacle_map.is_fresh(now_s))
         {
             return result;
         }
@@ -180,7 +182,7 @@ public:
             const CandidateEvaluation evaluation = evaluate_candidate(
                 candidate,
                 target_position,
-                obstacle_points,
+                obstacle_map,
                 peer_table,
                 now_s,
                 self_agent_id);
@@ -290,24 +292,6 @@ private:
     static bool is_non_negative_finite(const double value)
     {
         return is_finite(value) && value >= 0.0;
-    }
-
-    /**
-     * @brief 檢查障礙物點列表
-     *
-     * @param points 障礙物點列表
-     * @return true 表示所有點皆為有限值
-     */
-    static bool are_finite_points(const std::vector<Vector3>& points)
-    {
-        for (const Vector3& point : points)
-        {
-            if (!is_finite_vector(point))
-            {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -442,7 +426,7 @@ private:
      *
      * @param candidate 候選 B-spline
      * @param target_position 目標位置
-     * @param obstacle_points 障礙物點列表
+     * @param obstacle_map 局部障礙物地圖
      * @param peer_table 最後有效同儕軌跡表
      * @param now_s 共同現在時間
      * @param self_agent_id 自身 Agent ID
@@ -451,7 +435,7 @@ private:
     CandidateEvaluation evaluate_candidate(
         const BsplineTrajectory& candidate,
         const Vector3& target_position,
-        const std::vector<Vector3>& obstacle_points,
+        const perception::IObstacleMap& obstacle_map,
         const PeerTrajectoryTable& peer_table,
         const double now_s,
         const int self_agent_id) const
@@ -499,7 +483,7 @@ private:
                 sample.position, target_position);
             if (!evaluate_obstacles(
                     sample.position,
-                    obstacle_points,
+                    obstacle_map,
                     minimum_obstacle_distance,
                     obstacle_cost))
             {
@@ -518,7 +502,7 @@ private:
             }
         }
 
-        if (obstacle_points.empty())
+        if (obstacle_map.point_count() == 0U)
         {
             minimum_obstacle_distance = 0.0;
         }
@@ -598,34 +582,41 @@ private:
      * @brief 評估單一取樣點與靜態障礙物的關係
      *
      * @param sample_position 本機候選位置
-     * @param obstacle_points 障礙物點列表
+     * @param obstacle_map 局部障礙物地圖
      * @param[in,out] minimum_distance 目前最小障礙物距離
      * @param[in,out] cost 障礙物成本累計值
      * @return false 表示已違反 clearance 或輸入異常
      */
     bool evaluate_obstacles(
         const Vector3& sample_position,
-        const std::vector<Vector3>& obstacle_points,
+        const perception::IObstacleMap& obstacle_map,
         double& minimum_distance,
         double& cost) const
     {
-        for (const Vector3& obstacle : obstacle_points)
+        const double nearest_distance = obstacle_map.nearest_distance(
+            sample_position);
+        if (obstacle_map.point_count() > 0U &&
+            !is_finite(nearest_distance))
         {
-            const double distance = distance_between_centers(
-                sample_position, obstacle);
-            if (!is_finite(distance))
-            {
-                return false;
-            }
-            minimum_distance = std::min(minimum_distance, distance);
-            if (distance + EGO_SWARM_EPSILON_M <
-                config_.obstacle_clearance_m)
-            {
-                return false;
-            }
-            cost += 1.0 / std::max(
-                distance, EGO_SWARM_EPSILON_M);
+            return false;
         }
+        if (obstacle_map.point_count() == 0U)
+        {
+            return true;
+        }
+        minimum_distance = std::min(minimum_distance, nearest_distance);
+        if (!obstacle_map.is_position_safe(
+                sample_position, config_.obstacle_clearance_m))
+        {
+            return false;
+        }
+        const double obstacle_cost = obstacle_map.obstacle_cost(
+            sample_position);
+        if (!is_finite(obstacle_cost))
+        {
+            return false;
+        }
+        cost += obstacle_cost;
         return is_finite(cost);
     }
 

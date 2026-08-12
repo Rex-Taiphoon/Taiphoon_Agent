@@ -152,6 +152,11 @@ def launch_nodes(context, *args, **kwargs):
                     "peer_trajectory_timeout_s")},
                 {"max_peer_time_skew_s": LaunchConfiguration(
                     "max_peer_time_skew_s")},
+                {"obstacle_cloud_timeout_s": LaunchConfiguration(
+                    "obstacle_cloud_timeout_s")},
+                {"require_obstacle_cloud": ParameterValue(
+                    LaunchConfiguration("require_obstacle_cloud"),
+                    value_type=bool)},
                 {"planning_rate_hz": LaunchConfiguration(
                     "planning_rate_hz")},
                 {"formation_min_distance_m": LaunchConfiguration(
@@ -186,6 +191,9 @@ def launch_nodes(context, *args, **kwargs):
                 name="obstacle_cloud_simulator",
                 parameters=[
                     {"agent_namespace": agent_ns},
+                    {"agent_index": i},
+                    {"swarm_origin_agent_index": LaunchConfiguration(
+                        "swarm_origin_agent_index")},
                     {"config_file": obstacle_config},
                     {"publish_rate_hz": LaunchConfiguration(
                         "obstacle_publish_rate_hz")},
@@ -261,6 +269,14 @@ def generate_launch_description():
             default_value="0.5",
             description="同儕軌跡時間戳允許的最大時鐘偏差（秒）"),
         DeclareLaunchArgument(
+            "obstacle_cloud_timeout_s",
+            default_value="1.0",
+            description="障礙物地圖 freshness timeout（秒）"),
+        DeclareLaunchArgument(
+            "require_obstacle_cloud",
+            default_value="true",
+            description="是否要求 fresh obstacle map 才能規劃"),
+        DeclareLaunchArgument(
             "formation_min_distance_m",
             default_value="3.0",
             description="編隊槽位中心到中心最小距離（公尺），可降至 1.5 或 2"),
@@ -310,8 +326,10 @@ def generate_launch_description():
             description="障礙物 PointCloud2 發布頻率（Hz）"),
         DeclareLaunchArgument(
             "obstacle_mode",
-            default_value="sensor_emulation",
-            description="障礙物模式：ground_truth_map 或 sensor_emulation"),
+            default_value="synthetic_sensor",
+            description=(
+                "障礙物模式：explicit_empty、ground_truth 或 "
+                "synthetic_sensor")),
         DeclareLaunchArgument(
             "obstacle_range_m",
             default_value="20.0",
