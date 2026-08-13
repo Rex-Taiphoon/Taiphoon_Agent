@@ -93,6 +93,20 @@ perception::CloudMode parse_cloud_mode(const std::string& value)
     return perception::CloudMode::SyntheticSensor;
 }
 
+const char* cloud_mode_name(const perception::CloudMode mode)
+{
+    switch (mode)
+    {
+        case perception::CloudMode::ExplicitEmpty:
+            return "explicit_empty";
+        case perception::CloudMode::GroundTruth:
+            return "ground_truth";
+        case perception::CloudMode::SyntheticSensor:
+        default:
+            return "synthetic_sensor";
+    }
+}
+
 bool is_valid_global_state(const taiphoon_agent::msg::AgentState& state)
 {
     return state.online && state.px4_state_valid &&
@@ -119,7 +133,9 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("publish_rate_hz", 15.0);
-    declare_parameter<std::string>("mode", "sensor_emulation");
+    // 模擬預設為無障礙，但仍保留 simulator 發布 fresh empty cloud，讓
+    // planner 可以區分「沒有障礙物」與「障礙物資料遺失」兩種狀態。
+    declare_parameter<std::string>("mode", "explicit_empty");
     declare_parameter<double>("range_m", 20.0);
     declare_parameter<double>("horizontal_fov_deg", 270.0);
     declare_parameter<double>("vertical_fov_deg", 90.0);
@@ -141,8 +157,9 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
         swarm_origin_agent_index_ = 1;
     }
     publish_rate_hz_ = get_parameter("publish_rate_hz").as_double();
-    generation_config_.mode = parse_cloud_mode(
-        get_parameter("mode").as_string());
+    const std::string requested_mode = get_parameter("mode").as_string();
+    const perception::CloudMode parameter_mode = parse_cloud_mode(requested_mode);
+    generation_config_.mode = parameter_mode;
     generation_config_.sensor.range_m = static_cast<float>(
         get_parameter("range_m").as_double());
     generation_config_.sensor.horizontal_fov_deg = static_cast<float>(
@@ -162,6 +179,10 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
                     "Could not load obstacle config '%s'; using parameters",
                     config_file_.c_str());
     }
+    // YAML 僅提供場景幾何與 sensor 參數；有效 source mode 必須由 ROS2
+    // parameter 決定，避免 default.yaml 的 synthetic_sensor 意外讓無障礙
+    // 基線重新產生障礙物點雲。
+    generation_config_.mode = parameter_mode;
     if (obstacles_.empty() &&
         generation_config_.mode != perception::CloudMode::ExplicitEmpty)
     {
@@ -171,6 +192,13 @@ ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
         obstacle.size_m = {4.0F, 8.0F, 6.0F};
         obstacles_.push_back(obstacle);
     }
+
+    RCLCPP_INFO(
+        get_logger(),
+        "Obstacle cloud simulator effective mode=%s (ROS2 mode='%s'); "
+        "scene='%s' obstacles=%zu",
+        cloud_mode_name(generation_config_.mode), requested_mode.c_str(),
+        config_file_.c_str(), obstacles_.size());
 
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
         "/" + agent_namespace_ + "/perception/obstacles",
@@ -224,7 +252,9 @@ bool ObstacleCloudSimulatorNode::load_scene_file(const std::string& path)
         }
         else if (clean.find("mode:") == 0U)
         {
-            generation_config_.mode = parse_cloud_mode(scalar_text(clean));
+            // mode 的優先權屬於 ROS2 parameter；保留此分支只為明確忽略
+            // YAML 欄位，幾何與 sensor 設定仍由同一份檔案載入。
+            continue;
         }
         else if (clean.find("publish_rate_hz:") == 0U)
         {

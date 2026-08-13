@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -20,14 +21,19 @@
 #include "std_msgs/msg/string.hpp"
 
 #include "taiphoon_agent/msg/agent_state.hpp"
+#include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_trajectory.hpp"
+#include "taiphoon_agent/msg/formation_epoch.hpp"
 #include "taiphoon_agent/msg/ned_target.hpp"
 #include "taiphoon_agent/msg/planner_status.hpp"
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/EgoSwarmPlanner.hpp"
+#include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
+#include "ego_swarm/FormationTransition.hpp"
+#include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
@@ -53,6 +59,9 @@ constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
 constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.0;
 constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.0;
 constexpr double DEFAULT_MAX_JERK_MPS3 = 2.0;
+constexpr double DEFAULT_MOVE_ATTITUDE_TIMEOUT_S = 1.0;
+constexpr double DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M = 2.0;
+constexpr int DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT = 2;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -76,6 +85,8 @@ private:
     };
 
     void own_state_cb(const taiphoon_agent::msg::AgentState::SharedPtr msg);
+    void own_attitude_cb(
+        const taiphoon_agent::msg::AgentAttitude::SharedPtr msg);
     void peer_state_cb(
         int agent_index,
         const taiphoon_agent::msg::AgentState::SharedPtr msg);
@@ -88,9 +99,40 @@ private:
         const taiphoon_agent::msg::AgentTrajectory::SharedPtr msg);
     void planner_loop_cb();
     void scan_peers_cb();
+    void formation_epoch_cb(
+        const taiphoon_agent::msg::FormationEpoch::SharedPtr msg);
 
     bool initialize_subscribers();
     bool initialize_publishers();
+    bool attitude_is_fresh() const;
+    bool make_formation_proposal(const std::vector<int>& member_ids);
+    bool update_formation_assignment();
+    bool epoch_is_valid(
+        const taiphoon_agent::msg::FormationEpoch& epoch) const;
+    bool epoch_is_same_snapshot(
+        const taiphoon_agent::msg::FormationEpoch& first,
+        const taiphoon_agent::msg::FormationEpoch& second) const;
+    bool epoch_is_higher_priority(
+        const taiphoon_agent::msg::FormationEpoch& first,
+        const taiphoon_agent::msg::FormationEpoch& second) const;
+    bool epoch_parent_matches_current(
+        const taiphoon_agent::msg::FormationEpoch& epoch) const;
+    void adopt_formation_epoch(
+        const taiphoon_agent::msg::FormationEpoch& epoch);
+    void maybe_activate_formation_epoch();
+    void publish_formation_epoch(uint8_t status);
+    std::vector<int> stable_member_ids() const;
+    bool formation_config_matches(
+        const ego_swarm::FormationConfig& first,
+        const ego_swarm::FormationConfig& second) const;
+    bool formation_transition_order(
+        std::vector<int>& out_order) const;
+    bool formation_transition_ready() const;
+    double live_peer_min_distance(
+        const ego_swarm::Vector3& current) const;
+    double live_peer_path_min_distance(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& target) const;
     bool update_swarm_frame();
     bool update_local_swarm_transform();
     bool get_position_in_swarm_frame(
@@ -99,6 +141,8 @@ private:
     bool get_target_in_local_ned(
         const ego_swarm::Vector3& target,
         ego_swarm::Vector3& local_target) const;
+    /** @brief 清除不再代表目前控制狀態的 terminal hold heartbeat。 */
+    void clear_terminal_hold();
     ego_swarm::PositionArrivalResult evaluate_target_arrival(
         const ego_swarm::Vector3& current_global_ned,
         const ego_swarm::Vector3& target) const;
@@ -149,6 +193,11 @@ private:
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
     double local_arrival_tolerance_m_{DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M};
     double global_arrival_tolerance_m_{DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M};
+    double move_attitude_timeout_s_{DEFAULT_MOVE_ATTITUDE_TIMEOUT_S};
+    double formation_slot_switch_penalty_m_ =
+        DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M;
+    int formation_member_stable_scan_count_ =
+        DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
 
     ego_swarm::PlannerConfig planner_config_{};
     ego_swarm::EgoSwarmPlanner planner_{};
@@ -172,10 +221,15 @@ private:
     ego_swarm::VehiclePlanningState vehicle_motion_state_{};
     bool has_goal_{false};
     bool has_formation_{false};
+    bool formation_command_pending_{false};
+    bool formation_membership_change_pending_{false};
     bool preserve_altitude_{false};
     bool has_active_plan_{false};
     bool has_terminal_hold_{false};
     taiphoon_agent::msg::AgentState own_state_{};
+    taiphoon_agent::msg::AgentAttitude own_attitude_{};
+    bool has_own_attitude_{false};
+    std::chrono::steady_clock::time_point attitude_last_arrival_{};
     ego_swarm::Vector3 goal_position_{0.0, 0.0, 0.0};
     ego_swarm::PlannerResult active_plan_{};
     ego_swarm::Vector3 active_plan_target_{0.0, 0.0, 0.0};
@@ -190,13 +244,29 @@ private:
     perception::RawPointObstacleMap obstacle_map_{};
     ego_swarm::FormationConfig formation_config_{};
     ego_swarm::Vector3 formation_center_{0.0, 0.0, 0.0};
+    std::map<int, std::size_t> formation_assignment_{};
+
+    bool has_accepted_formation_epoch_{false};
+    bool has_candidate_formation_epoch_{false};
+    taiphoon_agent::msg::FormationEpoch accepted_formation_epoch_{};
+    taiphoon_agent::msg::FormationEpoch candidate_formation_epoch_{};
+    std::set<int> candidate_adopted_agents_{};
+    double last_epoch_publish_s_{0.0};
+    std::vector<int> discovery_candidate_members_{};
+    std::vector<int> stable_members_{};
+    int discovery_same_scan_count_{0};
+    std::map<int, int> discovery_absent_scan_count_{};
+    std::set<int> currently_discovered_peers_{};
 
     std::map<int, PeerState> peers_{};
     std::map<int, rclcpp::Subscription<taiphoon_agent::msg::AgentState>::SharedPtr>
         peer_subscriptions_{};
 
     uint32_t trajectory_id_{0U};
+    uint32_t last_published_trajectory_id_{0U};
     rclcpp::Subscription<taiphoon_agent::msg::AgentState>::SharedPtr own_state_sub_;
+    rclcpp::Subscription<taiphoon_agent::msg::AgentAttitude>::SharedPtr
+        own_attitude_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::NedTarget>::SharedPtr ned_target_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_intent_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr agent_command_sub_;
@@ -204,12 +274,16 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::AgentTrajectory>::SharedPtr
         trajectory_sub_;
+    rclcpp::Subscription<taiphoon_agent::msg::FormationEpoch>::SharedPtr
+        formation_epoch_sub_;
 
     rclcpp::Publisher<taiphoon_agent::msg::AgentTrajectory>::SharedPtr
         trajectory_pub_;
     rclcpp::Publisher<taiphoon_agent::msg::AgentTrajectory>::SharedPtr
         local_trajectory_pub_;
     rclcpp::Publisher<taiphoon_agent::msg::PlannerStatus>::SharedPtr status_pub_;
+    rclcpp::Publisher<taiphoon_agent::msg::FormationEpoch>::SharedPtr
+        formation_epoch_pub_;
     rclcpp::TimerBase::SharedPtr planner_timer_;
     rclcpp::TimerBase::SharedPtr peer_scan_timer_;
 };

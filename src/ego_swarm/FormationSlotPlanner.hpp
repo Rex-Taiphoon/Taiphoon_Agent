@@ -120,6 +120,36 @@ public:
     }
 
     /**
+     * @brief 只產生沒有 Agent ownership 的幾何槽位。
+     *
+     * 槽位 index 固定依幾何 rank 排列，ownership 由 assignment module
+     * 另外決定，避免幾何公式與成員分配互相耦合。
+     */
+    static bool compute_slot_offsets(
+        const std::size_t count,
+        const FormationConfig& config,
+        std::vector<Vector3>& out_offsets)
+    {
+        out_offsets.clear();
+        if (count == 0U)
+        {
+            return false;
+        }
+        out_offsets.reserve(count);
+        for (std::size_t rank = 0U; rank < count; ++rank)
+        {
+            Vector3 offset{0.0, 0.0, 0.0};
+            if (!compute_offset(rank, count, config, offset))
+            {
+                out_offsets.clear();
+                return false;
+            }
+            out_offsets.push_back(offset);
+        }
+        return true;
+    }
+
+    /**
      * @brief 檢查槽位間的機體中心距離
      *
      * @param slots 槽位列表

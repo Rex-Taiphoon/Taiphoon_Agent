@@ -19,10 +19,14 @@
 #include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/EgoSwarmTypes.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
+#include "ego_swarm/FormationAssignment.hpp"
+#include "ego_swarm/FormationTransition.hpp"
+#include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "perception/RawPointObstacleMap.hpp"
+#include "utils/CommandTypes.hpp"
 
 namespace
 {
@@ -32,6 +36,10 @@ using taiphoon::ego_swarm::EgoSwarmPlanner;
 using taiphoon::ego_swarm::FormationConfig;
 using taiphoon::ego_swarm::FormationSlot;
 using taiphoon::ego_swarm::FormationSlotPlanner;
+using taiphoon::ego_swarm::FormationAssignment;
+using taiphoon::ego_swarm::FormationAssignmentResult;
+using taiphoon::ego_swarm::FormationTransition;
+using taiphoon::ego_swarm::FormationTransitionObservation;
 using taiphoon::ego_swarm::FormationType;
 using taiphoon::ego_swarm::GeoCoordinate;
 using taiphoon::ego_swarm::PeerTrajectory;
@@ -225,6 +233,211 @@ TEST(FormationSlotPlannerTest, ComputesCircleAndVerticalSlots)
     ASSERT_TRUE(FormationSlotPlanner::compute_slot(
         30, agent_ids, vertical_config, circle_slot));
     EXPECT_NEAR(circle_slot.offset_ned.at(2), 0.75, 1.0e-9);
+}
+
+TEST(MovementFrameTest, ConvertsBodyForwardAndRightUsingCommandYaw)
+{
+    Vector3 offset{};
+    ASSERT_TRUE(taiphoon::ego_swarm::body_horizontal_offset_to_ned(
+        0.0, 5.0, 0.0, offset));
+    EXPECT_NEAR(offset.at(0), 5.0, 1.0e-9);
+    EXPECT_NEAR(offset.at(1), 0.0, 1.0e-9);
+
+    ASSERT_TRUE(taiphoon::ego_swarm::body_horizontal_offset_to_ned(
+        taiphoon::ego_swarm::EGO_SWARM_PI / 2.0, 5.0, 0.0, offset));
+    EXPECT_NEAR(offset.at(0), 0.0, 1.0e-9);
+    EXPECT_NEAR(offset.at(1), 5.0, 1.0e-9);
+}
+
+TEST(MovementFrameTest, RejectsNonFiniteAttitude)
+{
+    std::array<float, 4> quaternion{1.0F, 0.0F, 0.0F,
+        std::numeric_limits<float>::quiet_NaN()};
+    double yaw = 0.0;
+    EXPECT_FALSE(taiphoon::ego_swarm::quaternion_to_ned_yaw(quaternion, yaw));
+}
+
+TEST(CommandParserTest, ParsesVerticalFormationSpacingAsSingleParameter)
+{
+    const auto parsed = taiphoon::utils::parse_command_string(
+        "FORMATION_VERT_LINEAR 3");
+
+    EXPECT_EQ(parsed.command,
+              taiphoon::utils::AgentCommand::FORMATION_VERT_LINEAR);
+    EXPECT_TRUE(parsed.has_param);
+    EXPECT_FALSE(parsed.has_multi_params);
+    EXPECT_FLOAT_EQ(parsed.param_value, 3.0F);
+}
+
+TEST(CommandParserTest, ParsesCircleAndHorizontalFormationParameters)
+{
+    const auto circle = taiphoon::utils::parse_command_string(
+        "FORMATION_CIRCLE 5 8");
+    EXPECT_TRUE(circle.has_param);
+    EXPECT_TRUE(circle.has_multi_params);
+    EXPECT_FLOAT_EQ(circle.param_value, 5.0F);
+    EXPECT_FLOAT_EQ(circle.param2, 8.0F);
+
+    const auto horizontal = taiphoon::utils::parse_command_string(
+        "FORMATION_HORI_LINEAR 4 8");
+    EXPECT_TRUE(horizontal.has_param);
+    EXPECT_TRUE(horizontal.has_multi_params);
+    EXPECT_FLOAT_EQ(horizontal.param_value, 4.0F);
+    EXPECT_FLOAT_EQ(horizontal.param2, 8.0F);
+}
+
+TEST(FormationAssignmentTest, UsesMinimumCostOneToOneMapping)
+{
+    const std::vector<int> ids{42, 3, 10};
+    const std::vector<Vector3> positions{
+        Vector3{0.0, 2.0, 0.0}, Vector3{0.0, -2.0, 0.0},
+        Vector3{0.0, 0.0, 0.0}};
+    FormationConfig config;
+    config.type = FormationType::HORI_LINEAR;
+    config.spacing_m = 2.0;
+    FormationAssignmentResult result;
+    ASSERT_TRUE(FormationAssignment::assign(
+        ids, positions, config, {}, 2.0, result));
+    ASSERT_TRUE(result.is_valid);
+    ASSERT_EQ(result.agent_to_slot.size(), 3U);
+    EXPECT_EQ(result.agent_to_slot.at(3), 0U);
+    EXPECT_EQ(result.agent_to_slot.at(10), 1U);
+    EXPECT_EQ(result.agent_to_slot.at(42), 2U);
+}
+
+TEST(FormationAssignmentTest, SwitchPenaltyKeepsPreviousOwnership)
+{
+    const std::vector<int> ids{1, 2};
+    const std::vector<Vector3> positions{
+        Vector3{0.0, -1.0, 0.0}, Vector3{0.0, 1.0, 0.0}};
+    FormationConfig config;
+    config.type = FormationType::HORI_LINEAR;
+    config.spacing_m = 2.0;
+    FormationAssignmentResult result;
+    ASSERT_TRUE(FormationAssignment::assign(
+        ids, positions, config, {{1, 0U}, {2, 1U}}, 2.0, result));
+    EXPECT_EQ(result.agent_to_slot.at(1), 0U);
+    EXPECT_EQ(result.agent_to_slot.at(2), 1U);
+}
+
+TEST(FormationAssignmentTest, RejectsInvalidInputAsAWhole)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    FormationConfig config;
+    FormationAssignmentResult result;
+    ASSERT_FALSE(FormationAssignment::assign(
+        {1, 1}, {Vector3{0.0, 0.0, 0.0}, Vector3{nan, 0.0, 0.0}},
+        config, {}, 2.0, result));
+    EXPECT_FALSE(result.is_valid);
+    EXPECT_TRUE(result.agent_to_slot.empty());
+}
+
+TEST(FormationTransitionTest, AllowsStationaryFreshPredecessorWithoutTerminalFlag)
+{
+    const FormationTransitionObservation predecessor{
+        1, Vector3{5.0, 0.0, -8.0}, Vector3{5.0, 0.0, -8.0},
+        Vector3{0.05, 0.0, 0.0}, true};
+    EXPECT_TRUE(FormationTransition::predecessors_ready(
+        {1, 2, 3, 4}, 2, {predecessor}, 1.0, 0.2));
+}
+
+TEST(FormationTransitionTest, RejectsPredecessorThatIsMovingOrNotAtTarget)
+{
+    const FormationTransitionObservation predecessor{
+        1, Vector3{3.0, 0.0, -8.0}, Vector3{5.0, 0.0, -8.0},
+        Vector3{0.3, 0.0, 0.0}, true};
+    EXPECT_FALSE(FormationTransition::predecessors_ready(
+        {1, 2}, 2, {predecessor}, 1.0, 0.2));
+}
+
+TEST(FormationTransitionTest, MissingPredecessorFailsClosed)
+{
+    EXPECT_FALSE(FormationTransition::predecessors_ready(
+        {1, 2}, 2, {}, 1.0, 0.2));
+}
+
+TEST(FormationTransitionTest, ChoosesSafeGeometryOrderInsteadOfAgentIdOrder)
+{
+    // 初始機體沿 East 間隔排列；最低 ID 的目標會靠近 Agent 2，
+    // 因此必須先釋放 Agent 2，才能讓整個 CIRCLE 轉換保持安全距離。
+    const std::vector<int> members{1, 2, 3, 4};
+    const std::vector<FormationTransitionObservation> observations{
+        {1, Vector3{0.0, 0.0, 0.0}, Vector3{0.0, 7.0, 0.0}, {}, true},
+        {2, Vector3{0.0, 8.0, 0.0}, Vector3{-5.0, 12.0, 0.0}, {}, true},
+        {3, Vector3{0.0, 16.0, 0.0}, Vector3{0.0, 17.0, 0.0}, {}, true},
+        {4, Vector3{0.0, 24.0, 0.0}, Vector3{5.0, 12.0, 0.0}, {}, true}};
+    std::vector<int> order;
+
+    ASSERT_TRUE(FormationTransition::compute_safe_order(
+        members, observations, 3.0, order));
+    ASSERT_EQ(order.size(), 4U);
+    EXPECT_EQ(order.at(0), 2);
+    EXPECT_EQ(order.at(1), 1);
+    EXPECT_EQ(order.at(2), 4);
+    EXPECT_EQ(order.at(3), 3);
+}
+
+TEST(FormationTransitionTest, RejectsWhenNoSingleSafeReleaseExists)
+{
+    const std::vector<FormationTransitionObservation> observations{
+        {1, Vector3{-1.0, 0.0, 0.0}, Vector3{1.0, 0.0, 0.0}, {}, true},
+        {2, Vector3{1.0, 0.0, 0.0}, Vector3{-1.0, 0.0, 0.0}, {}, true}};
+    std::vector<int> order;
+
+    EXPECT_FALSE(FormationTransition::compute_safe_order(
+        {1, 2}, observations, 3.0, order));
+    EXPECT_TRUE(order.empty());
+}
+
+TEST(FormationTransitionTest, AvoidsCompletedSlotAndBacktracksWhenNeeded)
+{
+    // Agent 2 可以先移動，但其新槽位會落在 Agent 3 的後續路徑上；
+    // deterministic search 必須回溯並選擇 Agent 3、Agent 2 的順序。
+    const std::vector<FormationTransitionObservation> observations{
+        {2, Vector3{0.0, 20.0, 0.0}, Vector3{0.0, 10.0, 0.0}, {}, true},
+        {3, Vector3{5.0, 10.0, 0.0}, Vector3{-5.0, 10.0, 0.0}, {}, true}};
+    std::vector<int> order;
+
+    ASSERT_TRUE(FormationTransition::compute_safe_order(
+        {2, 3}, observations, 3.0, order));
+    ASSERT_EQ(order.size(), 2U);
+    EXPECT_EQ(order.at(0), 3);
+    EXPECT_EQ(order.at(1), 2);
+}
+
+TEST(FormationTransitionTest, CircleSnapshotReleasesSafePredecessorFirst)
+{
+    // 這是四機沿 East 間隔 8 m、CIRCLE radius=5 m 的實際 SITL
+    // snapshot。Agent 1 的 West 槽位靠近 Agent 2 的原始位置，故必須
+    // 先讓 Agent 2 前往 North 槽位，再釋放 Agent 1；反過來會把
+    // Agent 2 的直線路徑導向已佔用的 West 槽位。
+    const std::vector<FormationTransitionObservation> observations{
+        {1, Vector3{0.105419, -11.734577, 0.0}, Vector3{0.0, -5.0, 0.0}, {}, true},
+        {2, Vector3{0.105419, -4.039772, 0.0}, Vector3{5.0, 0.0, 0.0}, {}, true},
+        {3, Vector3{-0.105419, 3.655032, 0.0}, Vector3{-5.0, 0.0, 0.0}, {}, true},
+        {4, Vector3{-0.105419, 12.119317, 0.0}, Vector3{0.0, 5.0, 0.0}, {}, true}};
+    std::vector<int> order;
+
+    ASSERT_TRUE(FormationTransition::compute_safe_order(
+        {1, 2, 3, 4}, observations, 3.0, order));
+    ASSERT_EQ(order.size(), 4U);
+    EXPECT_EQ(order.at(0), 2);
+    EXPECT_EQ(order.at(1), 1);
+    EXPECT_EQ(order.at(2), 3);
+    EXPECT_EQ(order.at(3), 4);
+}
+
+TEST(FormationTransitionTest, UsesHorizontalDetourBeforeWaiting)
+{
+    const std::vector<FormationTransitionObservation> observations{
+        {1, Vector3{0.0, -2.0, -8.0}, Vector3{10.0, -2.0, -8.0}, {}, true},
+        {2, Vector3{5.0, 0.0, -8.0}, Vector3{5.0, 10.0, -8.0}, {}, true}};
+    std::vector<int> order;
+
+    ASSERT_TRUE(FormationTransition::compute_safe_order(
+        {1, 2}, observations, 3.0, 4.0, order));
+    ASSERT_EQ(order.size(), 2U);
+    EXPECT_EQ(order.at(0), 1);
 }
 
 TEST(BsplineTrajectoryTest, EvaluatesEndpointsAndFiniteValues)
@@ -674,6 +887,31 @@ TEST(EgoSwarmPlannerTest, HorizontalPlanPreservesAltitude)
     for (const Vector3& point : result.trajectory.control_points())
     {
         EXPECT_NEAR(point.at(2), -8.0, 1.0e-9);
+    }
+}
+
+TEST(EgoSwarmPlannerTest, FormationPlanDoesNotUseVerticalDetour)
+{
+    EgoSwarmPlanner planner;
+    PeerTrajectoryTable peers;
+    const auto obstacle_map = make_obstacle_map({Vector3{5.0, 0.0, -9.0}});
+    const Vector3 current{0.0, 0.0, -8.0};
+    const Vector3 target{10.0, 0.0, -10.0};
+
+    const auto result = planner.plan(
+        current, target, obstacle_map, peers, 0.0, 1, true);
+
+    ASSERT_TRUE(result.is_valid);
+    ASSERT_FALSE(result.is_hold);
+    const auto& control_points = result.trajectory.control_points();
+    ASSERT_FALSE(control_points.empty());
+    for (std::size_t index = 0U; index < control_points.size(); ++index)
+    {
+        const double progress = static_cast<double>(index) /
+            static_cast<double>(control_points.size() - 1U);
+        const double expected_z = current.at(2) +
+            (target.at(2) - current.at(2)) * progress;
+        EXPECT_NEAR(control_points.at(index).at(2), expected_z, 1.0e-9);
     }
 }
 

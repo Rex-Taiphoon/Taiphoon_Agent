@@ -358,6 +358,27 @@ Optimized backend objective 至少包含：
 - obstacle
 - peer swarm
 
+對 CIRCLE 與 HORI_LINEAR 編隊新增下列不可違反的安全限制：
+- 使用 FormationEpoch 的固定 formation altitude；所有 trajectory control
+  point 的 NED Z 必須固定。
+- 編隊避碰只能在 North/East 平面規劃；不得使用 above/below 繞行，也不得
+  透過改變高度取得三維安全距離。
+- 對已發布及已保留的 peer trajectory 建立空間／時間 reservation；只有
+  reservation 不衝突的 Agent 才能同批移動，其餘 Agent 必須分時等待。
+- 沒有安全水平 path 時只能 HOLD／brake，並重新產生水平候選或重新安排
+  執行時間；不得改變高度。
+
+Formation convergence 必須具備：
+- 成員集合穩定後才建立初始 FormationEpoch，所有 Agent 使用相同
+  epoch identity、snapshot hash、center 與 deterministic slot assignment。
+- 每個 Agent 的 trajectory ID 在 runtime lifetime 單調遞增；舊封包晚到時
+  只能忽略，不得清除最新 predecessor occupancy 或阻塞整個 transition。
+- predecessor readiness 使用 fresh AgentState、槽位距離、速度及最新
+  occupancy heartbeat 判定，不得依賴單一 terminal trajectory 封包的到達順序。
+- 固定順序無解時，必須重新搜尋水平 lateral path 或重新安排時間；不得
+  讓全隊永久停在 `Formation transition waiting`。
+- 只有所有成員在固定高度抵達槽位且 heartbeat fresh，才算編隊收斂。
+
 solver 與 cost function 分離。
 
 optimizer 必須處理：
@@ -393,6 +414,9 @@ optimizer failure 不得直接輸出未驗證 trajectory。
 - right
 - above
 - below
+
+`above` 與 `below` 僅適用一般 3D 任務；CIRCLE 與 HORI_LINEAR 編隊不得
+採用垂直 initial guess 或垂直最終 trajectory。
 
 這些不是最終 trajectory。
 

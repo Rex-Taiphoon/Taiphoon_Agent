@@ -183,6 +183,12 @@ def launch_nodes(context, *args, **kwargs):
                     "local_arrival_tolerance_m")},
                 {"global_arrival_tolerance_m": LaunchConfiguration(
                     "global_arrival_tolerance_m")},
+                {"move_attitude_timeout_s": LaunchConfiguration(
+                    "move_attitude_timeout_s")},
+                {"formation_slot_switch_penalty_m": LaunchConfiguration(
+                    "formation_slot_switch_penalty_m")},
+                {"formation_member_stable_scan_count": LaunchConfiguration(
+                    "formation_member_stable_scan_count")},
             ],
             output="screen",
             emulate_tty=True,
@@ -323,6 +329,18 @@ def generate_launch_description():
             default_value="1.0",
             description="GPS 共同 NED 到達容許誤差（公尺）"),
         DeclareLaunchArgument(
+            "move_attitude_timeout_s",
+            default_value="1.0",
+            description="水平移動命令可使用的 attitude freshness timeout（秒）"),
+        DeclareLaunchArgument(
+            "formation_slot_switch_penalty_m",
+            default_value="2.0",
+            description="編隊 minimum-cost assignment 換槽位成本（公尺）"),
+        DeclareLaunchArgument(
+            "formation_member_stable_scan_count",
+            default_value="2",
+            description="成員集合連續穩定 discovery 掃描次數"),
+        DeclareLaunchArgument(
             "obstacle_clearance_m",
             default_value="1.0",
             description="障礙物安全間距（公尺）"),
@@ -344,7 +362,7 @@ def generate_launch_description():
             description="障礙物 PointCloud2 發布頻率（Hz）"),
         DeclareLaunchArgument(
             "obstacle_mode",
-            default_value="synthetic_sensor",
+            default_value="explicit_empty",
             description=(
                 "障礙物模式：explicit_empty、ground_truth 或 "
                 "synthetic_sensor")),

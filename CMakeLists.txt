@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WaypointSequence.msg"
   "msg/AgentTrajectory.msg"
   "msg/PlannerStatus.msg"
+  "msg/FormationEpoch.msg"
   "msg/RelativeAgentObservation.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )

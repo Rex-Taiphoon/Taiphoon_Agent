@@ -13,6 +13,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <cstring>
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "utils/CommandTypes.hpp"
@@ -30,6 +31,11 @@ constexpr uint8_t PLANNER_STATE_HOLD = 2U;
 constexpr uint8_t PLANNER_STATE_ERROR = 3U;
 constexpr double TRAJECTORY_DURATION_ABSOLUTE_EPSILON_S = 1.0e-4;
 constexpr double TRAJECTORY_DURATION_RELATIVE_EPSILON = 1.0e-5;
+constexpr double FORMATION_EPOCH_HEARTBEAT_PERIOD_S = 1.0;
+// Live GPS/state callback 與 PX4 setpoint 反應之間仍有延遲；只用
+// collision_distance 直接煞車會把剩餘動能帶進安全門檻內。此緩衝是
+// 動態煞停距離以外的固定反應裕度，並非放寬碰撞門檻。
+constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
 
 bool is_finite_state_position(const taiphoon_agent::msg::AgentState& state)
 {
@@ -81,6 +87,44 @@ bool is_consistent_duration(
         TRAJECTORY_DURATION_RELATIVE_EPSILON * scale);
     return std::abs(message_duration_s - computed_duration_s) <= tolerance;
 }
+
+uint32_t hash_bytes(uint32_t hash, const void* data, const std::size_t size)
+{
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (std::size_t index = 0U; index < size; ++index)
+    {
+        hash ^= static_cast<uint32_t>(bytes[index]);
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+template<typename T>
+uint32_t hash_value(uint32_t hash, const T& value)
+{
+    return hash_bytes(hash, &value, sizeof(T));
+}
+
+uint32_t formation_epoch_hash(const taiphoon_agent::msg::FormationEpoch& epoch)
+{
+    uint32_t hash = 2166136261U;
+    hash = hash_value(hash, epoch.sequence);
+    hash = hash_value(hash, epoch.formation_type);
+    hash = hash_value(hash, epoch.radius_m);
+    hash = hash_value(hash, epoch.spacing_m);
+    hash = hash_value(hash, epoch.vertical_offset_m);
+    hash = hash_value(hash, epoch.center_latitude_deg);
+    hash = hash_value(hash, epoch.center_longitude_deg);
+    hash = hash_value(hash, epoch.center_altitude_m);
+    for (std::size_t index = 0U; index < epoch.member_agent_ids.size(); ++index)
+    {
+        hash = hash_value(hash, epoch.member_agent_ids.at(index));
+        hash = hash_value(hash, epoch.member_latitudes_deg.at(index));
+        hash = hash_value(hash, epoch.member_longitudes_deg.at(index));
+        hash = hash_value(hash, epoch.member_altitudes_m.at(index));
+    }
+    return hash;
+}
 }
 
 EgoSwarmPlannerNode::EgoSwarmPlannerNode()
@@ -116,6 +160,12 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M);
     declare_parameter<double>("global_arrival_tolerance_m",
                              DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M);
+    declare_parameter<double>("move_attitude_timeout_s",
+                             DEFAULT_MOVE_ATTITUDE_TIMEOUT_S);
+    declare_parameter<double>("formation_slot_switch_penalty_m",
+                             DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M);
+    declare_parameter<int>("formation_member_stable_scan_count",
+                          DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT);
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     agent_index_ = get_parameter("agent_index").as_int();
@@ -203,6 +253,28 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     {
         global_arrival_tolerance_m_ = DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M;
     }
+    move_attitude_timeout_s_ = get_parameter(
+        "move_attitude_timeout_s").as_double();
+    if (!std::isfinite(move_attitude_timeout_s_) ||
+        move_attitude_timeout_s_ <= 0.0)
+    {
+        move_attitude_timeout_s_ = DEFAULT_MOVE_ATTITUDE_TIMEOUT_S;
+    }
+    formation_slot_switch_penalty_m_ = get_parameter(
+        "formation_slot_switch_penalty_m").as_double();
+    if (!std::isfinite(formation_slot_switch_penalty_m_) ||
+        formation_slot_switch_penalty_m_ < 0.0)
+    {
+        formation_slot_switch_penalty_m_ =
+            DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M;
+    }
+    formation_member_stable_scan_count_ = get_parameter(
+        "formation_member_stable_scan_count").as_int();
+    if (formation_member_stable_scan_count_ < 2)
+    {
+        formation_member_stable_scan_count_ =
+            DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
+    }
     if (!planner_.set_config(planner_config_))
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
@@ -252,14 +324,17 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 "compat_origin_agent=%d peer_distance=%.2f m "
                 "obstacle_clearance=%.2f m peer_timeout=%.2f s "
                 "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
-                "require_obstacle_cloud=%s",
+                "require_obstacle_cloud=%s move_attitude_timeout=%.2f s "
+                "slot_switch_penalty=%.2f m member_stable_scans=%d",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
                 planner_config_.obstacle_clearance_m,
                 peer_trajectory_timeout_s_, max_peer_time_skew_s_,
                 obstacle_cloud_timeout_s_,
-                require_obstacle_cloud_ ? "true" : "false");
+                require_obstacle_cloud_ ? "true" : "false",
+                move_attitude_timeout_s_, formation_slot_switch_penalty_m_,
+                formation_member_stable_scan_count_);
 }
 
 bool EgoSwarmPlannerNode::initialize_subscribers()
@@ -268,6 +343,10 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
     own_state_sub_ = create_subscription<taiphoon_agent::msg::AgentState>(
         own_state_topic, rclcpp::QoS(10).best_effort(),
         std::bind(&EgoSwarmPlannerNode::own_state_cb, this,
+                  std::placeholders::_1));
+    own_attitude_sub_ = create_subscription<taiphoon_agent::msg::AgentAttitude>(
+        "/" + agent_namespace_ + "/attitude", rclcpp::QoS(10).best_effort(),
+        std::bind(&EgoSwarmPlannerNode::own_attitude_cb, this,
                   std::placeholders::_1));
     ned_target_sub_ = create_subscription<taiphoon_agent::msg::NedTarget>(
         "/" + agent_namespace_ + "/ned_target", rclcpp::QoS(10).best_effort(),
@@ -294,13 +373,20 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
     trajectory_sub_ = create_subscription<taiphoon_agent::msg::AgentTrajectory>(
         "/fmu_all_agent/swarm/agent_trajectories",
         rclcpp::QoS(10).best_effort(),
-        std::bind(&EgoSwarmPlannerNode::trajectory_cb, this,
+                  std::bind(&EgoSwarmPlannerNode::trajectory_cb, this,
+                  std::placeholders::_1));
+    formation_epoch_sub_ = create_subscription<taiphoon_agent::msg::FormationEpoch>(
+        "/fmu_all_agent/swarm/formation_epochs",
+        rclcpp::QoS(10).reliable().transient_local(),
+        std::bind(&EgoSwarmPlannerNode::formation_epoch_cb, this,
                   std::placeholders::_1));
 
-    return own_state_sub_ != nullptr && ned_target_sub_ != nullptr &&
+    return own_state_sub_ != nullptr && own_attitude_sub_ != nullptr &&
+        ned_target_sub_ != nullptr &&
         mission_intent_sub_ != nullptr && agent_command_sub_ != nullptr &&
         all_command_sub_ != nullptr &&
-        obstacle_sub_ != nullptr && trajectory_sub_ != nullptr;
+        obstacle_sub_ != nullptr && trajectory_sub_ != nullptr &&
+        formation_epoch_sub_ != nullptr;
 }
 
 bool EgoSwarmPlannerNode::initialize_publishers()
@@ -312,10 +398,13 @@ bool EgoSwarmPlannerNode::initialize_publishers()
             "/" + agent_namespace_ + "/planning/trajectory",
             rclcpp::QoS(10));
     status_pub_ = create_publisher<taiphoon_agent::msg::PlannerStatus>(
-        "/" + agent_namespace_ + "/planning/status", rclcpp::QoS(10));
+            "/" + agent_namespace_ + "/planning/status", rclcpp::QoS(10));
+    formation_epoch_pub_ = create_publisher<taiphoon_agent::msg::FormationEpoch>(
+        "/fmu_all_agent/swarm/formation_epochs",
+        rclcpp::QoS(10).reliable().transient_local());
 
     return trajectory_pub_ != nullptr && local_trajectory_pub_ != nullptr &&
-        status_pub_ != nullptr;
+        status_pub_ != nullptr && formation_epoch_pub_ != nullptr;
 }
 
 void EgoSwarmPlannerNode::own_state_cb(
@@ -329,6 +418,27 @@ void EgoSwarmPlannerNode::own_state_cb(
     own_state_ = *msg;
     has_own_state_ = true;
     update_vehicle_motion_state(*msg);
+}
+
+void EgoSwarmPlannerNode::own_attitude_cb(
+    const taiphoon_agent::msg::AgentAttitude::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "own_attitude_cb received nullptr");
+        return;
+    }
+    double yaw_rad = 0.0;
+    if (!ego_swarm::quaternion_to_ned_yaw(msg->q, yaw_rad))
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Ignoring attitude with non-finite quaternion");
+        return;
+    }
+    own_attitude_ = *msg;
+    has_own_attitude_ = true;
+    attitude_last_arrival_ = std::chrono::steady_clock::now();
 }
 
 void EgoSwarmPlannerNode::update_vehicle_motion_state(
@@ -467,6 +577,12 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
         has_formation_ = false;
+        has_accepted_formation_epoch_ = false;
+        has_candidate_formation_epoch_ = false;
+        formation_command_pending_ = false;
+        formation_membership_change_pending_ = false;
+        candidate_adopted_agents_.clear();
+        formation_assignment_.clear();
         preserve_altitude_ = false;
         invalidate_active_plan();
         return;
@@ -478,78 +594,767 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     {
         return;
     }
-    if (!parsed.has_multi_params || !std::isfinite(parsed.param_value) ||
-        !std::isfinite(parsed.param2))
+    const bool is_vertical_linear =
+        parsed.command == utils::AgentCommand::FORMATION_VERT_LINEAR;
+    if ((!parsed.has_param || !std::isfinite(parsed.param_value)) ||
+        (!is_vertical_linear &&
+         (!parsed.has_multi_params || !std::isfinite(parsed.param2))))
     {
         RCLCPP_WARN(get_logger(), "Rejecting invalid formation command");
         return;
     }
 
+    const ego_swarm::FormationConfig previous_config = formation_config_;
+    ego_swarm::FormationConfig requested_config = formation_config_;
     if (parsed.command == utils::AgentCommand::FORMATION_CIRCLE)
     {
-        formation_config_.type = ego_swarm::FormationType::CIRCLE;
-        formation_config_.radius_m = parsed.param_value;
-        formation_config_.vertical_offset_m = -parsed.param2;
+        requested_config.type = ego_swarm::FormationType::CIRCLE;
+        requested_config.radius_m = parsed.param_value;
+        requested_config.vertical_offset_m = -parsed.param2;
     }
     else if (parsed.command == utils::AgentCommand::FORMATION_HORI_LINEAR)
     {
-        formation_config_.type = ego_swarm::FormationType::HORI_LINEAR;
-        formation_config_.spacing_m = parsed.param_value;
-        formation_config_.vertical_offset_m = -parsed.param2;
+        requested_config.type = ego_swarm::FormationType::HORI_LINEAR;
+        requested_config.spacing_m = parsed.param_value;
+        requested_config.vertical_offset_m = -parsed.param2;
     }
     else
     {
-        formation_config_.type = ego_swarm::FormationType::VERT_LINEAR;
-        formation_config_.spacing_m = parsed.param_value;
-        formation_config_.vertical_offset_m = 0.0;
+        requested_config.type = ego_swarm::FormationType::VERT_LINEAR;
+        requested_config.spacing_m = parsed.param_value;
+        requested_config.vertical_offset_m = 0.0;
     }
-    preserve_altitude_ = false;
-    invalidate_active_plan();
+    if (!ego_swarm::is_finite(requested_config.radius_m) ||
+        !ego_swarm::is_finite(requested_config.spacing_m) ||
+        !ego_swarm::is_finite(requested_config.vertical_offset_m) ||
+        requested_config.radius_m < 0.0 || requested_config.spacing_m < 0.0)
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting formation command with invalid geometry");
+        return;
+    }
 
-    if (!update_swarm_frame())
+    preserve_altitude_ = false;
+    const std::vector<int> members = stable_member_ids();
+    if (has_candidate_formation_epoch_ &&
+        formation_config_matches(requested_config, previous_config) &&
+        candidate_formation_epoch_.member_agent_ids == members)
+    {
+        // 相同 config 與成員 snapshot 的重複字串命令是 idempotent。
+        return;
+    }
+    if (has_accepted_formation_epoch_ &&
+        formation_config_matches(requested_config, previous_config) &&
+        accepted_formation_epoch_.member_agent_ids == members &&
+        has_formation_)
+    {
+        return;
+    }
+    formation_config_ = requested_config;
+    formation_command_pending_ = true;
+    formation_membership_change_pending_ = false;
+    invalidate_active_plan();
+    if (make_formation_proposal(members))
+    {
+        formation_command_pending_ = false;
+    }
+}
+
+bool EgoSwarmPlannerNode::formation_config_matches(
+    const ego_swarm::FormationConfig& first,
+    const ego_swarm::FormationConfig& second) const
+{
+    return first.type == second.type &&
+        std::abs(first.radius_m - second.radius_m) <= 1.0e-9 &&
+        std::abs(first.spacing_m - second.spacing_m) <= 1.0e-9 &&
+        std::abs(first.vertical_offset_m - second.vertical_offset_m) <= 1.0e-9;
+}
+
+bool EgoSwarmPlannerNode::formation_transition_order(
+    std::vector<int>& out_order) const
+{
+    out_order.clear();
+    if (!has_accepted_formation_epoch_ || !swarm_frame_.has_origin())
+    {
+        return false;
+    }
+    std::vector<ego_swarm::Vector3> offsets;
+    if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+            accepted_formation_epoch_.member_agent_ids.size(),
+            formation_config_, offsets) ||
+        accepted_formation_epoch_.member_agent_ids.size() !=
+            accepted_formation_epoch_.member_latitudes_deg.size() ||
+        accepted_formation_epoch_.member_agent_ids.size() !=
+            accepted_formation_epoch_.member_longitudes_deg.size() ||
+        accepted_formation_epoch_.member_agent_ids.size() !=
+            accepted_formation_epoch_.member_altitudes_m.size())
+    {
+        return false;
+    }
+
+    std::vector<ego_swarm::FormationTransitionObservation> observations;
+    observations.reserve(accepted_formation_epoch_.member_agent_ids.size());
+    for (std::size_t index = 0U;
+         index < accepted_formation_epoch_.member_agent_ids.size(); ++index)
+    {
+        const int agent_id = accepted_formation_epoch_.member_agent_ids.at(index);
+        const auto assignment = formation_assignment_.find(agent_id);
+        if (assignment == formation_assignment_.end() ||
+            assignment->second >= offsets.size())
+        {
+            return false;
+        }
+        ego_swarm::Vector3 position{};
+        if (!swarm_frame_.to_swarm_ned(ego_swarm::GeoCoordinate{
+                accepted_formation_epoch_.member_latitudes_deg.at(index),
+                accepted_formation_epoch_.member_longitudes_deg.at(index),
+                accepted_formation_epoch_.member_altitudes_m.at(index)},
+                position))
+        {
+            return false;
+        }
+        const ego_swarm::Vector3 target = ego_swarm::add_vectors(
+            formation_center_, offsets.at(assignment->second));
+        observations.push_back(ego_swarm::FormationTransitionObservation{
+            agent_id, position, target, ego_swarm::Vector3{0.0, 0.0, 0.0},
+            true});
+    }
+
+    const double minimum_distance_m = std::max(
+        formation_min_distance_m_, planner_config_.peer_collision_min_distance_m);
+    return ego_swarm::FormationTransition::compute_safe_order(
+        accepted_formation_epoch_.member_agent_ids, observations,
+        minimum_distance_m, planner_config_.candidate_offset_m, out_order);
+}
+
+bool EgoSwarmPlannerNode::formation_transition_ready() const
+{
+    if (!has_formation_ || !has_accepted_formation_epoch_ ||
+        !has_own_state_ || !swarm_frame_.has_origin())
+    {
+        return false;
+    }
+
+    std::vector<int> order;
+    if (!formation_transition_order(order))
+    {
+        return false;
+    }
+    const auto self_iterator = std::find(order.begin(), order.end(), agent_index_);
+    if (self_iterator == order.end())
+    {
+        return false;
+    }
+
+    std::vector<ego_swarm::Vector3> offsets;
+    if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+            accepted_formation_epoch_.member_agent_ids.size(),
+            formation_config_, offsets))
+    {
+        return false;
+    }
+    const double now_s = this->now().seconds();
+    if (!std::isfinite(now_s))
+    {
+        return false;
+    }
+
+    for (auto iterator = order.begin(); iterator != self_iterator; ++iterator)
+    {
+        const int predecessor_id = *iterator;
+        const auto assignment = formation_assignment_.find(predecessor_id);
+        const auto member_iterator = std::find(
+            accepted_formation_epoch_.member_agent_ids.begin(),
+            accepted_formation_epoch_.member_agent_ids.end(), predecessor_id);
+        const auto peer = peers_.find(predecessor_id);
+        if (assignment == formation_assignment_.end() ||
+            assignment->second >= offsets.size() ||
+            member_iterator == accepted_formation_epoch_.member_agent_ids.end() ||
+            peer == peers_.end() || !peer->second.has_state ||
+            !is_finite_state_position(peer->second.state))
+        {
+            return false;
+        }
+
+        ego_swarm::Vector3 predecessor_position{};
+        if (!get_position_in_swarm_frame(
+                peer->second.state, predecessor_position))
+        {
+            return false;
+        }
+        const ego_swarm::Vector3 predecessor_target =
+            ego_swarm::add_vectors(
+                formation_center_, offsets.at(assignment->second));
+        ego_swarm::PeerTrajectory predecessor_trajectory{};
+        if (!peer_trajectories_.get_fresh(
+                predecessor_id, now_s, predecessor_trajectory))
+        {
+            return false;
+        }
+        const double trajectory_time_s = now_s -
+            predecessor_trajectory.start_time_s;
+        const ego_swarm::TrajectorySample sample =
+            predecessor_trajectory.trajectory.evaluate(trajectory_time_s);
+        if (!sample.is_valid ||
+            !predecessor_trajectory.terminal_hold ||
+            ego_swarm::distance_between_centers(
+                predecessor_position, predecessor_target) >
+                global_arrival_tolerance_m_ ||
+            std::sqrt(ego_swarm::squared_norm(sample.velocity)) > 0.2)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+double EgoSwarmPlannerNode::live_peer_min_distance(
+    const ego_swarm::Vector3& current) const
+{
+    if (!ego_swarm::is_finite_vector(current))
+    {
+        return 0.0;
+    }
+
+    std::vector<int> peer_ids;
+    if (has_formation_ && has_accepted_formation_epoch_)
+    {
+        peer_ids = accepted_formation_epoch_.member_agent_ids;
+    }
+    else
+    {
+        peer_ids.reserve(peers_.size() + 1U);
+        for (const auto& entry : peers_)
+        {
+            peer_ids.push_back(entry.first);
+        }
+        peer_ids.push_back(agent_index_);
+    }
+
+    double minimum_distance = std::numeric_limits<double>::infinity();
+    for (const int peer_id : peer_ids)
+    {
+        if (peer_id == agent_index_)
+        {
+            continue;
+        }
+        const auto peer_iterator = peers_.find(peer_id);
+        if (peer_iterator == peers_.end() ||
+            !peer_iterator->second.has_state ||
+            !is_finite_state_position(peer_iterator->second.state))
+        {
+            return 0.0;
+        }
+        ego_swarm::Vector3 peer_position{};
+        if (!get_position_in_swarm_frame(
+                peer_iterator->second.state, peer_position))
+        {
+            return 0.0;
+        }
+        const double distance = ego_swarm::distance_between_centers(
+            current, peer_position);
+        if (!std::isfinite(distance))
+        {
+            return 0.0;
+        }
+        minimum_distance = std::min(minimum_distance, distance);
+    }
+    return minimum_distance;
+}
+
+double EgoSwarmPlannerNode::live_peer_path_min_distance(
+    const ego_swarm::Vector3& current,
+    const ego_swarm::Vector3& target) const
+{
+    if (!ego_swarm::is_finite_vector(current) ||
+        !ego_swarm::is_finite_vector(target))
+    {
+        return 0.0;
+    }
+
+    std::vector<int> peer_ids;
+    if (has_formation_ && has_accepted_formation_epoch_)
+    {
+        peer_ids = accepted_formation_epoch_.member_agent_ids;
+    }
+    else
+    {
+        peer_ids.reserve(peers_.size());
+        for (const auto& entry : peers_)
+        {
+            peer_ids.push_back(entry.first);
+        }
+    }
+
+    double minimum_distance = std::numeric_limits<double>::infinity();
+    for (const int peer_id : peer_ids)
+    {
+        if (peer_id == agent_index_)
+        {
+            continue;
+        }
+        const auto peer_iterator = peers_.find(peer_id);
+        if (peer_iterator == peers_.end() ||
+            !peer_iterator->second.has_state ||
+            !is_finite_state_position(peer_iterator->second.state))
+        {
+            return 0.0;
+        }
+        ego_swarm::Vector3 peer_position{};
+        if (!get_position_in_swarm_frame(
+                peer_iterator->second.state, peer_position))
+        {
+            return 0.0;
+        }
+        const double distance = ego_swarm::distance_to_segment(
+            peer_position, current, target);
+        if (!std::isfinite(distance))
+        {
+            return 0.0;
+        }
+        minimum_distance = std::min(minimum_distance, distance);
+    }
+    return minimum_distance;
+}
+
+std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
+{
+    if (!stable_members_.empty())
+    {
+        return stable_members_;
+    }
+
+    std::vector<int> members;
+    if (has_own_state_ && is_finite_state_position(own_state_))
+    {
+        members.push_back(agent_index_);
+    }
+    for (const int index : currently_discovered_peers_)
+    {
+        const auto iterator = peers_.find(index);
+        if (iterator != peers_.end() && iterator->second.has_state &&
+            is_finite_state_position(iterator->second.state))
+        {
+            members.push_back(index);
+        }
+    }
+    std::sort(members.begin(), members.end());
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    return members;
+}
+
+bool EgoSwarmPlannerNode::epoch_is_valid(
+    const taiphoon_agent::msg::FormationEpoch& epoch) const
+{
+    if (!epoch.valid || epoch.sequence == 0U || epoch.proposer_agent_id <= 0 ||
+        epoch.sender_agent_id <= 0 ||
+        (epoch.status != taiphoon_agent::msg::FormationEpoch::PROPOSAL &&
+         epoch.status != taiphoon_agent::msg::FormationEpoch::ADOPTED) ||
+        epoch.member_agent_ids.empty() ||
+        epoch.member_agent_ids.size() != epoch.member_latitudes_deg.size() ||
+        epoch.member_agent_ids.size() != epoch.member_longitudes_deg.size() ||
+        epoch.member_agent_ids.size() != epoch.member_altitudes_m.size() ||
+        epoch.parent_assignment_agent_ids.size() !=
+            epoch.parent_assignment_slot_indices.size())
+    {
+        return false;
+    }
+    if (epoch.formation_type > taiphoon_agent::msg::FormationEpoch::VERT_LINEAR ||
+        !std::isfinite(epoch.radius_m) || !std::isfinite(epoch.spacing_m) ||
+        !std::isfinite(epoch.vertical_offset_m) || epoch.radius_m < 0.0 ||
+        epoch.spacing_m < 0.0 || !std::isfinite(epoch.center_latitude_deg) ||
+        !std::isfinite(epoch.center_longitude_deg) ||
+        !std::isfinite(epoch.center_altitude_m) ||
+        !ego_swarm::SwarmFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
+            epoch.center_latitude_deg, epoch.center_longitude_deg,
+            epoch.center_altitude_m}))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < epoch.member_agent_ids.size(); ++index)
+    {
+        if (epoch.member_agent_ids.at(index) <= 0 ||
+            (index > 0U && epoch.member_agent_ids.at(index - 1U) >=
+                epoch.member_agent_ids.at(index)) ||
+            !std::isfinite(epoch.member_latitudes_deg.at(index)) ||
+            !std::isfinite(epoch.member_longitudes_deg.at(index)) ||
+            !std::isfinite(epoch.member_altitudes_m.at(index)) ||
+            !ego_swarm::SwarmFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
+                epoch.member_latitudes_deg.at(index),
+                epoch.member_longitudes_deg.at(index),
+                epoch.member_altitudes_m.at(index)}))
+        {
+            return false;
+        }
+    }
+    return epoch.snapshot_hash == formation_epoch_hash(epoch);
+}
+
+bool EgoSwarmPlannerNode::epoch_is_same_snapshot(
+    const taiphoon_agent::msg::FormationEpoch& first,
+    const taiphoon_agent::msg::FormationEpoch& second) const
+{
+    return first.sequence == second.sequence &&
+        first.snapshot_hash == second.snapshot_hash &&
+        first.proposer_agent_id == second.proposer_agent_id;
+}
+
+bool EgoSwarmPlannerNode::epoch_is_higher_priority(
+    const taiphoon_agent::msg::FormationEpoch& first,
+    const taiphoon_agent::msg::FormationEpoch& second) const
+{
+    if (first.sequence != second.sequence)
+    {
+        return first.sequence > second.sequence;
+    }
+    return first.proposer_agent_id < second.proposer_agent_id;
+}
+
+bool EgoSwarmPlannerNode::epoch_parent_matches_current(
+    const taiphoon_agent::msg::FormationEpoch& epoch) const
+{
+    if (!has_accepted_formation_epoch_)
+    {
+        return epoch.sequence == 1U && epoch.parent_sequence == 0U &&
+            epoch.parent_snapshot_hash == 0U;
+    }
+    return epoch.sequence > accepted_formation_epoch_.sequence &&
+        epoch.parent_sequence == accepted_formation_epoch_.sequence &&
+        epoch.parent_snapshot_hash == accepted_formation_epoch_.snapshot_hash;
+}
+
+bool EgoSwarmPlannerNode::make_formation_proposal(
+    const std::vector<int>& member_ids)
+{
+    if (!has_own_state_ || !update_swarm_frame())
     {
         RCLCPP_WARN(get_logger(),
-                    "Formation accepted but local WGS84 Home is not ready");
+                    "Formation proposal deferred until local WGS84 Home is ready");
+        return false;
     }
-    else
+    std::vector<int> members = member_ids;
+    std::sort(members.begin(), members.end());
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    if (members.empty() ||
+        !std::binary_search(members.begin(), members.end(), agent_index_))
     {
-        std::vector<int> ids;
-        ids.push_back(agent_index_);
-        for (const auto& entry : peers_)
+        RCLCPP_WARN(get_logger(),
+                    "Formation proposal requires this Agent to be a member");
+        return false;
+    }
+
+    taiphoon_agent::msg::FormationEpoch proposal;
+    proposal.valid = true;
+    proposal.creation_stamp = this->now();
+    proposal.sequence = has_accepted_formation_epoch_
+        ? accepted_formation_epoch_.sequence + 1U : 1U;
+    proposal.parent_sequence = has_accepted_formation_epoch_
+        ? accepted_formation_epoch_.sequence : 0U;
+    proposal.parent_snapshot_hash = has_accepted_formation_epoch_
+        ? accepted_formation_epoch_.snapshot_hash : 0U;
+    proposal.proposer_agent_id = agent_index_;
+    proposal.sender_agent_id = agent_index_;
+    proposal.status = taiphoon_agent::msg::FormationEpoch::PROPOSAL;
+    proposal.formation_type = static_cast<uint8_t>(formation_config_.type);
+    proposal.radius_m = formation_config_.radius_m;
+    proposal.spacing_m = formation_config_.spacing_m;
+    proposal.vertical_offset_m = formation_config_.vertical_offset_m;
+
+    if (has_accepted_formation_epoch_)
+    {
+        // Membership 變更只換槽位與 ownership，中心沿用 parent center。
+        proposal.center_latitude_deg =
+            accepted_formation_epoch_.center_latitude_deg;
+        proposal.center_longitude_deg =
+            accepted_formation_epoch_.center_longitude_deg;
+        proposal.center_altitude_m = accepted_formation_epoch_.center_altitude_m;
+        for (const auto& entry : formation_assignment_)
         {
-            if (entry.second.has_state &&
-                is_finite_state_position(entry.second.state))
-            {
-                ids.push_back(entry.first);
-            }
-        }
-        formation_center_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
-        std::size_t count = 0U;
-        ego_swarm::Vector3 position{};
-        if (has_own_state_ && get_position_in_swarm_frame(
-                own_state_, position))
-        {
-            formation_center_ = ego_swarm::add_vectors(
-                formation_center_, position);
-            ++count;
-        }
-        for (const auto& entry : peers_)
-        {
-            if (entry.second.has_state && get_position_in_swarm_frame(
-                    entry.second.state, position))
-            {
-                formation_center_ = ego_swarm::add_vectors(
-                    formation_center_, position);
-                ++count;
-            }
-        }
-        if (count > 0U)
-        {
-            formation_center_ = ego_swarm::scale_vector(
-                formation_center_, 1.0 / static_cast<double>(count));
-            has_formation_ = true;
+            proposal.parent_assignment_agent_ids.push_back(entry.first);
+            proposal.parent_assignment_slot_indices.push_back(
+                static_cast<int32_t>(entry.second));
         }
     }
+
+    double latitude_sum = 0.0;
+    double longitude_sum = 0.0;
+    for (const int member_id : members)
+    {
+        taiphoon_agent::msg::AgentState state{};
+        if (member_id == agent_index_)
+        {
+            state = own_state_;
+        }
+        else
+        {
+            const auto iterator = peers_.find(member_id);
+            if (iterator == peers_.end() || !iterator->second.has_state)
+            {
+                return false;
+            }
+            state = iterator->second.state;
+        }
+        if (!is_finite_state_position(state))
+        {
+            return false;
+        }
+        const double latitude = static_cast<double>(state.position_global.at(0));
+        const double longitude = static_cast<double>(state.position_global.at(1));
+        const double altitude = static_cast<double>(state.position_global.at(2));
+        proposal.member_agent_ids.push_back(member_id);
+        proposal.member_latitudes_deg.push_back(latitude);
+        proposal.member_longitudes_deg.push_back(longitude);
+        proposal.member_altitudes_m.push_back(altitude);
+        latitude_sum += latitude;
+        longitude_sum += longitude;
+    }
+    if (!has_accepted_formation_epoch_)
+    {
+        const double count = static_cast<double>(members.size());
+        proposal.center_latitude_deg = latitude_sum / count;
+        proposal.center_longitude_deg = longitude_sum / count;
+        // CIRCLE/HORI 的高度參數是既有 NED 命令語意：相對本機 Home 的
+        // 絕對飛行高度。center altitude 因此使用 proposer 的 frozen Home，
+        // 不能使用成員目前平均高度，否則起飛高度誤差會被再次寫入目標。
+        proposal.center_altitude_m = swarm_frame_.origin().altitude_m;
+    }
+    proposal.snapshot_hash = formation_epoch_hash(proposal);
+
+    candidate_formation_epoch_ = proposal;
+    has_candidate_formation_epoch_ = true;
+    candidate_adopted_agents_.clear();
+    candidate_adopted_agents_.insert(agent_index_);
+    publish_formation_epoch(taiphoon_agent::msg::FormationEpoch::PROPOSAL);
+    publish_formation_epoch(taiphoon_agent::msg::FormationEpoch::ADOPTED);
+    RCLCPP_INFO(
+        get_logger(),
+        "Proposed FormationEpoch seq=%u hash=%u proposer=%d members=%zu",
+        proposal.sequence, proposal.snapshot_hash, proposal.proposer_agent_id,
+        proposal.member_agent_ids.size());
+    maybe_activate_formation_epoch();
+    return true;
+}
+
+bool EgoSwarmPlannerNode::update_formation_assignment()
+{
+    if (!has_accepted_formation_epoch_ || !swarm_frame_.has_origin())
+    {
+        return false;
+    }
+    std::vector<int> ids;
+    std::vector<ego_swarm::Vector3> positions;
+    ids.reserve(accepted_formation_epoch_.member_agent_ids.size());
+    positions.reserve(ids.capacity());
+    for (std::size_t index = 0U;
+         index < accepted_formation_epoch_.member_agent_ids.size(); ++index)
+    {
+        ids.push_back(accepted_formation_epoch_.member_agent_ids.at(index));
+        ego_swarm::Vector3 position{};
+        if (!swarm_frame_.to_swarm_ned(ego_swarm::GeoCoordinate{
+                accepted_formation_epoch_.member_latitudes_deg.at(index),
+                accepted_formation_epoch_.member_longitudes_deg.at(index),
+                accepted_formation_epoch_.member_altitudes_m.at(index)}, position))
+        {
+            return false;
+        }
+        positions.push_back(position);
+    }
+    ego_swarm::Vector3 center{};
+    if (!swarm_frame_.to_swarm_ned(ego_swarm::GeoCoordinate{
+            accepted_formation_epoch_.center_latitude_deg,
+            accepted_formation_epoch_.center_longitude_deg,
+            accepted_formation_epoch_.center_altitude_m}, center))
+    {
+        return false;
+    }
+    const ego_swarm::Vector3 canonical_position = center;
+    for (auto& position : positions)
+    {
+        position = ego_swarm::subtract_vectors(position, canonical_position);
+    }
+    std::map<int, std::size_t> previous_assignment;
+    for (std::size_t index = 0U;
+         index < accepted_formation_epoch_.parent_assignment_agent_ids.size();
+         ++index)
+    {
+        const int agent_id = accepted_formation_epoch_.parent_assignment_agent_ids.at(index);
+        const int slot = accepted_formation_epoch_.parent_assignment_slot_indices.at(index);
+        if (agent_id > 0 && slot >= 0)
+        {
+            previous_assignment[agent_id] = static_cast<std::size_t>(slot);
+        }
+    }
+    ego_swarm::FormationAssignmentResult assignment;
+    if (!ego_swarm::FormationAssignment::assign(
+            ids, positions, formation_config_, previous_assignment,
+            formation_slot_switch_penalty_m_, assignment) ||
+        assignment.agent_to_slot.find(agent_index_) ==
+            assignment.agent_to_slot.end())
+    {
+        return false;
+    }
+    formation_assignment_ = assignment.agent_to_slot;
+    formation_center_ = center;
+    return true;
+}
+
+void EgoSwarmPlannerNode::adopt_formation_epoch(
+    const taiphoon_agent::msg::FormationEpoch& epoch)
+{
+    if (!epoch_is_valid(epoch))
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting invalid FormationEpoch message");
+        return;
+    }
+    bool is_same_sequence_higher_priority = false;
+    if (has_accepted_formation_epoch_ &&
+        !epoch_is_same_snapshot(epoch, accepted_formation_epoch_))
+    {
+        if (epoch.sequence < accepted_formation_epoch_.sequence)
+        {
+            return;
+        }
+        if (epoch.sequence == accepted_formation_epoch_.sequence)
+        {
+            // 同 sequence 以較小 proposer ID 勝出。較低優先 proposer
+            // 可能先抵達並被暫時採用，因此不能把晚到的 winner 永久
+            // 視為過期訊息；允許它重新收斂，並重新等待全員 ADOPTED。
+            if (epoch.proposer_agent_id >=
+                accepted_formation_epoch_.proposer_agent_id ||
+                epoch.parent_sequence != accepted_formation_epoch_.parent_sequence ||
+                epoch.parent_snapshot_hash !=
+                    accepted_formation_epoch_.parent_snapshot_hash)
+            {
+                return;
+            }
+            is_same_sequence_higher_priority = true;
+        }
+    }
+    // 尚未被納入 parent epoch 的新 Agent 沒有 parent 的本地 accepted
+    // 狀態；FormationEpoch 本身已攜帶完整 snapshot，因此可先接受
+    // 這份 proposal 作為候選並保持 hold，等全體 members ADOPTED 後
+    // 才啟用。否則新 Agent 若錯過 parent heartbeat 會永久卡住。
+    if (has_accepted_formation_epoch_ && !is_same_sequence_higher_priority &&
+        !epoch_is_same_snapshot(epoch, accepted_formation_epoch_) &&
+        !epoch_parent_matches_current(epoch))
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 3000,
+            "Rejecting FormationEpoch seq=%u: parent does not match current "
+            "accepted epoch", epoch.sequence);
+        return;
+    }
+
+    if (!has_candidate_formation_epoch_ ||
+        epoch_is_higher_priority(epoch, candidate_formation_epoch_))
+    {
+        candidate_formation_epoch_ = epoch;
+        has_candidate_formation_epoch_ = true;
+        candidate_adopted_agents_.clear();
+    }
+    if (!epoch_is_same_snapshot(epoch, candidate_formation_epoch_))
+    {
+        return;
+    }
+    if (epoch.status == taiphoon_agent::msg::FormationEpoch::ADOPTED &&
+        std::binary_search(
+            candidate_formation_epoch_.member_agent_ids.begin(),
+            candidate_formation_epoch_.member_agent_ids.end(),
+            epoch.sender_agent_id))
+    {
+        candidate_adopted_agents_.insert(epoch.sender_agent_id);
+    }
+    if (std::binary_search(
+            candidate_formation_epoch_.member_agent_ids.begin(),
+            candidate_formation_epoch_.member_agent_ids.end(), agent_index_))
+    {
+        candidate_adopted_agents_.insert(agent_index_);
+        if (epoch.sender_agent_id != agent_index_ &&
+            epoch.status == taiphoon_agent::msg::FormationEpoch::PROPOSAL)
+        {
+            publish_formation_epoch(taiphoon_agent::msg::FormationEpoch::ADOPTED);
+        }
+    }
+    maybe_activate_formation_epoch();
+}
+
+void EgoSwarmPlannerNode::formation_epoch_cb(
+    const taiphoon_agent::msg::FormationEpoch::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "formation_epoch_cb received nullptr");
+        return;
+    }
+    adopt_formation_epoch(*msg);
+}
+
+void EgoSwarmPlannerNode::maybe_activate_formation_epoch()
+{
+    if (!has_candidate_formation_epoch_ ||
+        !std::binary_search(
+            candidate_formation_epoch_.member_agent_ids.begin(),
+            candidate_formation_epoch_.member_agent_ids.end(), agent_index_))
+    {
+        return;
+    }
+    // Transient Local heartbeat 會反覆送出同一個 ADOPTED snapshot；已啟用
+    // 的 epoch 不得再次 invalidate 目前 trajectory 或重建 assignment。
+    if (has_accepted_formation_epoch_ &&
+        epoch_is_same_snapshot(
+            candidate_formation_epoch_, accepted_formation_epoch_))
+    {
+        return;
+    }
+    for (const int member_id : candidate_formation_epoch_.member_agent_ids)
+    {
+        if (candidate_adopted_agents_.find(member_id) ==
+            candidate_adopted_agents_.end())
+        {
+            return;
+        }
+    }
+
+    const auto previous_epoch = accepted_formation_epoch_;
+    const bool had_previous_epoch = has_accepted_formation_epoch_;
+    accepted_formation_epoch_ = candidate_formation_epoch_;
+    has_accepted_formation_epoch_ = true;
+    formation_config_.type = static_cast<ego_swarm::FormationType>(
+        accepted_formation_epoch_.formation_type);
+    formation_config_.radius_m = accepted_formation_epoch_.radius_m;
+    formation_config_.spacing_m = accepted_formation_epoch_.spacing_m;
+    formation_config_.vertical_offset_m =
+        accepted_formation_epoch_.vertical_offset_m;
+    if (!update_formation_assignment())
+    {
+        accepted_formation_epoch_ = previous_epoch;
+        has_accepted_formation_epoch_ = had_previous_epoch;
+        return;
+    }
+    has_formation_ = true;
+    has_goal_ = false;
+    preserve_altitude_ = false;
+    formation_membership_change_pending_ = false;
+    invalidate_active_plan();
+    RCLCPP_INFO(
+        get_logger(),
+        "Adopted FormationEpoch seq=%u hash=%u assignment_slot=%zu",
+        accepted_formation_epoch_.sequence,
+        accepted_formation_epoch_.snapshot_hash,
+        formation_assignment_.at(agent_index_));
+}
+
+void EgoSwarmPlannerNode::publish_formation_epoch(const uint8_t status)
+{
+    if (formation_epoch_pub_ == nullptr || !has_candidate_formation_epoch_)
+    {
+        return;
+    }
+    auto message = candidate_formation_epoch_;
+    message.sender_agent_id = agent_index_;
+    message.status = status;
+    message.valid = true;
+    formation_epoch_pub_->publish(message);
+    last_epoch_publish_s_ = this->now().seconds();
 }
 
 void EgoSwarmPlannerNode::obstacle_cb(
@@ -723,11 +1528,16 @@ void EgoSwarmPlannerNode::trajectory_cb(
 
     if (!peer_trajectories_.update(peer))
     {
-        RCLCPP_WARN(
-            get_logger(),
-            "Rejecting peer trajectory agent=%u: peer trajectory table "
-            "rejected the validated trajectory",
-            msg->agent_index);
+        uint32_t latest_trajectory_id = 0U;
+        const bool has_latest_trajectory_id =
+            peer_trajectories_.get_latest_trajectory_id(
+                static_cast<int>(msg->agent_index), latest_trajectory_id);
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Rejecting peer trajectory agent=%u id=%u: peer table latest="
+            "%u known=%s",
+            msg->agent_index, msg->trajectory_id, latest_trajectory_id,
+            has_latest_trajectory_id ? "true" : "false");
     }
 }
 
@@ -740,6 +1550,16 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_status(PLANNER_STATE_HOLD, "Planner time unavailable",
                        nullptr, false, false, now);
         return;
+    }
+    if (has_candidate_formation_epoch_ &&
+        (!std::isfinite(last_epoch_publish_s_) ||
+         now_s - last_epoch_publish_s_ >= FORMATION_EPOCH_HEARTBEAT_PERIOD_S))
+    {
+        publish_formation_epoch(
+            candidate_adopted_agents_.find(agent_index_) !=
+                candidate_adopted_agents_.end()
+                ? taiphoon_agent::msg::FormationEpoch::ADOPTED
+                : taiphoon_agent::msg::FormationEpoch::PROPOSAL);
     }
     std::vector<int> expected_peer_ids;
     expected_peer_ids.reserve(peers_.size());
@@ -755,6 +1575,17 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_status(PLANNER_STATE_HOLD, "Local WGS84 Home unavailable",
                        nullptr, false, peer_data_valid, now);
         return;
+    }
+
+    // 命令可能早於第一筆有限 WGS84 AgentState 到達；保留命令並在
+    // local Home 建立後重試，避免一次性的全域 topic 發送被悄悄丟失。
+    if (formation_command_pending_ && !has_candidate_formation_epoch_ &&
+        (!has_accepted_formation_epoch_ || !has_formation_))
+    {
+        if (make_formation_proposal(stable_member_ids()))
+        {
+            formation_command_pending_ = false;
+        }
     }
 
     // 沒有任務或編隊目標時，若仍在執行 emergency brake，必須先持續
@@ -859,6 +1690,116 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     const ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
 
+    // Peer trajectory 是預測資料；實際飛機可能因 PX4 estimator 或控制
+    // 延遲偏離宣告路徑，因此每個 planner tick 仍必須檢查 live WGS84
+    // 位置。低於硬性碰撞距離立即煞停；進入額外 1 m 警戒帶且本機正
+    // 執行移動軌跡時提前煞停，保留飛控反應時間。
+    const double live_peer_distance = live_peer_min_distance(current);
+    const double collision_distance = std::max(
+        formation_min_distance_m_,
+        planner_config_.peer_collision_min_distance_m);
+    const double current_speed_mps = std::sqrt(
+        ego_swarm::squared_norm(planning_state.velocity));
+    const double stopping_distance_m =
+        std::isfinite(current_speed_mps) && current_speed_mps > 0.0 &&
+        std::isfinite(planner_config_.max_acceleration_mps2) &&
+        planner_config_.max_acceleration_mps2 > 0.0
+        ? (current_speed_mps * current_speed_mps) /
+            (2.0 * planner_config_.max_acceleration_mps2)
+        : 0.0;
+    const double live_warning_distance = collision_distance +
+        std::max(
+            LIVE_PEER_REACTION_BUFFER_M,
+            stopping_distance_m + LIVE_PEER_REACTION_BUFFER_M);
+    // EmergencyBrakePlanner 的結果標記為 is_hold，但它仍可能包含一段
+    // 非零速度的減速軌跡。煞車期間只沿用同一條時間軸，不能在每個
+    // planner tick 又被 live warning 重新建立，否則 trajectory ID 會
+    // 無限增加，飛機反而永遠停在 warning 狀態。只有一般移動軌跡才
+    // 需要由 live peer warning 觸發新的 emergency brake。
+    const bool active_motion = has_active_plan_ &&
+        active_plan_.trajectory.is_valid() && !active_plan_.is_hold &&
+        !has_terminal_hold_;
+    if (!std::isfinite(live_peer_distance) ||
+        live_peer_distance < collision_distance ||
+        (active_motion && live_peer_distance < live_warning_distance))
+    {
+        const std::string reason = live_peer_distance < collision_distance
+            ? "live peer position inside collision margin"
+            : "live peer proximity warning";
+        publish_emergency_brake(
+            planning_state, current, reason, now, peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    if (has_formation_ && formation_membership_change_pending_)
+    {
+        // Discovery 在成員集合穩定前可能只缺一個 scan；此期間停止
+        // 舊 epoch 的任何移動，避免新舊成員集合同時釋放 trajectory。
+        if (has_active_plan_)
+        {
+            invalidate_active_plan();
+        }
+        if (!has_terminal_hold_ ||
+            ego_swarm::distance_between_centers(
+                terminal_hold_position_, current) >
+            local_arrival_tolerance_m_)
+        {
+            terminal_hold_position_ = current;
+            terminal_hold_plan_ = planner_.make_exact_hold_result(current);
+            terminal_hold_start_time_ = now;
+            terminal_hold_trajectory_id_ = ++trajectory_id_;
+            has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+        }
+        if (has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid())
+        {
+            publish_plan(
+                terminal_hold_plan_, current, now,
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Formation membership change pending; holding safely",
+                &terminal_hold_plan_, true, peer_data_valid, now);
+        }
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    if (has_formation_ && !formation_transition_ready())
+    {
+        // 編隊轉換只釋放一台已由 canonical snapshot 判定安全的 Agent；
+        // 其他 Agent 固定在目前位置。這避免多條直線候選同時穿越舊隊形，
+        // 但順序不是硬編碼，而是由 FormationTransition 依幾何安全性與
+        // Agent ID tie-break deterministic 產生。
+        if (has_active_plan_)
+        {
+            invalidate_active_plan();
+        }
+        if (!has_terminal_hold_ ||
+            ego_swarm::distance_between_centers(
+                terminal_hold_position_, current) >
+                local_arrival_tolerance_m_)
+        {
+            terminal_hold_position_ = current;
+            terminal_hold_plan_ = planner_.make_exact_hold_result(current);
+            terminal_hold_start_time_ = now;
+            terminal_hold_trajectory_id_ = ++trajectory_id_;
+            has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+        }
+        if (has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid())
+        {
+            publish_plan(
+                terminal_hold_plan_, current, now,
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Formation transition waiting for safe predecessor",
+                &terminal_hold_plan_, true, peer_data_valid, now);
+        }
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
     ego_swarm::Vector3 target{};
     if (!get_current_target(target))
     {
@@ -869,16 +1810,73 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
+    if (has_formation_)
+    {
+        // safety validator 以同儕 trajectory 做時間同步檢查；這裡再用
+        // 最新實體位置檢查 current -> target 的直接走廊。若 snapshot
+        // 已因估測漂移而過時，不得仍依舊 snapshot 釋放一條可能穿過
+        // 現場機體的路徑。
+        const double live_path_distance = live_peer_path_min_distance(
+            current, target);
+        if (!std::isfinite(live_path_distance) ||
+            live_path_distance < collision_distance)
+        {
+            publish_emergency_brake(
+                planning_state, target,
+                "formation live path is occupied", now, peer_data_valid);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+    }
+
     const auto arrival = evaluate_target_arrival(current, target);
-    if (arrival.reached)
+    // 編隊的槽位與中心由 FormationEpoch 的 WGS84 snapshot 定義；local
+    // NED 只是在本機控制器內的投影，可能因 PX4 Home/odometry 與 GPS
+    // frozen transform 的小幅差異而比 global 位置多出誤差。編隊到位
+    // 時以共同 global NED 判斷，避免已在槽位內的 Agent 永遠無法建立
+    // terminal hold；一般 MOVE 仍要求 local 與 global 都通過。
+    const bool formation_global_arrived = has_formation_ &&
+        arrival.global_valid &&
+        arrival.global_error_m <= global_arrival_tolerance_m_;
+    if (arrival.reached || formation_global_arrived)
     {
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
+
+        // 編隊是持續存在的任務，不是單一 Agent 到槽位後就結束的
+        // one-shot move。保留 has_formation_，讓後續 Agent 能以此機的
+        // target terminal hold 判斷 transition readiness；同時避免每個
+        // planner tick 重建相同的 hold trajectory。
+        const bool formation_target_hold_active = has_formation_ &&
+            has_terminal_hold_ &&
+            ego_swarm::distance_between_centers(
+                terminal_hold_position_, target) <=
+            global_arrival_tolerance_m_;
+        if (formation_target_hold_active)
+        {
+            publish_plan(
+                terminal_hold_plan_, terminal_hold_position_, now,
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+            publish_status(
+                PLANNER_STATE_HOLD,
+                "Terminal hold; formation slot occupied",
+                &terminal_hold_plan_, true, peer_data_valid, now);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+
         has_goal_ = false;
-        has_formation_ = false;
         preserve_altitude_ = false;
         invalidate_active_plan();
-        if (std::isfinite(speed_mps) && speed_mps > 0.05)
+        // 編隊 transition_ready() 以 0.2 m/s 判斷前序 Agent 已穩定
+        // 佔位。若到達分支仍使用 0.05 m/s，飛控在槽位附近的正常
+        // 殘餘速度會讓本機永遠進入 brake/replan，無法發布 terminal
+        // hold，後續 Agent 也就永遠不會被釋放。一般 MOVE 仍保留
+        // 原本 0.05 m/s 的較嚴格停止條件。
+        const double formation_settle_speed_mps = 0.2;
+        const double settle_speed_mps = has_formation_
+            ? formation_settle_speed_mps : 0.05;
+        if (std::isfinite(speed_mps) && speed_mps > settle_speed_mps)
         {
             publish_emergency_brake(
                 planning_state, target, "target reached while moving", now,
@@ -929,7 +1927,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
-    const bool preserve_altitude = preserve_altitude_ && !has_formation_;
+    // 編隊 transition 只能使用直線或 North/East 側向候選；不允許 planner
+    // 以額外的 above/below candidate 繞過同儕。VERT_LINEAR 的目標 Z 仍可
+    // 沿目標方向調整，但不會再增加垂直避碰偏移。
+    const bool preserve_altitude = has_formation_ || preserve_altitude_;
     if (preserve_altitude)
     {
         // 水平移動只改變 X/Y；使用命令建立時的目標 Z 作為整條
@@ -999,6 +2000,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
+    clear_terminal_hold();
     active_plan_ = result;
     active_plan_target_ = target;
     active_plan_start_time_ = now;
@@ -1016,11 +2018,31 @@ void EgoSwarmPlannerNode::planner_loop_cb()
 
 void EgoSwarmPlannerNode::scan_peers_cb()
 {
+    // rclcpp 的 get_node_names() 只回傳 basename；PeerMatcher 需要完整
+    // namespace 才能判斷 /fmu<N>/basic_controller_node 是否在線。
+    std::vector<std::string> fully_qualified_node_names;
+    for (const auto& entry :
+         get_node_graph_interface()->get_node_names_and_namespaces())
+    {
+        std::string namespace_name = entry.second;
+        if (namespace_name.empty() || namespace_name == "/")
+        {
+            namespace_name.clear();
+        }
+        else if (namespace_name.back() == '/')
+        {
+            namespace_name.pop_back();
+        }
+        fully_qualified_node_names.push_back(
+            namespace_name + "/" + entry.first);
+    }
     const auto found = formation::PeerMatcher::filter_agent_nodes(
-        get_node_names(), agent_namespace_);
+        fully_qualified_node_names, agent_namespace_);
     std::set<int> discovered(found.begin(), found.end());
+    currently_discovered_peers_ = discovered;
     for (const int index : found)
     {
+        discovery_absent_scan_count_[index] = 0;
         if (peer_subscriptions_.find(index) != peer_subscriptions_.end())
         {
             continue;
@@ -1045,13 +2067,88 @@ void EgoSwarmPlannerNode::scan_peers_cb()
     {
         if (discovered.find(iterator->first) == discovered.end())
         {
-            peers_.erase(iterator->first);
-            peer_trajectories_.erase(iterator->first);
-            iterator = peer_subscriptions_.erase(iterator);
+            const int absent_scans = ++discovery_absent_scan_count_[iterator->first];
+            if (absent_scans >= formation_member_stable_scan_count_)
+            {
+                const int removed_id = iterator->first;
+                peers_.erase(removed_id);
+                peer_trajectories_.erase(removed_id);
+                discovery_absent_scan_count_.erase(removed_id);
+                iterator = peer_subscriptions_.erase(iterator);
+            }
+            else
+            {
+                ++iterator;
+            }
         }
         else
         {
             ++iterator;
+        }
+    }
+
+    std::vector<int> candidate_members;
+    if (has_own_state_ && is_finite_state_position(own_state_))
+    {
+        candidate_members.push_back(agent_index_);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (const int index : currently_discovered_peers_)
+    {
+        const auto peer_iterator = peers_.find(index);
+        if (peer_iterator == peers_.end() || !peer_iterator->second.has_state ||
+            !is_finite_state_position(peer_iterator->second.state))
+        {
+            continue;
+        }
+        const double age = std::chrono::duration<double>(
+            now - peer_iterator->second.last_arrival).count();
+        if (std::isfinite(age) && age >= 0.0 &&
+            age <= peer_trajectory_timeout_s_)
+        {
+            candidate_members.push_back(index);
+        }
+    }
+    std::sort(candidate_members.begin(), candidate_members.end());
+    candidate_members.erase(
+        std::unique(candidate_members.begin(), candidate_members.end()),
+        candidate_members.end());
+    if (has_accepted_formation_epoch_ && has_formation_)
+    {
+        if (candidate_members != accepted_formation_epoch_.member_agent_ids)
+        {
+            formation_membership_change_pending_ = true;
+        }
+        else if (!has_candidate_formation_epoch_ ||
+                 epoch_is_same_snapshot(
+                     candidate_formation_epoch_, accepted_formation_epoch_))
+        {
+            formation_membership_change_pending_ = false;
+        }
+    }
+    if (candidate_members == discovery_candidate_members_)
+    {
+        ++discovery_same_scan_count_;
+    }
+    else
+    {
+        discovery_candidate_members_ = candidate_members;
+        discovery_same_scan_count_ = 1;
+    }
+    if (discovery_same_scan_count_ >= formation_member_stable_scan_count_ &&
+        candidate_members != stable_members_)
+    {
+        const std::vector<int> previous_members = stable_members_;
+        stable_members_ = candidate_members;
+        if (has_accepted_formation_epoch_ && has_formation_ &&
+            candidate_members != accepted_formation_epoch_.member_agent_ids &&
+            candidate_members != previous_members)
+        {
+            RCLCPP_INFO(
+                get_logger(),
+                "Stable member set changed; proposing FormationEpoch reconfiguration "
+                "members=%zu", candidate_members.size());
+            (void)make_formation_proposal(candidate_members);
         }
     }
 }
@@ -1172,6 +2269,11 @@ void EgoSwarmPlannerNode::invalidate_active_plan()
     active_plan_start_time_ = rclcpp::Time(
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
     active_plan_trajectory_id_ = 0U;
+    clear_terminal_hold();
+}
+
+void EgoSwarmPlannerNode::clear_terminal_hold()
+{
     has_terminal_hold_ = false;
     terminal_hold_plan_ = ego_swarm::PlannerResult{};
     terminal_hold_position_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
@@ -1184,30 +2286,37 @@ bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
 {
     if (has_formation_)
     {
-        std::vector<int> ids{agent_index_};
-        for (const auto& entry : peers_)
+        const auto assignment = formation_assignment_.find(agent_index_);
+        if (!has_accepted_formation_epoch_ ||
+            assignment == formation_assignment_.end())
         {
-            if (entry.second.has_state &&
-                is_finite_state_position(entry.second.state))
-            {
-                ids.push_back(entry.first);
-            }
+            return false;
         }
-        ego_swarm::FormationSlot slot;
-        if (!ego_swarm::FormationSlotPlanner::compute_slot(
-                agent_index_, ids, formation_config_, slot))
+        std::vector<ego_swarm::Vector3> offsets;
+        if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+                accepted_formation_epoch_.member_agent_ids.size(),
+                formation_config_, offsets) ||
+            assignment->second >= offsets.size())
         {
             return false;
         }
         std::vector<ego_swarm::FormationSlot> slots;
-        if (!ego_swarm::FormationSlotPlanner::compute_all_slots(
-                ids, formation_config_, slots) ||
-            !ego_swarm::FormationSlotPlanner::are_slots_safe(
+        slots.reserve(offsets.size());
+        for (std::size_t index = 0U; index < offsets.size(); ++index)
+        {
+            ego_swarm::FormationSlot geometry_slot;
+            geometry_slot.rank = index;
+            geometry_slot.offset_ned = offsets.at(index);
+            geometry_slot.is_valid = true;
+            slots.push_back(geometry_slot);
+        }
+        if (!ego_swarm::FormationSlotPlanner::are_slots_safe(
                 slots, formation_min_distance_m_))
         {
             return false;
         }
-        target = ego_swarm::add_vectors(formation_center_, slot.offset_ned);
+        target = ego_swarm::add_vectors(
+            formation_center_, offsets.at(assignment->second));
         return ego_swarm::is_finite_vector(target);
     }
 
@@ -1283,6 +2392,11 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     const rclcpp::Time& now,
     const bool peer_data_valid)
 {
+    // Emergency brake 代表目前的 terminal hold 已不再描述實際控制
+    // 狀態；若保留舊 hold，後續 heartbeat 可能帶著較小 trajectory ID
+    // 覆寫/回退 PeerTrajectoryTable，讓其他 Agent 永遠等不到新的
+    // predecessor 狀態。煞停完成並重新到位後會以新 ID 建立 hold。
+    clear_terminal_hold();
     const auto brake_result = emergency_brake_planner_.plan(state);
     if (!brake_result.is_valid || !brake_result.has_finite_output())
     {
@@ -1352,22 +2466,60 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     }
     goal_position_ = current;
     bool preserve_altitude = false;
+    double forward_m = 0.0;
+    double right_m = 0.0;
     switch (parsed.command)
     {
         case utils::AgentCommand::MOVE_FORWARD:
-            goal_position_.at(0) += parsed.param_value;
+            if (!attitude_is_fresh())
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting horizontal MOVE: attitude is missing, "
+                    "invalid, or older than %.2f s; holding current target",
+                    move_attitude_timeout_s_);
+                return;
+            }
+            forward_m = parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_BACKWARD:
-            goal_position_.at(0) -= parsed.param_value;
+            if (!attitude_is_fresh())
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting horizontal MOVE: attitude is missing, "
+                    "invalid, or older than %.2f s; holding current target",
+                    move_attitude_timeout_s_);
+                return;
+            }
+            forward_m = -parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_LEFT:
-            goal_position_.at(1) -= parsed.param_value;
+            if (!attitude_is_fresh())
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting horizontal MOVE: attitude is missing, "
+                    "invalid, or older than %.2f s; holding current target",
+                    move_attitude_timeout_s_);
+                return;
+            }
+            right_m = -parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_RIGHT:
-            goal_position_.at(1) += parsed.param_value;
+            if (!attitude_is_fresh())
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting horizontal MOVE: attitude is missing, "
+                    "invalid, or older than %.2f s; holding current target",
+                    move_attitude_timeout_s_);
+                return;
+            }
+            right_m = parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_UP:
@@ -1379,10 +2531,42 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         default:
             return;
     }
+    if (preserve_altitude)
+    {
+        double yaw_rad = 0.0;
+        ego_swarm::Vector3 body_offset{};
+        if (!ego_swarm::quaternion_to_ned_yaw(own_attitude_.q, yaw_rad) ||
+            !ego_swarm::body_horizontal_offset_to_ned(
+                yaw_rad, forward_m, right_m, body_offset))
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Rejecting horizontal MOVE: attitude cannot produce finite "
+                "body-to-NED transform");
+            return;
+        }
+        // 這個 offset 只在命令 callback 計算一次；後續 yaw 變化不會
+        // 旋轉既有目標。
+        goal_position_ = ego_swarm::add_vectors(goal_position_, body_offset);
+    }
     has_goal_ = ego_swarm::is_finite_vector(goal_position_);
     has_formation_ = false;
     preserve_altitude_ = preserve_altitude;
     invalidate_active_plan();
+}
+
+bool EgoSwarmPlannerNode::attitude_is_fresh() const
+{
+    double yaw_rad = 0.0;
+    if (!has_own_attitude_ ||
+        !ego_swarm::quaternion_to_ned_yaw(own_attitude_.q, yaw_rad))
+    {
+        return false;
+    }
+    const auto age = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - attitude_last_arrival_).count();
+    return std::isfinite(age) && age >= 0.0 &&
+        age <= move_attitude_timeout_s_;
 }
 
 void EgoSwarmPlannerNode::publish_plan(
@@ -1393,6 +2577,14 @@ void EgoSwarmPlannerNode::publish_plan(
     const uint32_t trajectory_id,
     const bool terminal_hold)
 {
+    if (trajectory_id == 0U || trajectory_id < last_published_trajectory_id_)
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Suppressing non-monotonic trajectory id=%u; last published=%u",
+            trajectory_id, last_published_trajectory_id_);
+        return;
+    }
     if (!result.has_finite_output())
     {
         return;
@@ -1437,6 +2629,7 @@ void EgoSwarmPlannerNode::publish_plan(
     (void)origin_position;
     trajectory_pub_->publish(message);
     local_trajectory_pub_->publish(message);
+    last_published_trajectory_id_ = trajectory_id;
 }
 
 std::string EgoSwarmPlannerNode::obstacle_map_status_reason(

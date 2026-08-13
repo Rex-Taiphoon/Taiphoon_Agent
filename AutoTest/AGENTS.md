@@ -54,6 +54,7 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 | `--net NAME` | Docker 網路名稱 | `Taiphoon_Net` |
 | `--rmw TYPE` | `fastrtps` 或 `cyclonedds` | `fastrtps` |
 | `--agent NAME` | Agent 容器名稱（僅用於提示檢查指令） | `fmu1_agent` |
+| `--initial-spacing-m M` | PX4 起始水平間距；必須大於 `peer_collision_min_distance_m` 的預設 3m | `8.0` |
 
 執行前會自動清理舊的 `drone*` 容器。啟動完成後會印出各機 QGC 連線 port 與檢查 ROS2 topics 的指令。
 

@@ -2,7 +2,7 @@
 
 ## 文件狀態
 
-這是以 Phase 0 characterization baseline 為起點、並已納入 Phase 1～3 變更的
+這是以 Phase 0 characterization baseline 為起點、並已納入 Phase 1～5 變更的
 目前行為摘要。內容以目前 source code 與 Docker 內測試為準，不把尚未實作的
 後續安全契約描述成 runtime 保證。
 
@@ -58,17 +58,19 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 - `frame_revision()` 的非零值識別本機 frame snapshot；對外 AgentTrajectory 使用
   `GLOBAL_WGS84_FRAME_REVISION` 作為全球座標 contract 版本。
 
-### `FormationSlotPlanner`
+### `FormationSlotPlanner` 與 `FormationAssignment`
 
-- 將 Agent ID 排序後以 rank 產生 CIRCLE、HORI_LINEAR、VERT_LINEAR 槽位。
-- 對重複 ID、空成員及非法幾何參數回傳失敗。
-- `are_slots_safe()` 使用機體中心三維距離與呼叫端提供的門檻。
-- 尚無 persistent assignment 或 FormationEpoch。
+- 保留 CIRCLE、HORI_LINEAR、VERT_LINEAR 幾何公式，先產生無主槽位。
+- `FormationAssignment` 使用 deterministic Hungarian minimum-cost assignment；成本為
+  三維距離加上可設定的換槽 penalty，輸入無效時整體失敗，不部分分配。
+- Agent ID 與 slot index 排序、同成本採固定順序，確保每個 Agent 與槽位都是一對一。
+- 幾何計算使用 FormationEpoch center 建立的 canonical NED；接收端再轉成本機 NED。
 
 ### `EgoSwarmPlanner`
 
-- 保留 deterministic candidate baseline：直線、左右側向、上下垂直共五種
-  中段偏移候選。
+- 保留 deterministic candidate baseline：一般非編隊目標仍有直線、左右側向與上下
+  垂直中段偏移候選；編隊由 Node 強制使用 preserve-altitude 路徑，因此不會採用
+  額外的上下垂直避碰候選。
 - 依目標距離、控制點平滑性、障礙物距離與 peer 距離成本選擇候選。
 - 每個候選以固定 sample interval 評估；任一 sample 低於 obstacle clearance
   或 peer collision distance 即拒絕。
@@ -99,8 +101,17 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 - planner result 發布至 `/fmu_all_agent/swarm/agent_trajectories` 與本機
   `/planning/trajectory`；status 發布至本機 `/planning/status`。
 - `/{agent_namespace}/command` 中的 `MOVE_*`、`MOVE_POINT` 與
-  `FORMATION_CANCEL` 會交由 Planner 設定目標；`MODE_*`、`ARM`、`TAKEOFF`、
-  `LAND`、`YAW` 仍只由 BasicController 執行。
+  `FORMATION_CANCEL` 由 Planner 唯一設定位置目標；BasicController 不再建立第二份
+  mission intent。水平 MOVE 在收到命令時以新鮮 AgentAttitude 的 yaw 轉成固定 local
+  NED 目標；`MODE_*`、`ARM`、`TAKEOFF`、`LAND`、`YAW` 仍只由 BasicController 執行。
+- `/fmu_all_agent/swarm/formation_epochs` 使用 Reliable + Transient Local。每台 Agent
+  可提出下一代 epoch，依 sequence 與 proposer ID 決定優先權；所有 members ADOPTED
+  相同 snapshot hash 前不啟用新 assignment。每 3 秒 discovery，成員集合連續兩次
+  穩定後自動重編，並保留既有 formation center。
+- 編隊 transition 由 canonical snapshot 計算 deterministic safe-order，每次只放行一台
+  機體。候選先走目前位置到槽位的直線；直線受阻時只嘗試 North/East 水平中段側移，
+  Z 僅作起點到目標的線性插值。沒有安全候選時維持 terminal hold，等待前序 Agent 的
+  fresh terminal heartbeat，不從上方或下方繞行。
 - active trajectory 重發時保留原始 `start_time` 與 `trajectory_id`，直到
   軌跡完成或目標／座標生命週期改變，避免每個 planning cycle 重置軌跡進度。
 - Planner 同時以 PX4 local NED 與 GPS 轉換出的本機 NED 判斷到達；兩者都在
@@ -111,6 +122,22 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 - 沒有 mission goal 或 formation goal 時，planner 對尚未完成煞車的 Agent 持續發布
   emergency brake；煞停後持續發布 `terminal_hold=true` 的終點 heartbeat。
   BasicController 保留其固定位置／高度 setpoint。
+- planner loop 另外以最新 AgentState 做 live peer position gate：低於碰撞門檻時
+  fail-closed brake，移動中則依目前速度估算煞停距離並加上反應緩衝後提前 brake。
+  編隊移動在產生新 trajectory 前也會檢查 current-to-target 直線走廊不能穿過目前
+  同儕位置。這些是保守防護，不代表已完成飛控實體防撞驗收。
+- emergency brake 會清除舊的 terminal hold，避免較小的 hold trajectory ID 被重新
+  發布而觸發同儕 table 的單調 ID 拒絕；煞車中的 hold trajectory 會沿原時間軸重發，
+  不會每個 planner cycle 重建。SITL 已確認不同 DDS 到達順序下可完成 transition
+  收斂。
+
+### Phase 5 Agent failure recovery
+
+- discovery 連續兩次確認成員消失後，剩餘成員會沿用 parent center 建立下一代
+  FormationEpoch，移除失效 Agent 並重新計算 assignment；本次四機 SITL 驗證由
+  sequence 1 自動轉為 sequence 2、成員 `[1,2,3]`，三機均恢復 terminal hold。
+- Agent 重新上線後同樣會建立新的成員 snapshot；若失效期間 PX4 已落地／解除 armed，
+  仍須先由飛控安全流程恢復 Offboard／armed，Planner 不會自行繞過該條件復飛。
 
 ### `BasicController`
 
@@ -141,3 +168,14 @@ Phase 0 鎖定下列行為：
   yaw 與 yawspeed 欄位均為有限值。
 - 空障礙物輸入目前代表無障礙物；既有 PointCloud geometry、range/FOV、noise 與
   dropout 測試維持通過。
+
+## 2026-08-13 SITL verification notes
+
+- 以四個 Agent 先啟動、再以 `launch_all.sh --count 4 --rmw cyclonedds` 啟動四台 PX4，
+  `quick_takeoff.sh` 後四台均確認 Offboard、armed、未落地。
+- `FORMATION_CIRCLE 10 8` 由 sequence 1 收斂到四台 `Terminal hold; formation slot
+  occupied`；transition 只使用直線／水平側向候選，沒有額外上下繞行，且未再看到
+  peer trajectory ID out-of-order rejection。
+- 關閉 fmu4 Agent 後自動產生 sequence 2、成員 `[1,2,3]`；等待安全順序完成後三台
+  均為 terminal hold 且 `peer_data_valid=true`。重新啟動 fmu4 並恢復 PX4 Offboard／armed
+  後，再產生 sequence 3，四台重新回到 terminal hold。

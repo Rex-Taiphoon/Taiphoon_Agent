@@ -14,6 +14,7 @@ NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 FOREGROUND=false
 AGENT_CONTAINER="fmu1_agent"
+INITIAL_SPACING_M="8.0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -22,11 +23,17 @@ while [[ $# -gt 0 ]]; do
         --rmw) RMW="$2"; shift 2 ;;
         --fg) FOREGROUND=true; shift ;;
         --agent) AGENT_CONTAINER="$2"; shift 2 ;;
+        --initial-spacing-m) INITIAL_SPACING_M="$2"; shift 2 ;;
         *) echo "未知參數：$1"; exit 1 ;;
     esac
 done
 
 [ -z "$INSTANCE" ] && { echo "錯誤：請提供實例編號（--index 0）"; exit 1; }
+if ! [[ "$INITIAL_SPACING_M" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+    [ "$(printf '%s\n' "$INITIAL_SPACING_M" | awk '$1 <= 3.0 {print 1}')" = "1" ]; then
+    echo "錯誤：--initial-spacing-m 必須大於 3.0 公尺"
+    exit 1
+fi
 
 case "$RMW" in
     fastrtps) RMW_ENV="rmw_fastrtps_cpp" ;;
@@ -45,10 +52,11 @@ import math, sys
 base_lat = 25.03996592258936
 base_lon = 121.51195163336611
 instance = int(sys.argv[1])
+spacing_m = float(sys.argv[2])
 lon_per_m = 1.0 / (111320.0 * math.cos(math.radians(base_lat)))
-offset = instance * 3.0 * lon_per_m
+offset = instance * spacing_m * lon_per_m
 print(f'{base_lat} {base_lon + offset}')
-" $INSTANCE)
+" $INSTANCE $INITIAL_SPACING_M)
 
 DRONE_NAME="drone${NS_INDEX}"
 

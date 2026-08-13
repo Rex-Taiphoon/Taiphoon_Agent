@@ -13,6 +13,7 @@
 #   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
 #   --agent NAME   Agent 容器名稱（預設 taiphoon_agent_dev）
+#   --initial-spacing-m M  PX4 起始水平間距（預設 8.0，必須大於 3.0）
 # =============================================================================
 
 set -e
@@ -24,6 +25,7 @@ COUNT=4
 NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 AGENT_CONTAINER="fmu1_agent"
+INITIAL_SPACING_M="8.0"
 
 # ---- 解析參數 ----
 while [[ $# -gt 0 ]]; do
@@ -44,9 +46,13 @@ while [[ $# -gt 0 ]]; do
             AGENT_CONTAINER="$2"
             shift 2
             ;;
+        --initial-spacing-m)
+            INITIAL_SPACING_M="$2"
+            shift 2
+            ;;
         *)
             echo "未知參數：$1"
-            echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
+            echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds] [--initial-spacing-m 8.0]"
             exit 1
             ;;
     esac
@@ -87,7 +93,8 @@ for ((i=0; i<COUNT; i++)); do
         --index "$i" \
         --net "$NETWORK" \
         --rmw "$RMW" \
-        --agent "fmu$((i+1))_agent"
+        --agent "fmu$((i+1))_agent" \
+        --initial-spacing-m "$INITIAL_SPACING_M"
     sleep 2
 done
 

@@ -733,21 +733,6 @@ void BasicControllerNode::on_agent_command(
                 utils::agent_command_to_string(cmd.command),
                 cmd.param_value, cmd.has_param ? 1 : 0);
 
-    const auto publish_mission_intent = [this](const std::string& text)
-    {
-        if (mission_intent_pub_ == nullptr || text.empty())
-        {
-            RCLCPP_WARN(this->get_logger(),
-                        "Mission intent publisher unavailable");
-            return false;
-        }
-
-        std_msgs::msg::String message;
-        message.data = text;
-        mission_intent_pub_->publish(message);
-        return true;
-    };
-
     bool result = false;
 
     switch (cmd.command)
@@ -767,8 +752,12 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_FORWARD:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_FORWARD " + std::to_string(cmd.param_value));
+                // MOVE 的唯一 command owner 是 EgoSwarmPlannerNode；此處
+                // 只回報命令已交由 planner，避免 command callback 再產生
+                // 第二份 mission intent。
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_FORWARD delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -778,8 +767,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_BACKWARD:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_BACKWARD " + std::to_string(cmd.param_value));
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_BACKWARD delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -789,8 +779,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_LEFT:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_LEFT " + std::to_string(cmd.param_value));
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_LEFT delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -800,8 +791,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_RIGHT:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_RIGHT " + std::to_string(cmd.param_value));
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_RIGHT delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -828,8 +820,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_UP:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_UP " + std::to_string(cmd.param_value));
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_UP delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -839,8 +832,9 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::MOVE_DOWN:
             if (cmd.has_param)
             {
-                result = publish_mission_intent(
-                    "MOVE_DOWN " + std::to_string(cmd.param_value));
+                RCLCPP_INFO(this->get_logger(),
+                            "MOVE_DOWN delegated to EgoSwarmPlannerNode");
+                result = true;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
@@ -866,15 +860,24 @@ void BasicControllerNode::on_agent_command(
                 // 航向，直接交由 BasicController 保留並發布給 PX4。
                 const bool yaw_result = controller_->set_absolute_yaw(
                     cmd.param4);
-                std::ostringstream stream;
-                stream << "MOVE_POINT " << cmd.param_value << " "
-                       << cmd.param2 << " " << cmd.param3 << " "
-                       << cmd.param4;
-                result = yaw_result && publish_mission_intent(stream.str());
+                // MOVE_POINT 本身由 command callback 直接送到 planner；
+                // BasicController 只保留 yaw 設定，不轉發第二份 intent。
+                result = yaw_result;
             }
             else
                 RCLCPP_WARN(this->get_logger(),
                            "MOVE_POINT requires x y z yaw parameters");
+            break;
+
+        case utils::AgentCommand::FORMATION_CIRCLE:
+        case utils::AgentCommand::FORMATION_HORI_LINEAR:
+        case utils::AgentCommand::FORMATION_VERT_LINEAR:
+        case utils::AgentCommand::FORMATION_CANCEL:
+            // 編隊命令由 EgoSwarmPlannerNode 唯一處理；BasicController
+            // 不發布 PX4 setpoint，也不建立第二份 mission intent。
+            RCLCPP_INFO(this->get_logger(),
+                        "Formation command delegated to EgoSwarmPlannerNode");
+            result = true;
             break;
 
         default:

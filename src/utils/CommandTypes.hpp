@@ -298,6 +298,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = std::stof(tokens[1]);  // 半徑
                 result.param2 = std::stof(tokens[2]);        // 高度
+                result.has_param = true;
                 result.has_multi_params = true;
             }
             catch (...)
@@ -315,6 +316,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = std::stof(tokens[1]);  // 間距
                 result.param2 = std::stof(tokens[2]);        // 高度
+                result.has_param = true;
                 result.has_multi_params = true;
             }
             catch (...)
@@ -331,11 +333,14 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             try
             {
                 result.param_value = std::stof(tokens[1]);  // 間距
-                result.has_multi_params = true;
+                // 垂直直列只有一個數值參數，不能標記成多參數命令；
+                // planner 會依 has_param 驗證其間距是否有效。
+                result.has_param = true;
             }
             catch (...)
             {
                 result.param_value = 0.0F;
+                result.has_param = false;
             }
         }
     }

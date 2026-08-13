@@ -167,6 +167,26 @@ public:
     }
 
     /**
+     * @brief 取得目前保存的最高 trajectory ID。
+     *
+     * 僅供 adapter 診斷 out-of-order DDS 訊息；不繞過 update 的單調
+     * ID 規則，也不改變 safety table 的接受條件。
+     */
+    bool get_latest_trajectory_id(
+        const int agent_id,
+        uint32_t& out_trajectory_id) const
+    {
+        const auto iterator = latest_trajectory_ids_.find(agent_id);
+        if (iterator == latest_trajectory_ids_.end())
+        {
+            out_trajectory_id = 0U;
+            return false;
+        }
+        out_trajectory_id = iterator->second;
+        return true;
+    }
+
+    /**
      * @brief 取得目前仍可供 planner 使用的同儕軌跡
      *
      * @param agent_id 同儕 Agent ID

@@ -667,62 +667,44 @@ IDLE → PREPARING → TRANSITIONING → ...
 
 ## 15.2 FormationEpoch
 
-建議：
+目前以 `FormationEpoch.msg` 交換 sequence、parent identity、proposer/sender、
+proposal/adopted 狀態、formation config、WGS84 center、排序後 member snapshot、
+parent slot ownership、snapshot hash 與 creation timestamp。Topic 為
+`/fmu_all_agent/swarm/formation_epochs`，使用 Reliable + Transient Local；已採用的
+Agent 會定期重送目前 snapshot，讓後加入 Agent 取得 heartbeat。
 
-```cpp
-struct FormationEpoch
-{
-    uint32_t epoch_id;
-
-    FormationType type;
-
-    std::vector<int> members;
-
-    Vector3 center;
-
-    FormationConfig config;
-
-    std::map<int, FormationSlot> assignments;
-
-    double created_time_s;
-
-    bool valid;
-};
-```
-
-收到新的 formation command 才建立新 Epoch。
-
-短暫 ROS discovery 波動不得修改目前 Epoch。
+收到新的 formation command 或穩定成員集合變更才建立下一代 Epoch。相同 config 與
+相同成員 snapshot 的重複命令是 idempotent；短暫 discovery 波動要連續兩次穩定才會
+觸發重編隊。
 
 ---
 
 ## 15.3 Formation Convergence
 
-不是 state machine state。
-
-由誤差計算：
-
-```text
-formation_converged = all participating agents
-                      within slot tolerance
-                      for configured duration
-```
+不是額外的 state machine state。Leaderless 收斂依 parent、sequence 與 proposer
+優先權選出同一個 snapshot；只有觀測到 epoch 內所有 members 都發布相同 hash 的
+`ADOPTED` 後，才執行 assignment 與新 trajectory。收斂前維持舊 epoch 或安全 hold。
 
 ---
 
 ## 15.4 Reconfiguration
 
-Agent 暫時消失：
+Agent Node discovery 每 3 秒執行；新增成員必須同時具備 Agent Node 與 fresh、finite、
+online 的 AgentState，既有成員要連續兩次消失才移除。Node 存在但 AgentState stale
+不會偷偷移除，trajectory safety 仍 fail-closed。建立新 epoch 時沿用 parent center，
+只重新產生槽位與 assignment。
 
-- 不立刻全員重排 slot
+## 15.5 Transition Release Contract
 
-只有：
+Phase 5 的安全轉換以 deterministic safe-order 依序釋放機體。候選路徑先檢查目前
+位置到目標槽位的直線；直線受阻時只增加 North/East 中段側向控制點，Z 維持起點到
+目標的線性插值。不得以額外的上升或下降控制點作為避碰繞路；沒有安全水平候選時，
+機體維持 terminal hold，直到前序機體以 fresh terminal heartbeat 佔據新槽位。
 
-- explicit command
-- timeout policy
-- approved member reconfiguration
-
-才建立新的 FormationEpoch。
+Agent discovery 連續兩次確認成員消失或重新出現後，沿用 parent center 建立下一代
+epoch，重新執行 assignment 與 transition release。失效成員的 PX4 若已落地或解除
+armed，重新加入後仍須先恢復飛控的 Offboard／armed 狀態，Planner 不會繞過飛控安全
+條件自行復飛。
 
 ---
 
@@ -742,14 +724,9 @@ slot：
 center + [R*cos(theta), R*sin(theta), z_offset]
 ```
 
-Agent-ID rank assignment：
-
-- 保留作 fallback
-
-正常 assignment 後續使用：
-
-- persistent ownership
-- minimum-cost assignment
+Agent-ID rank assignment 僅作輸入無效時的明確 fallback；正常 assignment 使用
+deterministic Hungarian algorithm，成本為 canonical NED 三維距離加上
+`formation_slot_switch_penalty_m`，每個 Agent 與 slot 都恰好一個。
 
 ---
 

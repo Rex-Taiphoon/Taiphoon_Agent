@@ -10,7 +10,7 @@
 | 2 Obstacle Abstraction | Accepted | | Docker: 171 tests passed | Basic SITL smoke passed | Pure C++ map abstraction, explicit empty／ground truth／synthetic sensor and freshness gate implemented；四機 Agent/PX4 已完成 quick_takeoff、HOLD、MOVE_FORWARD、MODE_RTL、MODE_LAND 基本鏈路驗證，未納入編隊驗證；人類開發者已確認驗證完成 |
 | 3 B-Spline p/v/a/j + PX4 | Accepted | | Docker: 174 tests passed | 四機 SITL 基本鏈路與非零 p/v/a feed-forward smoke passed | 人類開發者已確認驗證完成；未提前進入 Phase 4 |
 | 4 Dynamic Safety + Brake | Ready for Review | EGO-Swarm-dev (uncommitted) | Docker: 190 tests passed | 四機 Agent/PX4 quick_takeoff、六方向移動、編隊與 peer safety smoke passed | WGS84 transport、receiver-local NED Adapter、ContinuousSafetyValidator、EmergencyBrakePlanner 與 terminal hold heartbeat 已實作；人類開發者確認前不得標記 Accepted |
-| 5 Safe Formation | Not Started | | | | |
+| 5 Safe Formation | Ready for Review | EGO-Swarm-dev (uncommitted) | Docker: 207 tests passed | 四機 SITL：CIRCLE transition 收斂；fmu4 Agent 失效後 sequence 2 自動重編為 `[1,2,3]` 並恢復三機 terminal hold；fmu4 恢復 PX4 後 sequence 3 重新收斂四機 | 水平／時間序列 transition、單調 trajectory ID、Agent failure recovery 已驗證；等待人類開發者審查，不標記 Accepted |
 | 6 Optimized EGO Backend | Not Started | | | | |
 | 7 Topological Initial Guesses | Not Started | | | | |
 | 8 Multi-PX4 SITL Validation | Not Started | | | | |
@@ -100,7 +100,27 @@ Accepted
 - Phase 3 B-Spline p/v/a/j + PX4：人類開發者確認 analytic derivative、PX4
   feed-forward 與四機基本指令驗證完成，狀態更新為 `Accepted`。
 - Phase 4 已完成實作與驗證，等待人類開發者審查與接受；不得由 Codex 自行宣告
-  `Accepted`。Phase 5 及後續 Phase 未實作、未宣告完成。
+  `Accepted`。Phase 5 目前同樣等待人類 review，未宣告 `Accepted`。
+
+## Phase 5 Verification Record（2026-08-13）
+
+- Docker build：明確 source ROS2 Humble 與既有 `px4_msgs` workspace 後，
+  `colcon build --packages-select taiphoon_agent` 通過。
+- Docker unit tests：`207 tests, 0 errors, 0 failures, 0 skipped`。
+- 四機 SITL 依序以 `docker compose up -d` 啟動 Agent，再以
+  `launch_all.sh --count 4 --rmw cyclonedds` 啟動 PX4；`quick_takeoff.sh` 後四台均
+  確認 `flight_mode=5`、`armed=true`、`landed=false`。
+- `FORMATION_CIRCLE 10 8` 建立 sequence 1，四台最後均發布
+  `Terminal hold; formation slot occupied`，`peer_data_valid=true`。transition
+  只使用直線或 North/East 水平側向候選；Z 只沿目標線性插值，未觀察到從上方／下方
+  繞行。純 C++ 回歸測試另確認 formation planner 不產生額外垂直 detour。
+- fmu4 Agent 隨機失效後，discovery 連續兩次穩定掃描自動建立 sequence 2，成員由
+  `[1,2,3,4]` 變為 `[1,2,3]`；等待 deterministic safe-order 完成後三台均為
+  terminal hold 且 `peer_data_valid=true`。
+- 重新啟動 fmu4 Agent 時，先恢復 PX4 的 Offboard／armed 狀態；系統自動建立 sequence 3
+  納回 fmu4，四台最後均回到 `Terminal hold; formation slot occupied`。
+- Emergency brake 進行中沿同一條時間軸發布，未再觀察到舊 terminal hold trajectory ID
+  覆蓋新軌跡或 `peer table latest` out-of-order rejection。
 
 ---
 
@@ -122,9 +142,11 @@ Accepted
   新增的是 hard dynamic safety gate，不是 optimized planner cost。
 - Phase 4 已建立 WGS84 transport、receiver-local NED conversion、terminal hold、
   continuous trajectory safety validator 與動態 emergency brake；尚待人類開發者接受。
-- Formation transition 尚未建立跨 Agent 的 reservation／epoch 同步；目前以每台
-  Agent 的連續安全驗證與 fail-closed brake 保護，不能把它宣稱為 Phase 5 的同步編隊
-  最佳化。
+- FormationEpoch 已提供跨 Agent snapshot/ADOPTED 同步、deterministic assignment、
+  水平 safe-order 與成員失效重編；Phase 6 的 crossing penalty、連續 reservation
+  與 optimized backend 仍未實作。
+- Phase 5 編隊 Node 已禁止額外的上下垂直避碰 candidate；Phase 6 只保留給更完整的
+  optimized planner／reservation contract，不得在本次 Phase 5 之外擴張 scope。
 
 ---
 
@@ -135,4 +157,4 @@ Accepted
 | Item | Origin Phase | Target Phase | Reason |
 |---|---:|---:|---|
 | Real sensor adapter and sensor latency/dropout characterization | 2 | 9 | Phase 2 只完成 simulation sources 與 pure C++ LocalObstacleMap seam |
-| Formation transition reservation／epoch synchronization | 4 | 5 | Phase 4 只保證 receiver-local continuous safety gate 與 fail-closed brake；跨 Agent 同步規劃尚未實作 |
+| Formation transition reservation／crossing penalty | 5 | 6 | Phase 5 先完成 epoch、assignment 與 safety gate；尚未加入 crossing cost 或額外 reservation |

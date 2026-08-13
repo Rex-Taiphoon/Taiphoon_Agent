@@ -441,6 +441,40 @@ obstacle
 peer swarm
 ```
 
+## Formation horizontal-safety constraint
+
+Phase 6 的 optimized backend 若服務 CIRCLE 或 HORI_LINEAR 編隊，必須額外
+遵守下列硬性限制；這些限制優先於一般 peer cost：
+
+- formation epoch 固定的 altitude 是硬約束；CIRCLE 與 HORI_LINEAR 的所有
+  candidate control point 必須維持相同 NED Z。
+- 編隊避碰只能在 North/East 平面規劃；不得使用 above/below candidate，
+  也不得因三維距離較安全而自動升高或下降。
+- 每條水平 candidate 都必須通過 continuous safety validator，並與已發布
+  或已保留的 peer path 做時間區間 reservation 檢查。
+- 多台 Agent 只有在水平 path 的空間與時間區間均不衝突時才能同批執行；
+  否則必須分時釋放，後續 Agent 等待前一條 reservation 釋放。
+- 若目前沒有安全的水平 path，必須保持目前高度並 HOLD／brake，之後
+  重新產生水平 candidate 或重新安排時間；不得退回垂直繞行。
+
+## Formation convergence contract
+
+CIRCLE 不得只依賴一次性的 terminal trajectory 封包才能收斂：
+
+- 只有成員集合完成穩定 discovery 後才能建立初始 FormationEpoch；每個
+  Agent 必須採用相同 epoch identity、snapshot hash、center、slot assignment。
+- 每個 Agent 的 trajectory ID 在整個 runtime lifetime 單調遞增，不得因
+  emergency brake、terminal hold 或 replan 回退；舊封包被忽略時不得清除
+  最新的 predecessor occupancy。
+- predecessor readiness 必須由 fresh AgentState、目標槽位誤差、速度與
+  最新有效 occupancy heartbeat 共同判定；不能因單一舊 trajectory 封包晚到
+  就永久停在 transition waiting。
+- 若安全順序不存在，planner 必須重新搜尋水平 lateral path、更新
+  reservation／執行批次，或安全 HOLD 並週期性重試；不得讓整個 CIRCLE
+  因一次無解的固定順序永久鎖死。
+- 只有所有成員在固定高度抵達各自槽位且 heartbeat 仍 fresh，才算
+  `formation_converged`。
+
 optimizer failure：
 
 ```text
@@ -483,6 +517,9 @@ right
 above
 below
 ```
+
+> `above`／`below` 只適用於一般 3D 任務的 topology initial guess。對
+> CIRCLE 與 HORI_LINEAR 編隊禁止使用，編隊只能使用固定高度的水平候選。
 
 但這些只作 initial guess。
 

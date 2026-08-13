@@ -3,10 +3,9 @@
 **無人機任務與感測器執行中樞**，基於 ROS2 (Humble) + PX4 的自主飛行控制系統，
 以 EGO-Swarm 實作多機編隊、局部障礙物避讓與同儕未來軌跡避碰，並支援邊緣運算與即時影像處理。
 
-> 本 README 已反映 EGO-Swarm 目標架構。Phase 0 只補充 characterization tests、
-> 設計基線與現況文件，不新增 ROS2 topic／message 或改變 PX4 runtime 資料流。
-> 三個 EGO-Swarm 訊息的欄位以目前 workspace 的 `.msg` 定義為準；Node 的啟動方式
-> 與 QoS 以本文件及介面規格書列出的實作為準。
+> 本 README 已反映目前 EGO-Swarm runtime。移動命令由 Planner 單一路徑處理，
+> `MOVE_FORWARD/BACKWARD/LEFT/RIGHT` 以命令收到當下的機頭 yaw 固定成 local NED
+> 目標；編隊使用 WGS84 FormationEpoch 與 deterministic minimum-cost assignment。
 
 EGO-Swarm 的 Phase 0 基線請參閱 [`docs/codex/README.md`](docs/codex/README.md)；其中
 [`EGO_SWARM_CURRENT_BEHAVIOR.md`](docs/codex/EGO_SWARM_CURRENT_BEHAVIOR.md) 記錄目前
@@ -97,6 +96,10 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 | `--count N` | 無人機數量 | 4 |
 | `--net NAME` | Docker 網路名稱 | Taiphoon_Net |
 | `--rmw TYPE` | DDS 中介軟體（fastrtps / cyclonedds） | fastrtps |
+| `--initial-spacing-m M` | PX4 起始水平間距；必須大於預設 3m peer safety 門檻 | 5.0 |
+
+SITL launcher 預設以 8m 水平間距啟動，為飛控定位與控制誤差保留安全
+裕度；這不會改寫 planner 的 `peer_collision_min_distance_m`。
 
 每台無人機對應兩個容器：`drone{N}`（PX4 SITL）與 `drone{N}-uxrce-dds-agent`（uXRCE-DDS Agent）。命名空間 `fmu{N}`、MAV_SYS_ID 與通訊埠由 `--count` 自動遞增。
 
@@ -347,8 +350,8 @@ docker exec fmu1_agent bash -c "
 ## 操作手冊 — EGO-Swarm 編隊飛行
 
 編隊功能由 **ego_swarm_planner** 實作。每台無人機以 WGS84 交換位置，再在自己的
-固定 Home 建立 local NED，計算自身
-的虛擬編隊槽位，再由 EGO-Swarm 局部規劃器產生包含障礙物與同儕避碰的未來軌跡。
+固定 Home 建立 receiver-local NED，使用共同 FormationEpoch 計算自身的虛擬編隊槽位，
+再由 EGO-Swarm 局部規劃器產生包含障礙物與同儕避碰的未來軌跡。
 既有 `/fmu_all_agent/command` 編隊命令協定保持不變。
 
 ### 啟動多機編隊環境
@@ -411,10 +414,17 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 | **水平直列** | 沿 Y 軸（右向）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 | **垂直直列** | 沿 Z 軸（向下）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 
-> 編隊運算以 WGS84 全球位置交換為共同基準；每台 Agent 收到 `FORMATION_*` 指令後，
-> 先在自己的固定 Home 轉成 local NED，再分配虛擬槽位與規劃前往自己的槽位。
-> GPS-only 可以正常執行編隊；PX4 odometry 與 attitude 仍由 BasicController 用於
-> 即時軌跡追蹤。EGO planner 每 3 秒掃描同儕 Agent，依目前成員更新槽位。
+> 編隊以 WGS84 全球位置交換 snapshot；每台 Agent 收到相同 FormationEpoch 後，
+> 在自己的固定 Home 轉成 receiver-local NED，使用 Hungarian minimum-cost assignment
+> 獨立得到相同的一對一槽位結果。Epoch 需等所有成員發布相同 hash 的 ADOPTED 才啟用；
+> discovery 每 3 秒掃描，成員集合連續兩次穩定後才觸發自動重編隊，中心沿用 parent center。
+
+編隊轉換時，Planner 只允許目前位置到槽位的直線或 North/East 水平側向候選；
+側向候選的 Z 只沿起點到目標線性插值，不會從上方或下方繞過同儕。若當下沒有
+安全水平路徑，該 Agent 會以 terminal hold 等待前序 Agent 到位，再依 deterministic
+順序放行，不會用垂直繞行突破安全距離。任一 Agent 連續兩次 discovery scan 消失時，
+其餘成員會建立下一代 FormationEpoch、移除失效成員並重新計算 assignment；Agent
+重新上線後也會以相同機制重新加入。
 
 ---
 
@@ -447,6 +457,8 @@ ego_swarm_planner
 ```
 
 - 同儕避碰距離是機體中心到機體中心的三維直線距離，不加計機體半徑。
+- SITL launcher 的初始水平間距預設為 8m；這只是測試起點的安全裕度，
+  不會改寫 planner 的 `peer_collision_min_distance_m`。
 - 最小距離不可硬編碼為 3 m；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
   1.5 m、2 m 或 3 m 等值。
@@ -481,7 +493,8 @@ sensor_msgs/msg/PointCloud2
 
 ```yaml
 frame_id: swarm_ned
-mode: synthetic_sensor
+# 無障礙基線；要測試 YAML 幾何時由 launch/ROS2 mode 改為 ground_truth 或 synthetic_sensor
+mode: explicit_empty
 sample_spacing_m: 0.5
 publish_rate_hz: 15.0
 random_seed: 20260810
@@ -522,10 +535,10 @@ EGO planner Subscriber 均使用 best_effort QoS depth 10。
 | `ARM` | 解鎖馬達 | 無 | `ARM` |
 | `DISARM` | 上鎖馬達 | 無 | `DISARM` |
 | `TAKEOFF` | 起飛至指定高度，無參數時使用預設值 | 高度 (m) | `TAKEOFF 10` |
-| `MOVE_FORWARD` | 向前移動 | 距離 (m) | `MOVE_FORWARD 5` |
-| `MOVE_BACKWARD` | 向後移動 | 距離 (m) | `MOVE_BACKWARD 3` |
-| `MOVE_LEFT` | 向左移動 | 距離 (m) | `MOVE_LEFT 3` |
-| `MOVE_RIGHT` | 向右移動 | 距離 (m) | `MOVE_RIGHT 3` |
+| `MOVE_FORWARD` | 依命令收到當下機頭方向向前移動 | 距離 (m) | `MOVE_FORWARD 5` |
+| `MOVE_BACKWARD` | 依命令收到當下機頭方向向後移動 | 距離 (m) | `MOVE_BACKWARD 3` |
+| `MOVE_LEFT` | 依命令收到當下機頭方向向左移動 | 距離 (m) | `MOVE_LEFT 3` |
+| `MOVE_RIGHT` | 依命令收到當下機頭方向向右移動 | 距離 (m) | `MOVE_RIGHT 3` |
 | `MOVE_UP` | 向上移動 | 距離 (m) | `MOVE_UP 5` |
 | `MOVE_DOWN` | 向下移動 | 距離 (m) | `MOVE_DOWN 2` |
 | `YAW` | 以目前航向為基準順時針旋轉（直接由 BasicController 發布 PX4 yaw） | 相對角度 (°) | `YAW 90` |
@@ -549,8 +562,8 @@ docker compose exec fmu1_agent bash -c \
    'data: FORMATION_CIRCLE 20 30'"
 ```
 
-> 編隊命令必須透過 **`/fmu_all_agent/command`** 廣播，
-> 所有機體的 `ego_swarm_planner` 同時收到並各自計算自身的虛擬編隊槽位與未來軌跡。
+> 編隊命令必須透過 **`/fmu_all_agent/command`** 廣播；Planner 會以 Epoch 去重，
+> 相同 config 與成員 snapshot 的重複命令不會建立新 epoch。
 
 
 ### 簡寫命令
@@ -579,10 +592,11 @@ std_msgs/msg/String
 QoS: reliable, depth 10
 ```
 
-`/{agent_namespace}/command` 的 `MOVE_*` 與 `MOVE_POINT` 位置欄位會由 EGO-Swarm
-Planner 接收並轉換成目標；`MODE_*`、`ARM`、`TAKEOFF`、`LAND`、`YAW` 仍只由
-BasicController 執行。`MOVE_POINT` 的 yaw 欄位也由 BasicController 直接設定為
-PX4 絕對 yaw，避免 Planner 忽略航向欄位。
+`/{agent_namespace}/command` 的 `MOVE_*` 與 `MOVE_POINT` 由 EGO-Swarm Planner
+唯一建立位置目標；BasicController 不再轉發第二份 mission intent。水平 MOVE 會在
+命令收到當下以新鮮 AgentAttitude 的 yaw 轉成固定 local NED 目標，飛行途中 yaw 改變
+不會旋轉既有目標。`MODE_*`、`ARM`、`TAKEOFF`、`LAND`、`YAW` 仍由 BasicController
+執行；`planning/mission_intent` 僅保留為相容的獨立輸入。
 
 到達目標後，Planner 會以目標座標填滿固定 hold B-spline，並發布
 `No mission target; BasicController keeps its hold setpoint`。軌跡逾時後，
@@ -656,6 +670,9 @@ Agent 仍把該終點視為佔位障礙。
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
 | `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
 | `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |
+| `move_attitude_timeout_s` | double | `1.0` | 水平 MOVE 可使用的 AgentAttitude freshness window |
+| `formation_slot_switch_penalty_m` | double | `2.0` | minimum-cost assignment 換槽位成本 |
+| `formation_member_stable_scan_count` | int | `2` | discovery 成員集合連續穩定掃描次數 |
 
 目前核心是 deterministic candidate baseline，並非完整原始 EGO-Swarm nonlinear optimizer。
 EGO-Swarm 會依候選路徑長度、最大速度、最大加速度與最大 jerk 計算每條 B-spline
@@ -671,6 +688,9 @@ heartbeat；沒有移動或編隊目標時，BasicController 維持 finite hold 
 參與 peer collision 評估。ContinuousSafetyValidator 會再檢查整條候選軌跡的 p/v/a/j、
 peer/map freshness、同儕 separation 與 obstacle clearance；移動軌跡逾時或資料失效時
 切換至 EmergencyBrakePlanner，完成後由 sender 發布終點 terminal hold。
+編隊 terminal hold 會清除舊 hold 後再發布單調遞增的 trajectory ID，避免舊 heartbeat
+覆蓋新軌跡；EmergencyBrakePlanner 進行中的減速軌跡沿原時間軸發布，不會每個 cycle
+重新煞車。
 
 ### ObstacleCloudSimulator 實際參數
 
@@ -681,7 +701,7 @@ peer/map freshness、同儕 separation 與 obstacle clearance；移動軌跡逾�
 | `publish_rate_hz` | double | `15.0` | PointCloud2 發布頻率 |
 | `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
 | `swarm_origin_agent_index` | int | `1` | synthetic sensor 的相容參數；障礙物資料仍以 `swarm_ned` 公尺座標輸入 |
-| `mode` | string | `synthetic_sensor` | `explicit_empty`、`ground_truth` 或 `synthetic_sensor`；相容舊名稱 |
+| `mode` | string | `explicit_empty` | ROS2 parameter 覆蓋 YAML `mode`；預設發布 fresh zero-point cloud |
 | `range_m` | double | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | double | `270.0` | 水平視野 |
 | `vertical_fov_deg` | double | `90.0` | 垂直視野 |

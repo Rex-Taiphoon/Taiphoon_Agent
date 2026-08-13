@@ -1,7 +1,7 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.6
-> **更新日期**：2026-08-12
+> **版本**：1.8
+> **更新日期**：2026-08-13
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
 > 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、Service、自訂訊息格式與命令協定，
@@ -82,7 +82,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 local NED 輸出軌跡。 |
-| **參數** | `agent_namespace`、`agent_index`、`swarm_origin_agent_index`、`peer_trajectory_timeout_s`、`max_peer_time_skew_s`、`obstacle_cloud_timeout_s`、`require_obstacle_cloud`、`planning_rate_hz`、`formation_min_distance_m`、`peer_collision_min_distance_m`、`obstacle_clearance_m`、`knot_interval_s`、`max_velocity_m_s`、`max_acceleration_m_s2`、`max_velocity_mps`、`max_acceleration_mps2`、`max_jerk_mps3`、`candidate_offset_m`、`local_arrival_tolerance_m`、`global_arrival_tolerance_m` |
+| **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count` |
 
 **內部組件**：
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
@@ -115,6 +115,9 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 本機 Home 建立的 global-to-local NED 到達容許誤差 |
+| `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
+| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本 |
+| `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 
 ### 2.3 obstacle_cloud_simulator
 
@@ -140,7 +143,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `swarm_origin_agent_index` | `int` | `1` | synthetic sensor 的固定 `swarm_ned` 原點 Agent |
 | `config_file` | `string` | 空字串 | YAML 場景檔；Launch 預設使用 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | `double` | `15.0` | PointCloud2 發布頻率 |
-| `mode` | `string` | `synthetic_sensor` | `explicit_empty`、`ground_truth` 或 `synthetic_sensor`；相容舊名稱 |
+| `mode` | `string` | `explicit_empty` | ROS2 parameter 優先於 YAML `mode`；模擬預設發布 fresh zero-point cloud |
 | `range_m` | `double` | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | `double` | `270.0` | 水平視野 |
 | `vertical_fov_deg` | `double` | `90.0` | 垂直視野 |
@@ -217,6 +220,18 @@ Agent 姿態訊息，由 `basic_controller_node` 發布。
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 訊息時間戳 |
 | `q` | `float32[4]` | 四元數姿態（w, x, y, z） |
+
+### 3.3 FormationEpoch (`taiphoon_agent/msg/FormationEpoch`)
+
+由所有 Agent 透過 `/fmu_all_agent/swarm/formation_epochs` 交換 leaderless
+編隊的 WGS84 成員 snapshot、parent identity、proposal/adopted 狀態與 formation
+設定。Topic 使用 Reliable + Transient Local QoS；只有在 epoch 內所有 members
+都發布相同 `snapshot_hash` 的 `ADOPTED` 後，Agent 才啟用新 assignment。
+
+訊息包含 `sequence`、`parent_sequence`、`parent_snapshot_hash`、
+`proposer_agent_id`、`sender_agent_id`、`status`、formation geometry、WGS84 center、
+排序後的 `member_agent_ids` 與位置陣列、parent assignment、`snapshot_hash`、
+`creation_stamp` 與 `valid`。
 
 ### 3.3 NedTarget (`taiphoon_agent/msg/NedTarget`)
 
@@ -361,6 +376,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | `/{agent_namespace}/planning/mission_intent` | 本機任務意圖文字命令，供 EGO-Swarm Planner 設定目標 | `std_msgs/msg/String` | reliable (10) |
 | `/{agent_namespace}/planning/status` | 本機 EGO-Swarm 規劃狀態與診斷 | `taiphoon_agent/PlannerStatus` | reliable (10) |
 | `/{agent_namespace}/planning/trajectory` | 本機 EGO-Swarm 規劃結果 | `taiphoon_agent/AgentTrajectory` | reliable (10) |
+| `/fmu_all_agent/swarm/formation_epochs` | Leaderless 編隊 epoch、WGS84 snapshot 與 ADOPTED heartbeat | `taiphoon_agent/FormationEpoch` | reliable + transient_local (10) |
 | `/{agent_namespace}/ned_target` | 舊 NED 目標介面；EGO-Swarm 取代後僅作相容或純邏輯測試用途 | `taiphoon_agent/NedTarget` | 既有介面 |
 | `/{agent_namespace}/waypoints` | 舊 waypoint 介面；EGO-Swarm 取代後僅作純邏輯測試用途，不能視為 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | 既有介面 |
 
@@ -375,7 +391,9 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/ned_target` | 接收既有 NED 目標相容輸入 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/planning/mission_intent` | 接收本機任務意圖 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/command` | 接收本機 `MOVE_*`、`MOVE_POINT` 與 `FORMATION_CANCEL`，轉換為 EGO-Swarm 目標；模式、起飛與 YAW 仍由 BasicController 處理 |
+| `ego_swarm_planner`（訂閱） | `/{agent_namespace}/attitude` | 取得命令收到當下的機頭 yaw，固定水平 MOVE 的 local NED 目標 |
 | `ego_swarm_planner`（訂閱） | `/fmu_all_agent/command` | 接收全體編隊與同步命令 |
+| `ego_swarm_planner`（訂閱／發布） | `/fmu_all_agent/swarm/formation_epochs` | 交換 proposal/adopted、共同 WGS84 snapshot 與編隊 heartbeat |
 | `ego_swarm_planner`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
 | `ego_swarm_planner`（發布） | `/fmu_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
 | `ego_swarm_planner`（發布） | `/{agent_namespace}/planning/status`、`/{agent_namespace}/planning/trajectory` | 發布本機規劃狀態與軌跡 |
@@ -391,15 +409,25 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 
 ### 4.2.5 EGO-Swarm 編隊與避碰契約
 
-- GCS 命令先由 `ego_swarm_planner` 轉換為本機任務意圖與虛擬編隊槽位；規劃器輸出
-  未來軌跡，再由 `basic_controller_node` 以 analytic B-spline derivative 取樣
-  p/v/a 成 PX4 `TrajectorySetpoint`。
+- `MOVE_*`、`MOVE_POINT` 與編隊位置目標由 `ego_swarm_planner` 唯一擁有；
+  `basic_controller_node` 只負責 ARM、TAKEOFF、LAND、RTL、HOLD、YAW 與軌跡取樣。
+  規劃器輸出未來軌跡後，再由 BasicController 以 analytic B-spline derivative
+  取樣 p/v/a 成 PX4 `TrajectorySetpoint`。
 - 目前 EGO-Swarm 核心是 deterministic candidate baseline：建立固定候選 B-spline，
   依目標、平滑、障礙物與同儕距離成本選擇安全候選；不宣稱完整原始 EGO-Swarm
   nonlinear optimizer。
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
   local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
+- 水平 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT` 使用命令收到當下的 AgentAttitude yaw；
+  attitude 缺失、非有限或超過 `move_attitude_timeout_s` 時拒絕水平 MOVE 並保持目前目標。
+- 編隊 assignment 使用 FormationEpoch center 建立的 canonical NED、距離加換槽 penalty
+  的 deterministic Hungarian；成員 discovery 連續兩次穩定後自動重編隊。
+- 編隊 transition 每次只釋放一台安全前序 Agent；路徑優先使用直線，受阻時只允許
+  North/East 水平側向折線，Z 僅沿起點到目標線性插值，禁止以額外的上／下偏移繞行。
+  無安全水平候選時維持 terminal hold，等前序 Agent 到位後依 deterministic 順序放行。
+- Agent 失效或重新上線會在 discovery 成員集合連續兩次穩定後建立下一代 FormationEpoch，
+  移除或納回成員並重新計算 assignment；新 epoch 採用前先維持安全 hold。
 - 同儕避碰的距離定義為機體中心到機體中心的三維直線距離，不加計機體半徑。
 - 最小距離不得在文件或實作中硬編碼為 3 公尺；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
