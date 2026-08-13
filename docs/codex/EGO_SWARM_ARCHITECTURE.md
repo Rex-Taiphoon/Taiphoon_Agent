@@ -696,15 +696,17 @@ online 的 AgentState，既有成員要連續兩次消失才移除。Node 存在
 
 ## 15.5 Transition Release Contract
 
-Phase 5 的安全轉換以 deterministic safe-order 依序釋放機體。候選路徑先檢查目前
-位置到目標槽位的直線；直線受阻時只增加 North/East 中段側向控制點，Z 維持起點到
-目標的線性插值。不得以額外的上升或下降控制點作為避碰繞路；沒有安全水平候選時，
-機體維持 terminal hold，直到前序機體以 fresh terminal heartbeat 佔據新槽位。
+Phase 5 不建立全隊固定的 safe-order。每台 Agent 都可以先為自己的目標槽位規劃；
+路線沒有空間或時間衝突時可以同時執行，只有實際互相衝突的 Agent 才局部協調。
+候選路徑先檢查目前位置到目標槽位的直線；直線受阻時只增加 North/East 中段側向
+控制點，Z 維持起點到目標的線性插值。不得以額外的上升或下降控制點作為避碰繞路。
 
-Agent discovery 連續兩次確認成員消失或重新出現後，沿用 parent center 建立下一代
-epoch，重新執行 assignment 與 transition release。失效成員的 PX4 若已落地或解除
-armed，重新加入後仍須先恢復飛控的 Offboard／armed 狀態，Planner 不會繞過飛控安全
-條件自行復飛。
+衝突的路線以 `start_time` 較早者優先，同時間以較小 Agent 編號作為固定判斷；後者
+只暫停或延後，不影響沒有衝突的 Agent。沒有安全水平候選時，機體維持 hold／煞停，
+並在安全條件改變後重新規劃。Agent discovery 連續兩次確認成員消失或重新出現後，
+沿用 parent center 建立下一代 epoch，重新執行 assignment；失效成員的 PX4 若已
+落地或解除 armed，重新加入後仍須先恢復飛控的 Offboard／armed 狀態，Planner 不會
+繞過飛控安全條件自行復飛。
 
 ---
 

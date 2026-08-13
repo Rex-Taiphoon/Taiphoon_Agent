@@ -25,6 +25,7 @@
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/TrajectoryPriority.hpp"
 #include "perception/RawPointObstacleMap.hpp"
 #include "utils/CommandTypes.hpp"
 
@@ -49,6 +50,7 @@ using taiphoon::ego_swarm::PlannerConfig;
 using taiphoon::ego_swarm::SwarmFrame;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::ego_swarm::distance_between_centers;
+using taiphoon::ego_swarm::has_trajectory_priority;
 using taiphoon::perception::RawPointObstacleMap;
 
 /**
@@ -768,6 +770,14 @@ TEST(EgoSwarmGeometryTest, UsesDirectCenterToCenterDistance)
     EXPECT_NEAR(distance_between_centers(first, second), 3.0, 1.0e-9);
 }
 
+TEST(TrajectoryPriorityTest, EarlierStartTimeWinsAndAgentIdBreaksTies)
+{
+    EXPECT_TRUE(has_trajectory_priority(1.0, 5, 2.0, 1));
+    EXPECT_FALSE(has_trajectory_priority(2.0, 5, 1.0, 1));
+    EXPECT_TRUE(has_trajectory_priority(1.0, 1, 1.0, 2));
+    EXPECT_FALSE(has_trajectory_priority(1.0, 2, 1.0, 1));
+}
+
 TEST(EgoSwarmPlannerTest, SelectsDeterministicObstacleAvoidingCandidate)
 {
     PlannerConfig config;
@@ -809,12 +819,34 @@ TEST(EgoSwarmPlannerTest, RejectsCandidateCollidingWithPeerFutureTrajectory)
         empty_map,
         peers,
         0.0,
-        1);
+        3);
 
     EXPECT_FALSE(result.is_valid);
     EXPECT_TRUE(result.is_hold);
     EXPECT_TRUE(result.trajectory.is_valid());
     EXPECT_TRUE(result.has_finite_output());
+}
+
+TEST(EgoSwarmPlannerTest, EarlierRouteHasPriorityOverConflictingPeer)
+{
+    PlannerConfig config;
+    config.peer_collision_min_distance_m = 3.0;
+    EgoSwarmPlanner planner(config);
+    PeerTrajectoryTable peers;
+    const auto empty_map = make_empty_obstacle_map();
+    ASSERT_TRUE(peers.update(
+        make_peer_trajectory(2, 1U, 0.0, 0.0, 0.0)));
+
+    const auto result = planner.plan(
+        Vector3{0.0, 0.0, 0.0},
+        Vector3{10.0, 0.0, 0.0},
+        empty_map,
+        peers,
+        0.0,
+        1);
+
+    EXPECT_TRUE(result.is_valid);
+    EXPECT_FALSE(result.is_hold);
 }
 
 TEST(EgoSwarmPlannerTest, DoesNotUsePeerEndpointAfterTrajectoryEnd)

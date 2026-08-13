@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ego_swarm/EgoSwarmPlanner.hpp"
+#include "ego_swarm/TrajectoryPriority.hpp"
 
 namespace taiphoon
 {
@@ -406,6 +407,20 @@ private:
         for (const PeerTrajectory& peer : peers)
         {
             if (absolute_time_s > peer.end_time_s + EGO_SWARM_EPSILON_M)
+            {
+                continue;
+            }
+            // 路線開始前的同儕仍佔據自己的目前位置；只有同儕已進入
+            // 路線時間窗後，較早的路線才可取得優先權。此規則必須與
+            // planner 的候選評估一致，避免 planner 放行後又被 safety
+            // 以不同的時間仲裁結果否決。
+            const bool peer_route_started = absolute_time_s +
+                EGO_SWARM_EPSILON_M >= peer.start_time_s;
+            if (peer_route_started && has_trajectory_priority(
+                    context.trajectory_start_time_s,
+                    context.self_agent_id,
+                    peer.start_time_s,
+                    peer.agent_id))
             {
                 continue;
             }

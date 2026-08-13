@@ -201,7 +201,8 @@ TEST(ContinuousSafetyValidatorTest, RejectsHeadOnPeerConflict)
     RawPointObstacleMap map;
     ASSERT_TRUE(map.set_explicit_empty(0.0));
     VehiclePlanningState state;
-    const auto context = make_context(state, peers, map, 0.0);
+    auto context = make_context(state, peers, map, 0.0);
+    context.self_agent_id = 3;
     const BsplineTrajectory candidate(
         {Vector3{0.0, 0.0, 0.0}, Vector3{0.0, 0.0, 0.0},
          Vector3{10.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0}},

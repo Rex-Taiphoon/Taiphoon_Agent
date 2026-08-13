@@ -32,7 +32,6 @@
 #include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
-#include "ego_swarm/FormationTransition.hpp"
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
@@ -62,6 +61,8 @@ constexpr double DEFAULT_MAX_JERK_MPS3 = 2.0;
 constexpr double DEFAULT_MOVE_ATTITUDE_TIMEOUT_S = 1.0;
 constexpr double DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M = 2.0;
 constexpr int DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT = 2;
+constexpr double FORMATION_PLAN_START_DELAY_S = 0.5;
+constexpr double PEER_REPLAN_RETRY_DELAY_S = 0.5;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -125,14 +126,8 @@ private:
     bool formation_config_matches(
         const ego_swarm::FormationConfig& first,
         const ego_swarm::FormationConfig& second) const;
-    bool formation_transition_order(
-        std::vector<int>& out_order) const;
-    bool formation_transition_ready() const;
     double live_peer_min_distance(
         const ego_swarm::Vector3& current) const;
-    double live_peer_path_min_distance(
-        const ego_swarm::Vector3& current,
-        const ego_swarm::Vector3& target) const;
     bool update_swarm_frame();
     bool update_local_swarm_transform();
     bool get_position_in_swarm_frame(
@@ -161,6 +156,12 @@ private:
     bool publish_emergency_brake(
         const ego_swarm::VehiclePlanningState& state,
         const ego_swarm::Vector3& active_target,
+        const std::string& reason,
+        const rclcpp::Time& now,
+        bool peer_data_valid);
+    bool publish_waiting_hold(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& target,
         const std::string& reason,
         const rclcpp::Time& now,
         bool peer_data_valid);
@@ -223,8 +224,11 @@ private:
     bool has_formation_{false};
     bool formation_command_pending_{false};
     bool formation_membership_change_pending_{false};
+    bool formation_initial_plan_pending_{false};
     bool preserve_altitude_{false};
     bool has_active_plan_{false};
+    bool waiting_for_replan_{false};
+    double waiting_retry_time_s_{0.0};
     bool has_terminal_hold_{false};
     taiphoon_agent::msg::AgentState own_state_{};
     taiphoon_agent::msg::AgentAttitude own_attitude_{};

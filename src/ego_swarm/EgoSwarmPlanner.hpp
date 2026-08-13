@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/TrajectoryPriority.hpp"
 #include "perception/IObstacleMap.hpp"
 
 namespace taiphoon
@@ -735,6 +736,16 @@ private:
             }
             if (absolute_sample_time_s > peer.end_time_s +
                 EGO_SWARM_EPSILON_M)
+            {
+                continue;
+            }
+            // 路線開始前的同儕仍停在自己的目前位置，不能把它當成
+            // 已經讓路；只有在同儕路線開始後，較早的路線才可取得
+            // 通行優先權，讓較晚的 Agent 重新規劃或等待。
+            const bool peer_route_started = absolute_sample_time_s +
+                EGO_SWARM_EPSILON_M >= peer.start_time_s;
+            if (peer_route_started && has_trajectory_priority(
+                    now_s, self_agent_id, peer.start_time_s, peer.agent_id))
             {
                 continue;
             }

@@ -374,7 +374,6 @@ cost：
 ```text
 distance
 + slot_switch_penalty
-+ crossing_penalty
 ```
 
 Formation command：
@@ -383,11 +382,19 @@ Formation command：
 freeze members
 → generate slots
 → assign
-→ plan
-→ exchange trajectory
+→ each Agent plans its own route
+→ publish the decided trajectory
 → safety validate
 → execute
 ```
+
+不建立全隊固定飛行順序。沒有空間／時間衝突的 Agent 可以並行執行；只有發生
+衝突的 Agent 才局部協調。衝突時以較早 `start_time` 的路線優先，同時間以較小的
+Agent ID 優先，後者暫停或延後後再重新規劃。編隊避障只使用水平直線／側向候選，
+不得用額外上升或下降繞行；沒有安全水平路徑時才 HOLD／brake。
+
+AgentTrajectory 沿用既有 `start_time`、`duration`、`control_points` 與
+`trajectory_id`，每台 Agent 只發布目前決定的實際路線，不發布候選路線或新增訊息欄位。
 
 Agent 暫時 missing 不立刻重排。
 
@@ -405,6 +412,9 @@ reconfiguration 透過新 FormationEpoch。
 - formation + wall
 - formation + cylinder
 - crossing-risk assignment
+- non-conflicting parallel transition
+- local coordination for a conflicting pair
+- strict horizontal-only avoidance
 
 ---
 

@@ -420,11 +420,12 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 > discovery 每 3 秒掃描，成員集合連續兩次穩定後才觸發自動重編隊，中心沿用 parent center。
 
 編隊轉換時，Planner 只允許目前位置到槽位的直線或 North/East 水平側向候選；
-側向候選的 Z 只沿起點到目標線性插值，不會從上方或下方繞過同儕。若當下沒有
-安全水平路徑，該 Agent 會以 terminal hold 等待前序 Agent 到位，再依 deterministic
-順序放行，不會用垂直繞行突破安全距離。任一 Agent 連續兩次 discovery scan 消失時，
-其餘成員會建立下一代 FormationEpoch、移除失效成員並重新計算 assignment；Agent
-重新上線後也會以相同機制重新加入。
+側向候選的 Z 只沿起點到目標線性插值，不會從上方或下方繞過同儕。沒有衝突的
+Agent 可以同時規劃與移動；只有路線互相衝突的 Agent 才會局部等待或重新規劃。
+衝突時先以較早的 `start_time` 路線優先，同時間則由較小的 Agent 編號優先；沒有
+安全水平路徑時才 HOLD／煞停，不會用垂直繞行突破安全距離。任一 Agent 連續兩次
+discovery scan 消失時，其餘成員會建立下一代 FormationEpoch、移除失效成員並重新
+計算 assignment；Agent 重新上線後也會以相同機制重新加入。
 
 ---
 
