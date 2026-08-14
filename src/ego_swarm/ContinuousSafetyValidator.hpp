@@ -419,13 +419,10 @@ private:
             // 路線時間窗後，較早的路線才可取得優先權。此規則必須與
             // planner 的候選評估一致，避免 planner 放行後又被 safety
             // 以不同的時間仲裁結果否決。
-            const bool peer_route_started = absolute_time_s +
-                EGO_SWARM_EPSILON_M >= peer.start_time_s;
-            if (peer_route_started && has_trajectory_priority(
+            if (!should_check_peer_occupancy(
+                    peer, absolute_time_s,
                     context.trajectory_start_time_s,
-                    context.self_agent_id,
-                    peer.start_time_s,
-                    peer.agent_id))
+                    context.self_agent_id))
             {
                 continue;
             }

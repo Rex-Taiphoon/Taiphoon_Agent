@@ -110,11 +110,9 @@ bool FormationReservationPlanner::is_window_safe(
             {
                 continue;
             }
-            const bool peer_started = absolute_time + EGO_SWARM_EPSILON_M >=
-                peer.start_time_s;
-            if (peer_started && has_trajectory_priority(
-                    start_time_s, snapshot.self_agent_id,
-                    peer.start_time_s, peer.agent_id))
+            if (!should_check_peer_occupancy(
+                    peer, absolute_time, start_time_s,
+                    snapshot.self_agent_id))
             {
                 continue;
             }

@@ -29,9 +29,14 @@ public:
     TrajectoryObjective(
         const PlanningSnapshot& snapshot,
         const PlannerConfig& config,
-        const double knot_interval_s)
+        const double knot_interval_s,
+        const double evaluation_sample_interval_s = 0.0)
         : snapshot_(snapshot), config_(config),
-          knot_interval_s_(knot_interval_s)
+          knot_interval_s_(knot_interval_s),
+          evaluation_sample_interval_s_(evaluation_sample_interval_s >
+                    EGO_SWARM_EPSILON_M
+                ? evaluation_sample_interval_s
+                : std::max(config.sample_interval_s, 0.75))
     {
     }
 
@@ -60,11 +65,11 @@ public:
         }
 
         // Objective 只提供 optimizer 的平滑引導；最終仍由 continuous
-        // safety validator 以正式取樣密度重新驗證。限制 objective 的
-        // sample 數，讓 10 Hz planner loop 能在 20 ms budget 內完成多次
-        // central finite-difference 評估。
-        const double objective_sample_interval = std::max(
-            config_.sample_interval_s, 0.25);
+        // safety validator 以正式取樣密度重新驗證。使用較稀疏的 objective
+        // sampling，讓長距離路徑與多個 peer occupancy 仍能在 20 ms budget
+        // 內完成 central finite-difference 評估。
+        const double objective_sample_interval =
+            evaluation_sample_interval_s_;
         std::size_t sample_count = static_cast<std::size_t>(std::ceil(
             trajectory.duration_s() / objective_sample_interval));
         sample_count = std::max<std::size_t>(1U, std::min(
@@ -116,12 +121,16 @@ public:
         {
             minimum_obstacle_distance = 0.0;
         }
-        else if (minimum_obstacle_distance < config_.obstacle_clearance_m)
+        else if (minimum_obstacle_distance <
+                 config_.obstacle_clearance_m +
+                     config_.optimizer_obstacle_soft_margin_m)
         {
-            const double clearance_error = config_.obstacle_clearance_m -
+            const double clearance_error =
+                config_.obstacle_clearance_m +
+                config_.optimizer_obstacle_soft_margin_m -
                 minimum_obstacle_distance;
-            result.obstacle_cost += 10000.0 * clearance_error * clearance_error +
-                1000.0 * clearance_error;
+            result.obstacle_cost += 100.0 * clearance_error * clearance_error +
+                10.0 * clearance_error;
         }
         if (active_peer_count == 0U)
         {
@@ -195,22 +204,20 @@ private:
             return false;
         }
         minimum_distance = std::min(minimum_distance, distance);
-        const double clearance_error = config_.obstacle_clearance_m - distance;
-        if (clearance_error > 0.0)
+        const double hard_clearance_error =
+            config_.obstacle_clearance_m - distance;
+        const double soft_clearance_error =
+            config_.obstacle_clearance_m +
+            config_.optimizer_obstacle_soft_margin_m - distance;
+        if (hard_clearance_error > 0.0)
         {
-            // 線性項讓 barrier 在 clearance 邊界仍保有推離障礙物的
-            // 梯度，避免只用 squared penalty 在接近門檻時過早停滯。
-            cost += 100.0 * clearance_error * clearance_error +
-                10.0 * clearance_error;
+            cost += 10000.0 * hard_clearance_error * hard_clearance_error +
+                1000.0 * hard_clearance_error;
         }
-        else
+        else if (soft_clearance_error > 0.0)
         {
-            const double barrier_buffer = config_.obstacle_clearance_m + 0.5;
-            if (distance < barrier_buffer)
-            {
-                const double buffer_error = barrier_buffer - distance;
-                cost += 0.1 * buffer_error * buffer_error;
-            }
+            cost += 100.0 * soft_clearance_error * soft_clearance_error +
+                10.0 * soft_clearance_error;
         }
         return is_finite(cost);
     }
@@ -235,12 +242,10 @@ private:
             {
                 continue;
             }
-            if (absolute_time_s >= peer.start_time_s &&
-                has_trajectory_priority(
+            if (!should_check_peer_occupancy(
+                    peer, absolute_time_s,
                     snapshot_.trajectory_start_time_s,
-                    snapshot_.self_agent_id,
-                    peer.start_time_s,
-                    peer.agent_id))
+                    snapshot_.self_agent_id))
             {
                 continue;
             }
@@ -260,21 +265,20 @@ private:
                 return false;
             }
             minimum_distance = std::min(minimum_distance, distance);
-            const double separation_error =
+            const double hard_separation_error =
                 config_.peer_collision_min_distance_m - distance;
-            if (separation_error > 0.0)
+            const double soft_separation_error =
+                config_.peer_collision_min_distance_m +
+                config_.optimizer_peer_soft_margin_m - distance;
+            if (hard_separation_error > 0.0)
             {
-                cost += 100.0 * separation_error * separation_error;
+                cost += 10000.0 * hard_separation_error *
+                    hard_separation_error + 1000.0 * hard_separation_error;
             }
-            else
+            else if (soft_separation_error > 0.0)
             {
-                const double barrier_buffer =
-                    config_.peer_collision_min_distance_m + 0.5;
-                if (distance < barrier_buffer)
-                {
-                    const double buffer_error = barrier_buffer - distance;
-                    cost += 0.1 * buffer_error * buffer_error;
-                }
+                cost += 100.0 * soft_separation_error *
+                    soft_separation_error + 10.0 * soft_separation_error;
             }
         }
         return is_finite(cost);
@@ -305,6 +309,7 @@ private:
     const PlanningSnapshot& snapshot_;
     const PlannerConfig& config_;
     double knot_interval_s_{0.0};
+    double evaluation_sample_interval_s_{0.75};
 };
 
 PlannerTerminationReason convert_solver_reason(
@@ -416,7 +421,7 @@ PlannerResult OptimizedEgoPlanner::plan(
             snapshot.self_state.position, snapshot.local_goal, ratio));
     }
 
-    const double search_radius = config_.candidate_offset_m;
+    const double search_radius = config_.optimizer_search_radius_m;
     const auto projection = [
         &seed, snapshot, search_radius](std::vector<Vector3>& points)
     {
@@ -454,6 +459,56 @@ PlannerResult OptimizedEgoPlanner::plan(
     };
 
     TrajectoryObjective objective(snapshot, config_, knot_interval_s);
+    const BsplineTrajectory seed_trajectory(seed, knot_interval_s);
+    const OptimizationEvaluation seed_evaluation = objective.evaluate(seed);
+    // Objective 的稀疏 sampling 只用來做 gradient 引導；fast path 不能
+    // 因為稀疏 sampling 漏掉狹窄的 peer crossing。直線 seed 若有 peer，
+    // 再用 safety sampling interval 做一次 hard peer pre-check，真正需要
+    // 繞行時才交給 solver。
+    const OptimizationEvaluation seed_peer_safety_evaluation =
+        snapshot.peers.empty()
+        ? seed_evaluation
+        : TrajectoryObjective(
+              snapshot, config_, knot_interval_s, config_.sample_interval_s)
+              .evaluate(seed);
+    const bool seed_has_hard_clearance =
+        (snapshot.obstacle_map->point_count() == 0U ||
+         seed_peer_safety_evaluation.minimum_obstacle_distance_m +
+             EGO_SWARM_EPSILON_M >= config_.obstacle_clearance_m) &&
+        (seed_peer_safety_evaluation.minimum_peer_distance_m <= 0.0 ||
+         seed_peer_safety_evaluation.minimum_peer_distance_m +
+             EGO_SWARM_EPSILON_M >= config_.peer_collision_min_distance_m);
+    // 直線 seed 已經沒有障礙物／同儕 soft penalty 時，不需要為了
+    // open-space 長距離任務重複執行昂貴的 central finite-difference。
+    // 這仍是 optimized backend 的 accepted seed，Node 之後仍會交給
+    // ContinuousSafetyValidator；只有需要水平繞行時才進入 solver。
+    if (snapshot.obstacle_map->point_count() == 0U &&
+        seed_trajectory.is_valid() && seed_evaluation.is_valid &&
+        seed_peer_safety_evaluation.is_valid &&
+        seed_peer_safety_evaluation.obstacle_cost <=
+            config_.optimizer_convergence_tolerance &&
+        seed_peer_safety_evaluation.peer_cost <=
+            config_.optimizer_convergence_tolerance &&
+        seed_has_hard_clearance &&
+        is_hard_dynamically_feasible(seed_trajectory, config_))
+    {
+        result.is_valid = true;
+        result.is_hold = false;
+        result.trajectory = seed_trajectory;
+        result.cost = seed_peer_safety_evaluation.total_cost;
+        result.goal_cost = seed_peer_safety_evaluation.goal_cost;
+        result.smoothness_cost = seed_peer_safety_evaluation.smoothness_cost;
+        result.dynamic_cost = seed_peer_safety_evaluation.dynamic_cost;
+        result.obstacle_cost = seed_peer_safety_evaluation.obstacle_cost;
+        result.peer_cost = seed_peer_safety_evaluation.peer_cost;
+        result.minimum_obstacle_distance_m =
+            seed_peer_safety_evaluation.minimum_obstacle_distance_m;
+        result.minimum_peer_distance_m =
+            seed_peer_safety_evaluation.minimum_peer_distance_m;
+        result.termination = PlannerTerminationReason::SUCCESS;
+        return finish(result);
+    }
+
     ProjectedGradientSolver solver;
     const ProjectedGradientSolverConfig solver_config{
         config_.optimizer_max_iterations,
@@ -486,6 +541,17 @@ PlannerResult OptimizedEgoPlanner::plan(
         solver_result.control_points, knot_interval_s);
     if (!trajectory.is_valid() ||
         !is_hard_dynamically_feasible(trajectory, config_))
+    {
+        result.termination = PlannerTerminationReason::INFEASIBLE;
+        return finish(result);
+    }
+
+    if ((snapshot.obstacle_map->point_count() > 0U &&
+         result.minimum_obstacle_distance_m + EGO_SWARM_EPSILON_M <
+             config_.obstacle_clearance_m) ||
+        (result.minimum_peer_distance_m > 0.0 &&
+         result.minimum_peer_distance_m + EGO_SWARM_EPSILON_M <
+             config_.peer_collision_min_distance_m))
     {
         result.termination = PlannerTerminationReason::INFEASIBLE;
         return finish(result);
@@ -524,6 +590,12 @@ bool OptimizedEgoPlanner::is_valid_config(const PlannerConfig& config)
            config.max_jerk_mps3 > EGO_SWARM_EPSILON_M &&
            is_finite(config.candidate_offset_m) &&
            config.candidate_offset_m >= 0.0 &&
+           is_finite(config.optimizer_search_radius_m) &&
+           config.optimizer_search_radius_m > EGO_SWARM_EPSILON_M &&
+           is_finite(config.optimizer_peer_soft_margin_m) &&
+           config.optimizer_peer_soft_margin_m >= 0.0 &&
+           is_finite(config.optimizer_obstacle_soft_margin_m) &&
+           config.optimizer_obstacle_soft_margin_m >= 0.0 &&
            is_finite(config.obstacle_clearance_m) &&
            config.obstacle_clearance_m >= 0.0 &&
            is_finite(config.peer_collision_min_distance_m) &&
@@ -566,10 +638,19 @@ double OptimizedEgoPlanner::compute_seed_duration_s(
     const double base_duration = std::max(
         span_count * config.knot_interval_s,
         std::max(velocity_duration, acceleration_duration));
-    // Clamped cubic B-spline 的端點 derivative 會比理想直線高；先留出
-    // 與 deterministic candidate 相同的動力學裕度，再由最後 hard check
-    // 決定是否可發布。
-    return 1.5 * base_duration;
+    // Clamped cubic B-spline 的端點速度為
+    // degree * span_count / (control_point_count - 1) 倍的平均速度。
+    // 長距離 seed 若只使用平均速度 duration，會在 endpoint derivative
+    // 超過 hard velocity limit，導致 solver 必須在很短的 budget 內先
+    // 修正一條本來就不合格的 seed。額外保留 5% 數值裕度，讓直線
+    // open-space seed 可以直接通過 hard dynamic check。
+    const double endpoint_velocity_factor =
+        static_cast<double>(BSPLINE_DEGREE) * span_count /
+        static_cast<double>(config.control_point_count - 1U);
+    const double endpoint_velocity_duration =
+        endpoint_velocity_factor * velocity_duration * 1.05;
+    return std::max(
+        1.5 * base_duration, endpoint_velocity_duration);
 }
 
 bool OptimizedEgoPlanner::is_hard_dynamically_feasible(

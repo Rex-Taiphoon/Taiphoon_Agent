@@ -60,6 +60,85 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
     }
 
     double step_m = config.initial_step_m;
+    const auto find_coordinate_improvement = [
+        &objective, &projection, &config, &elapsed_ms](
+        const std::vector<Vector3>& base,
+        const OptimizationEvaluation& base_evaluation,
+        const double step,
+        std::vector<Vector3>& improved_points,
+        OptimizationEvaluation& improved_evaluation)
+    {
+        improved_points = base;
+        improved_evaluation = base_evaluation;
+        for (std::size_t point_index = 1U;
+             point_index + 1U < base.size(); ++point_index)
+        {
+            for (std::size_t axis = 0U; axis < 3U; ++axis)
+            {
+                for (const double direction : {-1.0, 1.0})
+                {
+                    if (elapsed_ms() >= config.time_budget_ms)
+                    {
+                        return false;
+                    }
+                    std::vector<Vector3> candidate = base;
+                    candidate.at(point_index).at(axis) += direction * step;
+                    if (!projection(candidate) ||
+                        !is_finite_control_points(candidate))
+                    {
+                        continue;
+                    }
+                    const OptimizationEvaluation evaluation =
+                        objective.evaluate(candidate);
+                    if (evaluation.is_valid &&
+                        is_finite(evaluation.total_cost) &&
+                        base_evaluation.total_cost - evaluation.total_cost >
+                            config.convergence_tolerance)
+                    {
+                        improved_points = candidate;
+                        improved_evaluation = evaluation;
+                        return true;
+                    }
+                }
+            }
+        }
+        // 對稱障礙群可能讓單一 control point 的有限差分方向都沒有
+        // 改善；此時沿同一水平軸同步推移中間控制點，仍是同一個
+        // continuous seed 的 bounded line-search，不是新增 topology seed。
+        for (std::size_t axis : {0U, 1U, 2U})
+        {
+            for (const double direction : {-1.0, 1.0})
+            {
+                if (elapsed_ms() >= config.time_budget_ms)
+                {
+                    return false;
+                }
+                std::vector<Vector3> candidate = base;
+                for (std::size_t point_index = 1U;
+                     point_index + 1U < candidate.size(); ++point_index)
+                {
+                    candidate.at(point_index).at(axis) += direction * step;
+                }
+                if (!projection(candidate) ||
+                    !is_finite_control_points(candidate))
+                {
+                    continue;
+                }
+                const OptimizationEvaluation evaluation =
+                    objective.evaluate(candidate);
+                if (evaluation.is_valid &&
+                    is_finite(evaluation.total_cost) &&
+                    base_evaluation.total_cost - evaluation.total_cost >
+                        config.convergence_tolerance)
+                {
+                    improved_points = candidate;
+                    improved_evaluation = evaluation;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
     for (int iteration = 0; iteration < config.max_iterations; ++iteration)
     {
         result.iterations = static_cast<std::size_t>(iteration + 1);
@@ -149,6 +228,20 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         }
         if (gradient_norm <= config.convergence_tolerance)
         {
+            std::vector<Vector3> coordinate_candidate;
+            OptimizationEvaluation coordinate_evaluation;
+            if ((current_evaluation.obstacle_cost >
+                    config.convergence_tolerance ||
+                current_evaluation.peer_cost > config.convergence_tolerance) &&
+                find_coordinate_improvement(
+                    current, current_evaluation, step_m,
+                    coordinate_candidate, coordinate_evaluation))
+            {
+                current = coordinate_candidate;
+                current_evaluation = coordinate_evaluation;
+                step_m = std::min(config.initial_step_m, step_m * 1.1);
+                continue;
+            }
             result.control_points = current;
             result.evaluation = current_evaluation;
             result.is_valid = true;
@@ -160,6 +253,20 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         // 數值收斂；避免在有限差分噪聲下把已達到的局部解誤報為 diverged。
         if (step_m * gradient_norm <= config.convergence_tolerance)
         {
+            std::vector<Vector3> coordinate_candidate;
+            OptimizationEvaluation coordinate_evaluation;
+            if ((current_evaluation.obstacle_cost >
+                    config.convergence_tolerance ||
+                current_evaluation.peer_cost > config.convergence_tolerance) &&
+                find_coordinate_improvement(
+                    current, current_evaluation, step_m,
+                    coordinate_candidate, coordinate_evaluation))
+            {
+                current = coordinate_candidate;
+                current_evaluation = coordinate_evaluation;
+                step_m = std::min(config.initial_step_m, step_m * 1.1);
+                continue;
+            }
             result.control_points = current;
             result.evaluation = current_evaluation;
             result.is_valid = true;
@@ -251,43 +358,14 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         // 讓整體 normalized gradient 的 backtracking 方向暫時不降成本。
         // 以同一個 step 做 deterministic coordinate line-search，仍只在
         // bounded projection 內搜尋，不引入 Phase 7 的多 topology seed。
-        bool coordinate_improved = false;
-        std::vector<Vector3> best_coordinate = current;
-        OptimizationEvaluation best_coordinate_evaluation = current_evaluation;
-        for (std::size_t point_index = 1U;
-             point_index + 1U < current.size() && !coordinate_improved;
-             ++point_index)
-        {
-            for (std::size_t axis = 0U; axis < 3U && !coordinate_improved;
-                 ++axis)
-            {
-                for (const double direction : {-1.0, 1.0})
-                {
-                    std::vector<Vector3> coordinate_candidate = current;
-                    coordinate_candidate.at(point_index).at(axis) +=
-                        direction * step_m;
-                    if (!projection(coordinate_candidate) ||
-                        !is_finite_control_points(coordinate_candidate))
-                    {
-                        continue;
-                    }
-                    const OptimizationEvaluation coordinate_evaluation =
-                        objective.evaluate(coordinate_candidate);
-                    if (coordinate_evaluation.is_valid &&
-                        is_finite(coordinate_evaluation.total_cost) &&
-                        current_evaluation.total_cost -
-                            coordinate_evaluation.total_cost >
-                            config.convergence_tolerance)
-                    {
-                        best_coordinate = coordinate_candidate;
-                        best_coordinate_evaluation = coordinate_evaluation;
-                        coordinate_improved = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if (coordinate_improved)
+        std::vector<Vector3> best_coordinate;
+        OptimizationEvaluation best_coordinate_evaluation;
+        if ((current_evaluation.obstacle_cost >
+                config.convergence_tolerance ||
+            current_evaluation.peer_cost > config.convergence_tolerance) &&
+            find_coordinate_improvement(
+                current, current_evaluation, step_m,
+                best_coordinate, best_coordinate_evaluation))
         {
             current = best_coordinate;
             current_evaluation = best_coordinate_evaluation;

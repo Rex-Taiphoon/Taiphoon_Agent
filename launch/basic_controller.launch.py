@@ -355,8 +355,8 @@ def generate_launch_description():
             description="成員集合連續穩定 discovery 掃描次數"),
         DeclareLaunchArgument(
             "planner_backend",
-            default_value="deterministic",
-            description="Planner backend：deterministic 或 optimized"),
+            default_value="optimized",
+            description="Planner backend：optimized only"),
         DeclareLaunchArgument(
             "optimizer_max_iterations",
             default_value="40",

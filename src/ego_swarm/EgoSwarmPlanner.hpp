@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ego_swarm/ITrajectoryPlanner.hpp"
+#include "ego_swarm/TrajectoryFactory.hpp"
 #include "ego_swarm/TrajectoryPriority.hpp"
 #include "perception/IObstacleMap.hpp"
 
@@ -269,20 +270,7 @@ public:
      */
     PlannerResult make_exact_hold_result(const Vector3& hold_position) const
     {
-        PlannerResult result;
-        if (!is_finite_vector(hold_position) ||
-            !is_valid_config(config_))
-        {
-            return result;
-        }
-
-        const std::vector<Vector3> hold_points(
-            config_.control_point_count, hold_position);
-        result.trajectory = BsplineTrajectory(
-            hold_points, config_.knot_interval_s);
-        result.is_valid = result.trajectory.is_valid();
-        result.is_hold = true;
-        return result;
+        return ego_swarm::make_exact_hold_result(hold_position, config_);
     }
 
 private:
@@ -767,10 +755,8 @@ private:
             // 路線開始前的同儕仍停在自己的目前位置，不能把它當成
             // 已經讓路；只有在同儕路線開始後，較早的路線才可取得
             // 通行優先權，讓較晚的 Agent 重新規劃或等待。
-            const bool peer_route_started = absolute_sample_time_s +
-                EGO_SWARM_EPSILON_M >= peer.start_time_s;
-            if (peer_route_started && has_trajectory_priority(
-                    now_s, self_agent_id, peer.start_time_s, peer.agent_id))
+            if (!should_check_peer_occupancy(
+                    peer, absolute_sample_time_s, now_s, self_agent_id))
             {
                 continue;
             }

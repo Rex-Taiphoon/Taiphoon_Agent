@@ -37,15 +37,15 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 ```
 
 本文件依目前工作區的 Node、`.msg` 與 Launch 實作定義 ROS2 契約。EGO-Swarm 核心
-目前是 deterministic candidate baseline，透過固定候選 B-spline 進行成本與安全評估；
-不宣稱已完整重現原始 EGO-Swarm 的 nonlinear optimizer。
+目前 runtime 是 optimized continuous B-spline planner，透過中間 control-point optimization
+進行成本與安全評估；deterministic candidate 類別僅保留相容與回歸用途。
 
 每一台無人機對應一個 Taiphoon_Agent 實例，內含四個節點：
 
 | 節點 | 功能 | 必有 |
 |------|------|------|
 | `basic_controller_node` | 飛控橋接、狀態發布、命令轉譯，以及 EGO-Swarm 軌跡取樣後發布 PX4 setpoint | ✅ |
-| `ego_swarm_planner` | WGS84 軌跡交換、本機 local NED、編隊槽位、PointCloud2 障礙物與同儕未來軌跡的 deterministic candidate baseline 局部規劃 | ✅ |
+| `ego_swarm_planner` | WGS84 軌跡交換、本機 local NED、編隊槽位、PointCloud2 障礙物與同儕未來軌跡的 optimized continuous 局部規劃 | ✅ |
 | `obstacle_cloud_simulator` | 依 YAML 障礙物描述發布 PointCloud2 模擬資料 | 選配 |
 | `agent_supervisor` | Agent 容器生命週期管理，提供失效模擬服務 | ✅ |
 
@@ -89,8 +89,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalObstacleMap`：PointCloud2 局部障礙物資料處理
 - `PeerTrajectoryTable`：同儕未來軌跡保存、timestamp sanity、freshness 與 expiration；ACTIVE 與 TERMINAL_HOLD 軌跡參與 planner，完成任務的終點由 heartbeat 保持佔位
-- `DeterministicPlanner`／`EgoSwarmPlanner`：deterministic candidate baseline 與舊呼叫相容層
-- `OptimizedEgoPlanner`：指定 backend 後執行 pure C++ continuous control-point optimizer；失敗會使用 deterministic fallback
+- `DeterministicPlanner`／`EgoSwarmPlanner`：保留既有純邏輯相容檔案；runtime 不組裝此 backend
+- `OptimizedEgoPlanner`：runtime 唯一使用的 pure C++ continuous control-point optimizer；失敗時 fail-closed HOLD／EmergencyBrake
 - `FormationReservationPlanner`：以 future `AgentTrajectory.start_time` 表示 reservation，不新增 ROS2 message
 - `FormationConvergenceEvaluator`：由 fresh state、槽位誤差、epoch 與 terminal occupancy 推導 convergence；槽位到達不使用速度門檻
 
@@ -121,7 +121,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
 | `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
-| `planner_backend` | `string` | `deterministic` | 只接受 `deterministic` 或 `optimized` |
+| `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
 | `optimizer_time_budget_ms` | `double` | `20.0` | optimized backend 單次 wall-time budget |
 | `formation_crossing_penalty_m` | `double` | `10.0` | assignment 水平 crossing 等價成本 |
@@ -423,9 +423,9 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   `basic_controller_node` 只負責 ARM、TAKEOFF、LAND、RTL、HOLD、YAW 與軌跡取樣。
   規劃器輸出未來軌跡後，再由 BasicController 以 analytic B-spline derivative
   取樣 p/v/a 成 PX4 `TrajectorySetpoint`。
-- 目前 EGO-Swarm 核心是 deterministic candidate baseline：建立固定候選 B-spline，
-  依目標、平滑、障礙物與同儕距離成本選擇安全候選；不宣稱完整原始 EGO-Swarm
-  nonlinear optimizer。
+- 目前 EGO-Swarm runtime 是內建 pure C++ optimized continuous B-spline planner：只以
+  單一直線 seed 最佳化中間控制點，依目標、平滑、障礙物與同儕距離成本搜尋安全路徑；
+  deterministic candidate 類別不再由 runtime 組裝或作 fallback。
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
   local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。

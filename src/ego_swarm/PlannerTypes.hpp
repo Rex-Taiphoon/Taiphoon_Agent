@@ -86,6 +86,10 @@ struct PlannerConfig
     double max_velocity_m_s{2.0};
     double max_acceleration_m_s2{1.0};
     double candidate_offset_m{3.0};
+    // optimized backend 的內部水平搜尋範圍；不作為 ROS2 對外參數。
+    double optimizer_search_radius_m{8.0};
+    double optimizer_peer_soft_margin_m{1.0};
+    double optimizer_obstacle_soft_margin_m{0.5};
     double obstacle_clearance_m{1.0};
     double peer_collision_min_distance_m{3.0};
     double goal_weight{1.0};

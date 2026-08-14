@@ -11,7 +11,7 @@
 | 3 B-Spline p/v/a/j + PX4 | Accepted | | Docker: 174 tests passed | 四機 SITL 基本鏈路與非零 p/v/a feed-forward smoke passed | 人類開發者已確認驗證完成；未提前進入 Phase 4 |
 | 4 Dynamic Safety + Brake | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 190 tests passed | 四機 Agent/PX4 quick_takeoff、六方向移動、編隊與 peer safety smoke passed | WGS84 transport、receiver-local NED Adapter、ContinuousSafetyValidator、EmergencyBrakePlanner 與 terminal hold heartbeat 已實作；2026-08-14 人類開發者確認基本指令與動態安全驗證完成 |
 | 5 Safe Formation | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 209 tests passed | 四機 SITL：無衝突時可並行規劃；衝突時局部等待／重規劃；fmu4 Agent 失效後 sequence 2 自動重編為 `[1,2,3]`，恢復後 sequence 3 納回四機 | 水平路線、時間／Agent ID 仲裁、無額外上下繞行、單調 trajectory ID、Agent failure recovery 已驗證；2026-08-14 人類開發者確認編隊功能驗證完成 |
-| 6 Optimized EGO Backend | Ready for Review | | Docker: 220 tests passed | 四機 optimized SITL smoke passed；固定高度、fallback、reservation HOLD 與 convergence 已觀測 | Backend seam、continuous control-point optimizer、crossing refinement、reservation、convergence 與 ROS2 parameters implemented；human acceptance pending |
+| 6 Optimized EGO Backend | In Progress | | Docker: 226 tests passed；optimized-only SITL 的 Forward 40 smoke 通過，四機水平編隊長時間安全驗證仍待修正 | optimized-only runtime、expanded horizontal search、priority occupancy hardening 與 fail-closed HOLD／brake 已實作 | deterministic 不再作 runtime fallback；3 m hard peer distance 維持；Forward 40 中曾反覆觸發 live peer warning brake 後恢復；Hori transition 曾觀察到實測距離低於 3 m；human acceptance pending |
 | 7 Topological Initial Guesses | Not Started | | | | |
 | 8 Multi-PX4 SITL Validation | Not Started | | | | |
 | 9 Real Sensor Integration | Not Started | | | | |
@@ -131,20 +131,33 @@ Accepted
   formation reservation 與 convergence evaluator；未新增 ROS2 message/topic，且
   `BasicController` 仍是唯一 PX4 `TrajectorySetpoint` 發布端。
 - Docker 內先完成 `colcon build --packages-select taiphoon_agent`，再執行完整套件
-  測試；結果為 `220 tests, 0 errors, 0 failures, 0 skipped`。
+  測試；結果為 `226 tests, 0 errors, 0 failures, 0 skipped`，其中 Phase 6 pure C++
+  測試為 13 項全數通過。新增測試涵蓋長距離移動在預設 20 ms optimizer budget 下的
+  planning path。
+- compose、entrypoint 與 launch 預設均已切換為 `planner_backend=optimized`；四個
+  Agent 啟動 log 均確認 `backend=optimized`。設定 `deterministic` 會使 Planner
+  initialization 失敗，不會進入 runtime fallback。
 - 依 Agent 先於 PX4 的順序啟動四機 SITL，`quick_takeoff.sh` 後四台均確認
   `flight_mode=5`、`armed=true`、`landed=false`、`online=true`、
   `px4_state_valid=true`，且 PlannerStatus 的 localization／peer freshness 均有效。
-- optimized open-space MOVE 執行中觀測到 `reason=ok`、`planning_time_ms=12.12` ms、
-  `min_peer_distance_m=13.17`；其他 active planner samples 的實測規劃時間約
-  `2.46–4.95` ms，均維持至少 3 m peer distance。
-- optimized CIRCLE 與 HORI_LINEAR 編隊均完成固定高度控制點驗證；以
-  `FORMATION_CIRCLE 10 8` 讀取 fmu1 trajectory 時，所有 WGS84 control-point altitude
-  均為 `527.15234375`。編隊 transition 中觀測到 timeout fallback warning，輸家只進入
-  `formation slot occupied`／retry HOLD，未發布 optimizer 中間結果；其他 Agent 可繼續
-  規劃，並觀測到 `formation_converged; terminal hold active`。
+- optimized open-space `MOVE_FORWARD 5` 完成，fmu1 實際 NED X 約前進 5.4 m，之後
+  發布 terminal hold；active planner sample 的規劃時間約 10–15 ms。
+- optimized `FORMATION_CIRCLE 10 8` smoke 中，觀測到 active planner 的最小 peer
+  距離約 6.7–8.0 m，且 trajectory control-point altitude 維持相同值；部分成員也
+  觀測到 `formation_converged; terminal hold active`。
+- 四機 `HORI_LINEAR` transition 曾在警戒帶內觸發 optimized emergency brake；一個
+  snapshot 的 live peer minimum 為 3.47、3.48、5.71、5.05 m，符合 fail-closed
+  方向。但延長觀測後仍有一組 live peer distance 約降至 2.09 m 並進入 hard emergency
+  brake，故四機水平編隊的實際 3 m 安全驗收尚未完成，Phase 6 維持 `In Progress`。
+- 2026-08-14 重新啟動 Agent 與四台 PX4，依序完成 `quick_takeoff.sh`、fmu1
+  `YAW 90`、`MOVE_FORWARD 40`。測試早期曾反覆出現
+  `optimized_emergency_brake: live peer warning distance reached`，當時 live peer
+  minimum 約 3.4–4.4 m；未觀察到原先的 `optimized_timeout`。後續 planner 恢復規劃，
+  fmu1 最終位置為 `NED=(-1.15, 40.21, -7.83)`，Forward 40 smoke 通過。此結果記錄一個
+  尚待後續處理的行為：live warning brake 會在安全警戒帶內重複觸發，雖然本次最終能恢復，
+  但會造成移動期間暫時停滯；四機水平編隊長時間安全驗收仍未完成。
 - Phase 6 pure C++ tests 已涵蓋 point obstacle lateral offset、固定／線性 Z、NaN／
-  timeout／iteration limit／divergence、fallback、reservation、assignment crossing
+  timeout／iteration limit／divergence、optimized failure fail-closed、reservation、assignment crossing
   refinement 與 convergence 條件；Phase 7 維持 `Not Started`，human acceptance pending。
 
 ---
@@ -169,8 +182,8 @@ Accepted
   continuous trajectory safety validator 與動態 emergency brake；2026-08-14 已由人類開發者確認驗證完成。
 - FormationEpoch 已提供跨 Agent snapshot/ADOPTED 同步、deterministic assignment、
   crossing refinement、連續 reservation、無衝突並行、衝突局部仲裁與成員失效重編；
-  optimized backend 失敗時仍會回到同一 snapshot 的 deterministic fallback 並重過
-  共同 safety validator。
+  optimized backend 失敗時不使用 deterministic fallback，而是進入 fail-closed HOLD／
+  emergency brake 並重試。
 - Phase 5 編隊 Node 已禁止額外的上下垂直避碰 candidate；Phase 6 optimized planner
   仍維持 CIRCLE／HORI_LINEAR 固定高度與 VERT_LINEAR 線性 Z 約束；多 topology initial
   guesses 依 scope 留待 Phase 7。

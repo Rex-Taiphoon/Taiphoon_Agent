@@ -65,15 +65,15 @@ Planner 不得直接依賴：
 
 障礙物透過 `src/perception/` 的 LocalObstacleMap abstraction 使用。
 
-### 4. Deterministic backend 是 fallback，不是永久限制
+### 4. Optimized backend 是目前唯一 runtime backend
 
-目前 deterministic candidate planner 必須保留：
+目前 deterministic candidate planner 檔案必須保留：
 
 - regression baseline
-- fallback
 - simple open-space swarm test
 
-但允許新增：
+runtime 不得組裝或呼叫 deterministic fallback；目前只組裝
+`OptimizedEgoPlanner`。仍允許新增：
 
 - `ITrajectoryPlanner`
 - `OptimizedEgoPlanner`

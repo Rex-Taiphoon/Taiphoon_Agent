@@ -30,9 +30,7 @@
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
 #include "ego_swarm/FormationConvergence.hpp"
 #include "ego_swarm/FormationReservation.hpp"
-#include "ego_swarm/DeterministicPlanner.hpp"
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
-#include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/ITrajectoryPlanner.hpp"
@@ -41,6 +39,7 @@
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/TrajectoryFactory.hpp"
 #include "formation/PeerMatcher.hpp"
 #include "perception/RawPointObstacleMap.hpp"
 
@@ -219,7 +218,7 @@ private:
         DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M;
     int formation_member_stable_scan_count_ =
         DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
-    std::string planner_backend_{"deterministic"};
+    std::string planner_backend_{"optimized"};
     int optimizer_max_iterations_{DEFAULT_OPTIMIZER_MAX_ITERATIONS};
     double optimizer_time_budget_ms_{DEFAULT_OPTIMIZER_TIME_BUDGET_MS};
     double formation_crossing_penalty_m_ =
@@ -229,9 +228,7 @@ private:
     double reservation_horizon_s_{DEFAULT_RESERVATION_HORIZON_S};
 
     ego_swarm::PlannerConfig planner_config_{};
-    ego_swarm::EgoSwarmPlanner planner_{};
     std::unique_ptr<ego_swarm::ITrajectoryPlanner> selected_planner_{};
-    std::unique_ptr<ego_swarm::ITrajectoryPlanner> fallback_planner_{};
     ego_swarm::ContinuousSafetyValidator safety_validator_{};
     ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};

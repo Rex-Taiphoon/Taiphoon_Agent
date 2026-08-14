@@ -422,7 +422,8 @@ reconfiguration 透過新 FormationEpoch。
 
 ## Goal
 
-保留 deterministic fallback，新增 optimized continuous planner。
+以 optimized continuous planner 作為唯一 runtime backend；deterministic 類別僅保留
+作為相容與回歸測試用途，不提供 runtime fallback。
 
 ## Implement
 
@@ -437,9 +438,11 @@ OptimizedEgoPlanner
 backend parameter：
 
 ```text
-planner_backend=deterministic
 planner_backend=optimized
 ```
+
+`planner_backend` 仍保留作為相容參數，但目前只接受 `optimized`；其他值使 planner
+初始化失敗。
 
 objective 至少：
 
@@ -489,8 +492,13 @@ optimizer failure：
 
 ```text
 → safety validator
-→ emergency brake / deterministic fallback
+→ stationary HOLD / emergency brake
 ```
+
+Optimizer 的中間結果不得直接發布。低速或靜止 Agent 以目前位置建立 exact hold；
+移動中 Agent 從 failure 當下開始煞停，於第一個安全停止位置建立 hold。若搜尋範圍內
+不存在安全水平路徑，立即走上述 HOLD／brake 流程，之後週期性重新規劃；不得改用
+deterministic planner，也不得以額外上下繞行取代水平路徑。
 
 視 safety contract 決定。
 

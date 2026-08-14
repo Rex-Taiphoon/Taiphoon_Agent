@@ -37,6 +37,28 @@ constexpr double FORMATION_EPOCH_HEARTBEAT_PERIOD_S = 1.0;
 // 動態煞停距離以外的固定反應裕度，並非放寬碰撞門檻。
 constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
 
+std::string optimized_failure_reason(
+    const ego_swarm::PlannerTerminationReason reason)
+{
+    switch (reason)
+    {
+        case ego_swarm::PlannerTerminationReason::NO_FEASIBLE_PATH:
+            return "optimized_no_feasible_horizontal_path";
+        case ego_swarm::PlannerTerminationReason::TIMEOUT:
+            return "optimized_timeout";
+        case ego_swarm::PlannerTerminationReason::NONFINITE_GRADIENT:
+            return "optimized_nonfinite_gradient";
+        case ego_swarm::PlannerTerminationReason::INFEASIBLE:
+        case ego_swarm::PlannerTerminationReason::ITERATION_LIMIT:
+        case ego_swarm::PlannerTerminationReason::DIVERGED:
+        case ego_swarm::PlannerTerminationReason::INVALID_INPUT:
+            return "optimized_infeasible";
+        case ego_swarm::PlannerTerminationReason::SUCCESS:
+            return "optimized_infeasible";
+    }
+    return "optimized_infeasible";
+}
+
 bool is_finite_state_position(const taiphoon_agent::msg::AgentState& state)
 {
     return state.online && state.px4_state_valid &&
@@ -166,7 +188,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M);
     declare_parameter<int>("formation_member_stable_scan_count",
                           DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT);
-    declare_parameter<std::string>("planner_backend", "deterministic");
+    declare_parameter<std::string>("planner_backend", "optimized");
     declare_parameter<int>("optimizer_max_iterations",
                            DEFAULT_OPTIMIZER_MAX_ITERATIONS);
     declare_parameter<double>("optimizer_time_budget_ms",
@@ -289,12 +311,11 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
             DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
     }
     planner_backend_ = get_parameter("planner_backend").as_string();
-    if (planner_backend_ != "deterministic" &&
-        planner_backend_ != "optimized")
+    if (planner_backend_ != "optimized")
     {
         RCLCPP_ERROR(
             get_logger(),
-            "Invalid planner_backend '%s'; expected deterministic or optimized",
+            "Invalid planner_backend '%s'; optimized is the only supported runtime backend",
             planner_backend_.c_str());
         return;
     }
@@ -344,21 +365,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     planner_config_.reservation_lead_time_s = reservation_lead_time_s_;
     planner_config_.reservation_step_s = reservation_step_s_;
     planner_config_.reservation_horizon_s = reservation_horizon_s_;
-    if (!planner_.set_config(planner_config_))
+    auto optimized_planner = std::make_unique<ego_swarm::OptimizedEgoPlanner>();
+    if (!optimized_planner->set_config(planner_config_))
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
         return;
     }
-    planner_config_ = planner_.config();
-    selected_planner_ = std::make_unique<ego_swarm::DeterministicPlanner>(
-        planner_config_);
-    if (planner_backend_ == "optimized")
-    {
-        selected_planner_ = std::make_unique<ego_swarm::OptimizedEgoPlanner>(
-            planner_config_);
-        fallback_planner_ = std::make_unique<ego_swarm::DeterministicPlanner>(
-            planner_config_);
-    }
+    planner_config_ = optimized_planner->config();
+    selected_planner_ = std::move(optimized_planner);
     if (!safety_validator_.set_config(planner_config_) ||
         !emergency_brake_planner_.set_config(planner_config_))
     {
@@ -835,7 +849,7 @@ double EgoSwarmPlannerNode::live_peer_min_distance(
         }
         minimum_distance = std::min(minimum_distance, distance);
     }
-    return minimum_distance;
+    return std::isfinite(minimum_distance) ? minimum_distance : 0.0;
 }
 
 std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
@@ -1543,8 +1557,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             {
                 invalidate_active_plan();
                 terminal_hold_position_ = endpoint.position;
-                terminal_hold_plan_ = planner_.make_exact_hold_result(
-                    terminal_hold_position_);
+                terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
+                    terminal_hold_position_, planner_config_);
                 terminal_hold_start_time_ = now;
                 terminal_hold_trajectory_id_ = ++trajectory_id_;
                 has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
@@ -1576,7 +1590,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             get_position_in_swarm_frame(own_state_, current))
         {
             terminal_hold_position_ = current;
-            terminal_hold_plan_ = planner_.make_exact_hold_result(current);
+            terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
+                current, planner_config_);
             terminal_hold_start_time_ = now;
             terminal_hold_trajectory_id_ = ++trajectory_id_;
             has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
@@ -1635,27 +1650,26 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         std::max(
             LIVE_PEER_REACTION_BUFFER_M,
             stopping_distance_m + LIVE_PEER_REACTION_BUFFER_M);
-    // 低於硬性碰撞距離時必須立即煞停；僅進入反應警戒帶時，先讓
-    // EGO planner 重新規劃，避免尚有安全水平路線時被直線檢查提前攔截。
-    const bool active_motion = has_active_plan_ &&
-        active_plan_.trajectory.is_valid() && !active_plan_.is_hold &&
-        !has_terminal_hold_;
+    // 實際飛控位置與 AgentTrajectory 可能存在 tracking delay；進入反應
+    // 警戒帶就直接煞停，不能等到 live distance 已低於 3 m 才處置。
     if (!std::isfinite(live_peer_distance) ||
         live_peer_distance < collision_distance)
     {
         publish_emergency_brake(
             planning_state, current,
-            "live peer position inside collision margin", now,
+            "optimized_emergency_brake: live peer position inside collision margin", now,
             peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
         return;
     }
-    if (active_motion && live_peer_distance < live_warning_distance)
+    if (live_peer_distance < live_warning_distance)
     {
-        RCLCPP_WARN_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "Live peer warning reached; requesting horizontal replanning");
-        invalidate_active_plan();
+        publish_emergency_brake(
+            planning_state, current,
+            "optimized_emergency_brake: live peer warning distance reached",
+            now, peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
     }
 
     if (has_formation_ && formation_membership_change_pending_)
@@ -1672,7 +1686,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             local_arrival_tolerance_m_)
         {
             terminal_hold_position_ = current;
-            terminal_hold_plan_ = planner_.make_exact_hold_result(current);
+            terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
+                current, planner_config_);
             terminal_hold_start_time_ = now;
             terminal_hold_trajectory_id_ = ++trajectory_id_;
             has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
@@ -1759,7 +1774,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             // 到達判斷允許位置誤差，因此 hold 必須鎖定目標座標，而不是
             // 使用仍可能漂移的即時位置。
             terminal_hold_position_ = target;
-            terminal_hold_plan_ = planner_.make_exact_hold_result(target);
+            terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
+                target, planner_config_);
             terminal_hold_start_time_ = now;
             terminal_hold_trajectory_id_ = ++trajectory_id_;
             has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
@@ -1840,7 +1856,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         {
             publish_plan(
                 active_plan_, current, now, active_plan_start_time_,
-                active_plan_trajectory_id_);
+                active_plan_trajectory_id_, active_plan_.is_hold);
             publish_status(
                 PLANNER_STATE_HOLD, "Waiting for local route arbitration",
                 &active_plan_, true, peer_data_valid, now);
@@ -1920,42 +1936,30 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     snapshot.peers_are_fresh = peer_data_valid;
     peer_trajectories_.get_active(now_s, snapshot.peers);
 
-    ego_swarm::PlannerResult result = selected_planner_ == nullptr
-        ? planner_.plan(snapshot) : selected_planner_->plan(snapshot);
-    if (planner_backend_ == "optimized" &&
-        (!result.is_valid || result.termination !=
-            ego_swarm::PlannerTerminationReason::SUCCESS))
-    {
-        const ego_swarm::PlannerResult fallback = fallback_planner_ == nullptr
-            ? planner_.plan(snapshot) : fallback_planner_->plan(snapshot);
-        RCLCPP_WARN_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "Optimized planner failed (%s); attempting deterministic fallback",
-            ego_swarm::planner_termination_reason_string(
-                result.termination).c_str());
-        if (fallback.is_valid && fallback.trajectory.is_valid() &&
-            fallback.termination == ego_swarm::PlannerTerminationReason::SUCCESS)
-        {
-            result = fallback;
-        }
-    }
+    ego_swarm::PlannerResult result = selected_planner_->plan(snapshot);
     if (!result.is_valid || !result.trajectory.is_valid())
     {
+        const std::string failure_reason = optimized_failure_reason(
+            result.termination);
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "Optimized planner failed (%s); fail-closed hold/brake",
+            failure_reason.c_str());
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
-        if (has_formation_ &&
-            (formation_initial_plan_pending_ ||
-             (std::isfinite(speed_mps) && speed_mps <= 0.2)))
+        if (std::isfinite(speed_mps) && speed_mps <= 0.2)
         {
             (void)publish_waiting_hold(
                 current, target,
-                "No safe horizontal route; waiting before retry", now,
+                failure_reason, now,
                 peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, target, "planner failure", now, peer_data_valid);
+            planning_state, target,
+            "optimized_emergency_brake: " + failure_reason,
+            now, peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
         return;
     }
@@ -1977,14 +1981,15 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             {
                 (void)publish_waiting_hold(
                     current, target,
-                    "Formation reservation unavailable; retrying", now,
+                    "optimized_no_feasible_horizontal_path", now,
                     peer_data_valid);
                 (void)peer_trajectories_.prune(now_s);
                 return;
             }
             publish_emergency_brake(
                 planning_state, target,
-                "Formation reservation unavailable while moving", now,
+                "optimized_emergency_brake: "
+                "optimized_no_feasible_horizontal_path", now,
                 peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
@@ -2007,7 +2012,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         {
             (void)publish_waiting_hold(
                 current, target,
-                "Peer route conflict; waiting for local arbitration", now,
+                "optimized_no_feasible_horizontal_path", now,
                 peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
@@ -2560,9 +2565,12 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     publish_plan(
         active_plan_, state.position, now, active_plan_start_time_,
         active_plan_trajectory_id_);
+    const std::string status_reason = reason.rfind(
+        "optimized_emergency_brake", 0U) == 0U
+        ? reason : "Emergency brake: " + reason;
     publish_status(
-        PLANNER_STATE_HOLD, "Emergency brake: " + reason, &active_plan_,
-        true, peer_data_valid, now);
+        PLANNER_STATE_HOLD, status_reason, nullptr, true,
+        peer_data_valid, now);
     return true;
 }
 
@@ -2578,7 +2586,8 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
     {
         return false;
     }
-    const auto hold_result = planner_.make_exact_hold_result(current);
+    const auto hold_result = ego_swarm::make_exact_hold_result(
+        current, planner_config_);
     if (!hold_result.is_valid || !hold_result.has_finite_output())
     {
         RCLCPP_ERROR(get_logger(), "Failed to create local waiting hold");
@@ -2595,9 +2604,9 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
     waiting_retry_time_s_ = now.seconds() + PEER_REPLAN_RETRY_DELAY_S;
     publish_plan(
         active_plan_, current, now, active_plan_start_time_,
-        active_plan_trajectory_id_);
+        active_plan_trajectory_id_, true);
     publish_status(
-        PLANNER_STATE_HOLD, reason, &active_plan_, true, peer_data_valid, now);
+        PLANNER_STATE_HOLD, reason, nullptr, true, peer_data_valid, now);
     return true;
 }
 
@@ -2870,8 +2879,17 @@ void EgoSwarmPlannerNode::publish_status(
         ? 0.0F : static_cast<float>(result->planning_time_ms);
     status.min_obstacle_distance_m = result == nullptr
         ? 0.0F : static_cast<float>(result->minimum_obstacle_distance_m);
-    status.min_peer_distance_m = result == nullptr
-        ? 0.0F : static_cast<float>(result->minimum_peer_distance_m);
+    double minimum_peer_distance_m = result == nullptr
+        ? 0.0 : result->minimum_peer_distance_m;
+    if (result == nullptr)
+    {
+        ego_swarm::Vector3 current{};
+        if (get_position_in_swarm_frame(own_state_, current))
+        {
+            minimum_peer_distance_m = live_peer_min_distance(current);
+        }
+    }
+    status.min_peer_distance_m = static_cast<float>(minimum_peer_distance_m);
     status.reason = reason;
     status_pub_->publish(status);
 }

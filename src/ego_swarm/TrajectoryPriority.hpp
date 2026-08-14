@@ -59,5 +59,29 @@ inline bool has_trajectory_priority(
     return false;
 }
 
+/**
+ * @brief 判斷是否仍須檢查 peer 的空間佔位。
+ *
+ * terminal hold 與 reservation 尚未開始前的 peer 都是實際佔位，不能
+ * 因 priority 直接略過。priority 只可仲裁已進入時間窗的 moving path。
+ */
+inline bool should_check_peer_occupancy(
+    const PeerTrajectory& peer,
+    const double absolute_time_s,
+    const double self_start_time_s,
+    const int self_agent_id)
+{
+    if (peer.terminal_hold ||
+        !is_finite(absolute_time_s) ||
+        !is_finite(peer.start_time_s) ||
+        absolute_time_s + EGO_SWARM_EPSILON_M < peer.start_time_s)
+    {
+        return true;
+    }
+    return !has_trajectory_priority(
+        self_start_time_s, self_agent_id,
+        peer.start_time_s, peer.agent_id);
+}
+
 }  // namespace ego_swarm
 }  // namespace taiphoon

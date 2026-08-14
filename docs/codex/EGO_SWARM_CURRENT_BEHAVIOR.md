@@ -18,7 +18,7 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
               immutable PlanningSnapshot
                          ↓
               selected ITrajectoryPlanner
-              optimized failure → deterministic fallback
+              OptimizedEgoPlanner only
                          ↓
               FormationReservation + ContinuousSafetyValidator
                          ↓
@@ -73,9 +73,8 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 
 ### `EgoSwarmPlanner`
 
-- 保留 deterministic candidate baseline：一般非編隊目標仍有直線、左右側向與上下
-  垂直中段偏移候選；編隊由 Node 強制使用 preserve-altitude 路徑，因此不會採用
-  額外的上下垂直避碰候選。
+- deterministic candidate baseline 類別保留作相容與回歸測試用途，但不再由目前
+  runtime 組裝或呼叫；目前 runtime 只使用下方的 `OptimizedEgoPlanner`。
 - 依目標距離、控制點平滑性、障礙物距離與 peer 距離成本選擇候選。
 - 每個候選以固定 sample interval 評估；任一 sample 低於 obstacle clearance
   或 peer collision distance 即拒絕。
@@ -90,19 +89,22 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 - Node 每個 planning cycle 先複製自身狀態、目標、frame revision、fresh peer
   trajectories 與 obstacle-map reference 成為 immutable `PlanningSnapshot`；backend
   不在計算期間重新查詢 mutable peer table。
-- `planner_backend` 預設為 `deterministic`。`optimized` 使用單一直線 seed 的
-  continuous B-spline projected-gradient solver；只最佳化中間 control points，並以
-  `candidate_offset_m`、`FIXED_Z`／`LINEAR_Z` projection 限制搜尋範圍。
+- `planner_backend` 預設為 `optimized` 且是唯一合法 runtime backend。Optimizer 使用
+  單一直線 seed 的 continuous B-spline projected-gradient solver；只最佳化中間 control
+  points，水平搜尋範圍為內部 8 m，並以 `FIXED_Z`／`LINEAR_Z` projection 限制高度。
 - Objective 分離為 terminal goal、smoothness、p/v/a/j excess、obstacle clearance
   barrier 與 time-aligned peer separation barrier；solver 具 central finite difference、
   backtracking、finite-value check、iteration／wall-time budget。非 `CONVERGED` 或
   hard feasibility 失敗不得發布中間結果。
-- optimized 失敗時以同一 snapshot 呼叫 deterministic fallback，兩者都需通過同一個
-  `ContinuousSafetyValidator`；兩者都失敗則靜止編隊 HOLD／週期重試，移動中 Agent
-  使用 `EmergencyBrakePlanner`。
+- optimized 失敗時不呼叫 deterministic fallback；靜止／低速 Agent 立即建立固定位置
+  HOLD 並週期重試，移動中 Agent 使用 `EmergencyBrakePlanner`。所有可發布的 optimized
+  trajectory 仍需通過同一個 `ContinuousSafetyValidator`。
 - Formation assignment 在 Hungarian 後加入 deterministic pairwise crossing refinement。
   Reservation 以 future `AgentTrajectory.start_time` 表示，不新增 reservation topic；
   `FormationConvergenceEvaluator` 只產生診斷衍生狀態，不引入新的 Formation FSM。
+- optimized 無法找到安全水平路徑時不發布替代路徑：低速 Agent 立即固定高度 HOLD，
+  移動中 Agent 先執行 emergency brake，再固定於安全停止位置；兩者都保留 occupancy
+  heartbeat 並週期性重試。
 
 ## ROS2 assembly behavior
 

@@ -11,7 +11,7 @@
 | `core/` | 介面契約層（純虛擬基底類別） |
 | `controllers/` | 實作 core 介面，轉譯 PX4 飛行控制 |
 | `nodes/` | ROS2 節點組裝層（topic、參數、控制迴圈） |
-| `ego_swarm/` | 現行機群局部規劃核心：共同座標、B-spline、peer future trajectory、編隊、planner backend、trajectory-level safety。現有 deterministic candidate planner 保留作 fallback / regression，允許後續加入 optimized EGO backend |
+| `ego_swarm/` | 現行機群局部規劃核心：共同座標、B-spline、peer future trajectory、編隊、planner backend、trajectory-level safety。Optimized EGO 是目前唯一 runtime backend；deterministic candidate planner 僅保留作相容／回歸用途 |
 | `perception/` | 障礙物幾何採樣與 PointCloud2 Adapter（純邏輯） |
 | `safety/` | 安全監控與狀態轉譯（純邏輯） |
 | `formation/` | 舊 MissionPlanner 與編隊純邏輯元件；不再提供現行 runtime Node |
