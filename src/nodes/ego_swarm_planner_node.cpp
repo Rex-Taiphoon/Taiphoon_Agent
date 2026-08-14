@@ -166,6 +166,19 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M);
     declare_parameter<int>("formation_member_stable_scan_count",
                           DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT);
+    declare_parameter<std::string>("planner_backend", "deterministic");
+    declare_parameter<int>("optimizer_max_iterations",
+                           DEFAULT_OPTIMIZER_MAX_ITERATIONS);
+    declare_parameter<double>("optimizer_time_budget_ms",
+                             DEFAULT_OPTIMIZER_TIME_BUDGET_MS);
+    declare_parameter<double>("formation_crossing_penalty_m",
+                             DEFAULT_FORMATION_CROSSING_PENALTY_M);
+    declare_parameter<double>("reservation_lead_time_s",
+                             DEFAULT_RESERVATION_LEAD_TIME_S);
+    declare_parameter<double>("reservation_step_s",
+                             DEFAULT_RESERVATION_STEP_S);
+    declare_parameter<double>("reservation_horizon_s",
+                             DEFAULT_RESERVATION_HORIZON_S);
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     agent_index_ = get_parameter("agent_index").as_int();
@@ -275,12 +288,77 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         formation_member_stable_scan_count_ =
             DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
     }
+    planner_backend_ = get_parameter("planner_backend").as_string();
+    if (planner_backend_ != "deterministic" &&
+        planner_backend_ != "optimized")
+    {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Invalid planner_backend '%s'; expected deterministic or optimized",
+            planner_backend_.c_str());
+        return;
+    }
+    optimizer_max_iterations_ = get_parameter(
+        "optimizer_max_iterations").as_int();
+    if (optimizer_max_iterations_ <= 0)
+    {
+        optimizer_max_iterations_ = DEFAULT_OPTIMIZER_MAX_ITERATIONS;
+    }
+    optimizer_time_budget_ms_ = get_parameter(
+        "optimizer_time_budget_ms").as_double();
+    if (!std::isfinite(optimizer_time_budget_ms_) ||
+        optimizer_time_budget_ms_ <= 0.0)
+    {
+        optimizer_time_budget_ms_ = DEFAULT_OPTIMIZER_TIME_BUDGET_MS;
+    }
+    formation_crossing_penalty_m_ = get_parameter(
+        "formation_crossing_penalty_m").as_double();
+    if (!std::isfinite(formation_crossing_penalty_m_) ||
+        formation_crossing_penalty_m_ < 0.0)
+    {
+        formation_crossing_penalty_m_ = DEFAULT_FORMATION_CROSSING_PENALTY_M;
+    }
+    reservation_lead_time_s_ = get_parameter(
+        "reservation_lead_time_s").as_double();
+    if (!std::isfinite(reservation_lead_time_s_) ||
+        reservation_lead_time_s_ < 0.0)
+    {
+        reservation_lead_time_s_ = DEFAULT_RESERVATION_LEAD_TIME_S;
+    }
+    reservation_step_s_ = get_parameter("reservation_step_s").as_double();
+    if (!std::isfinite(reservation_step_s_) || reservation_step_s_ <= 0.0)
+    {
+        reservation_step_s_ = DEFAULT_RESERVATION_STEP_S;
+    }
+    reservation_horizon_s_ = get_parameter(
+        "reservation_horizon_s").as_double();
+    if (!std::isfinite(reservation_horizon_s_) ||
+        reservation_horizon_s_ < reservation_lead_time_s_)
+    {
+        reservation_horizon_s_ = DEFAULT_RESERVATION_HORIZON_S;
+    }
+    planner_config_.optimizer_max_iterations = optimizer_max_iterations_;
+    planner_config_.optimizer_time_budget_ms = optimizer_time_budget_ms_;
+    planner_config_.formation_crossing_penalty_m =
+        formation_crossing_penalty_m_;
+    planner_config_.reservation_lead_time_s = reservation_lead_time_s_;
+    planner_config_.reservation_step_s = reservation_step_s_;
+    planner_config_.reservation_horizon_s = reservation_horizon_s_;
     if (!planner_.set_config(planner_config_))
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm planner parameters are invalid");
         return;
     }
     planner_config_ = planner_.config();
+    selected_planner_ = std::make_unique<ego_swarm::DeterministicPlanner>(
+        planner_config_);
+    if (planner_backend_ == "optimized")
+    {
+        selected_planner_ = std::make_unique<ego_swarm::OptimizedEgoPlanner>(
+            planner_config_);
+        fallback_planner_ = std::make_unique<ego_swarm::DeterministicPlanner>(
+            planner_config_);
+    }
     if (!safety_validator_.set_config(planner_config_) ||
         !emergency_brake_planner_.set_config(planner_config_))
     {
@@ -294,8 +372,9 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         return;
     }
     if (!peer_trajectories_.set_config(
-            ego_swarm::PeerTrajectoryTableConfig{
-                peer_trajectory_timeout_s_, max_peer_time_skew_s_}))
+        ego_swarm::PeerTrajectoryTableConfig{
+                peer_trajectory_timeout_s_, max_peer_time_skew_s_,
+                reservation_lead_time_s_ + reservation_horizon_s_ + 1.0}))
     {
         RCLCPP_ERROR(get_logger(),
                      "Peer trajectory freshness parameters are invalid");
@@ -321,12 +400,19 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
 
     RCLCPP_INFO(get_logger(),
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
+                "backend=%s optimizer_iterations=%d optimizer_budget=%.1f ms "
+                "reservation_lead=%.2f s reservation_step=%.2f s "
+                "reservation_horizon=%.2f s crossing_penalty=%.2f m "
                 "compat_origin_agent=%d peer_distance=%.2f m "
                 "obstacle_clearance=%.2f m peer_timeout=%.2f s "
                 "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
                 "require_obstacle_cloud=%s move_attitude_timeout=%.2f s "
                 "slot_switch_penalty=%.2f m member_stable_scans=%d",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
+                planner_backend_.c_str(), optimizer_max_iterations_,
+                optimizer_time_budget_ms_, reservation_lead_time_s_,
+                reservation_step_s_, reservation_horizon_s_,
+                formation_crossing_penalty_m_,
                 swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
                 planner_config_.obstacle_clearance_m,
@@ -506,6 +592,34 @@ void EgoSwarmPlannerNode::peer_state_cb(
     peer.state = *msg;
     peer.last_arrival = std::chrono::steady_clock::now();
     peer.has_state = true;
+
+    // peer 的 position_ned 屬於 peer 自己的 local frame，不能直接拿來和
+    // 本機 swarm frame 比較。速度仍供 transition／動態安全邏輯使用，
+    // 但不再作為 formation convergence 的到位條件。
+    ego_swarm::Vector3 current_position{};
+    const double sample_time_s = this->now().seconds();
+    if (swarm_frame_.has_origin() &&
+        get_position_in_swarm_frame(peer.state, current_position) &&
+        std::isfinite(sample_time_s))
+    {
+        const double delta_time_s = sample_time_s - peer.previous_position_time_s;
+        if (peer.has_state && delta_time_s > 1.0e-3 &&
+            delta_time_s <= 1.0 &&
+            ego_swarm::is_finite_vector(peer.previous_position_ned))
+        {
+            const ego_swarm::Vector3 velocity = ego_swarm::scale_vector(
+                ego_swarm::subtract_vectors(
+                    current_position, peer.previous_position_ned),
+                1.0 / delta_time_s);
+            if (ego_swarm::is_finite_vector(velocity))
+            {
+                peer.velocity_ned = velocity;
+                peer.has_velocity = true;
+            }
+        }
+        peer.previous_position_ned = current_position;
+        peer.previous_position_time_s = sample_time_s;
+    }
 }
 
 void EgoSwarmPlannerNode::ned_target_cb(
@@ -994,7 +1108,8 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
     ego_swarm::FormationAssignmentResult assignment;
     if (!ego_swarm::FormationAssignment::assign(
             ids, positions, formation_config_, previous_assignment,
-            formation_slot_switch_penalty_m_, assignment) ||
+            formation_slot_switch_penalty_m_, formation_crossing_penalty_m_,
+            assignment) ||
         assignment.agent_to_slot.find(agent_index_) ==
             assignment.agent_to_slot.end())
     {
@@ -1496,7 +1611,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
-    const ego_swarm::VehiclePlanningState planning_state =
+    ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
 
     // Peer trajectory 是預測資料；實際飛機可能因 PX4 estimator 或控制
@@ -1616,7 +1731,9 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
             publish_status(
                 PLANNER_STATE_HOLD,
-                "Terminal hold; formation slot occupied",
+                evaluate_formation_convergence(now_s).is_converged
+                    ? "formation_converged; terminal hold active"
+                    : "Terminal hold; formation slot occupied",
                 &terminal_hold_plan_, true, peer_data_valid, now);
             (void)peer_trajectories_.prune(now_s);
             return;
@@ -1625,15 +1742,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         has_goal_ = false;
         preserve_altitude_ = false;
         invalidate_active_plan();
-        // 編隊 transition_ready() 以 0.2 m/s 判斷前序 Agent 已穩定
-        // 佔位。若到達分支仍使用 0.05 m/s，飛控在槽位附近的正常
-        // 殘餘速度會讓本機永遠進入 brake/replan，無法發布 terminal
-        // hold，後續 Agent 也就永遠不會被釋放。一般 MOVE 仍保留
-        // 原本 0.05 m/s 的較嚴格停止條件。
-        const double formation_settle_speed_mps = 0.2;
-        const double settle_speed_mps = has_formation_
-            ? formation_settle_speed_mps : 0.05;
-        if (std::isfinite(speed_mps) && speed_mps > settle_speed_mps)
+        // 編隊槽位到達以共同位置誤差判斷；不要再用差分速度或
+        // 飛控殘餘速度阻止建立 terminal hold。PX4 會繼續追蹤固定
+        // setpoint，而 planner 只需維持該槽位的 occupancy heartbeat。
+        // 一般 MOVE 仍保留原本 0.05 m/s 的較嚴格停止條件。
+        const bool moving_too_fast_for_move = !has_formation_ &&
+            std::isfinite(speed_mps) && speed_mps > 0.05;
+        if (moving_too_fast_for_move)
         {
             publish_emergency_brake(
                 planning_state, target, "target reached while moving", now,
@@ -1657,7 +1772,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             }
             publish_status(
                 PLANNER_STATE_HOLD,
-                "Terminal hold; peer occupancy heartbeat active",
+                has_formation_ &&
+                    evaluate_formation_convergence(now_s).is_converged
+                    ? "formation_converged; terminal hold active"
+                    : "Terminal hold; peer occupancy heartbeat active",
                 has_terminal_hold_ ? &terminal_hold_plan_ : nullptr,
                 true, peer_data_valid, now);
         }
@@ -1695,13 +1813,22 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // 編隊 transition 只能使用直線或 North/East 側向候選；不允許 planner
     // 以額外的 above/below candidate 繞過同儕。VERT_LINEAR 的目標 Z 仍可
     // 沿目標方向調整，但不會再增加垂直避碰偏移。
-    const bool preserve_altitude = has_formation_ || preserve_altitude_;
-    if (preserve_altitude)
+    const bool fixed_z_path = preserve_altitude_ ||
+        (has_formation_ && formation_config_.type !=
+            ego_swarm::FormationType::VERT_LINEAR);
+    const bool linear_z_path = has_formation_ &&
+        formation_config_.type == ego_swarm::FormationType::VERT_LINEAR;
+    const ego_swarm::PathConstraint path_constraint = fixed_z_path
+        ? ego_swarm::PathConstraint::FIXED_Z
+        : (linear_z_path ? ego_swarm::PathConstraint::LINEAR_Z
+                         : ego_swarm::PathConstraint::FREE_3D);
+    if (fixed_z_path)
     {
         // 水平移動只改變 X/Y；使用命令建立時的目標 Z 作為整條
         // trajectory 的固定高度，避免 GPS callback 延遲把水平命令
         // 轉成非預期的垂直修正。
         current.at(2) = target.at(2);
+        planning_state.position = current;
     }
 
     // 等待中的固定位置路線只保留短時間，讓衝突中的 Agent 有機會
@@ -1775,16 +1902,43 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
     }
 
-    const double plan_start_delay_s = has_formation_ &&
-        formation_initial_plan_pending_
-        ? std::min(FORMATION_PLAN_START_DELAY_S, max_peer_time_skew_s_)
-        : 0.0;
+    const double plan_start_delay_s = has_formation_
+        ? reservation_lead_time_s_ : 0.0;
     const rclcpp::Time plan_start_time = now +
         rclcpp::Duration::from_seconds(plan_start_delay_s);
     const double plan_start_time_s = plan_start_time.seconds();
-    const auto result = planner_.plan(
-        current, target, obstacle_map_, peer_trajectories_,
-        plan_start_time_s, agent_index_, preserve_altitude);
+    ego_swarm::PlanningSnapshot snapshot;
+    snapshot.self_state = planning_state;
+    snapshot.local_goal = target;
+    snapshot.planning_time_s = now_s;
+    snapshot.trajectory_start_time_s = plan_start_time_s;
+    snapshot.frame_revision = frame_revision_;
+    snapshot.self_agent_id = agent_index_;
+    snapshot.path_constraint = path_constraint;
+    snapshot.fixed_z_m = target.at(2);
+    snapshot.obstacle_map = &obstacle_map_;
+    snapshot.peers_are_fresh = peer_data_valid;
+    peer_trajectories_.get_active(now_s, snapshot.peers);
+
+    ego_swarm::PlannerResult result = selected_planner_ == nullptr
+        ? planner_.plan(snapshot) : selected_planner_->plan(snapshot);
+    if (planner_backend_ == "optimized" &&
+        (!result.is_valid || result.termination !=
+            ego_swarm::PlannerTerminationReason::SUCCESS))
+    {
+        const ego_swarm::PlannerResult fallback = fallback_planner_ == nullptr
+            ? planner_.plan(snapshot) : fallback_planner_->plan(snapshot);
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "Optimized planner failed (%s); attempting deterministic fallback",
+            ego_swarm::planner_termination_reason_string(
+                result.termination).c_str());
+        if (fallback.is_valid && fallback.trajectory.is_valid() &&
+            fallback.termination == ego_swarm::PlannerTerminationReason::SUCCESS)
+        {
+            result = fallback;
+        }
+    }
     if (!result.is_valid || !result.trajectory.is_valid())
     {
         const double speed_mps = std::sqrt(
@@ -1806,8 +1960,41 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
+    double accepted_start_time_s = plan_start_time_s;
+    if (has_formation_)
+    {
+        const auto reservation = ego_swarm::FormationReservationPlanner::reserve(
+            result.trajectory, snapshot,
+            std::max(formation_min_distance_m_,
+                     planner_config_.peer_collision_min_distance_m),
+            reservation_lead_time_s_, reservation_step_s_,
+            reservation_horizon_s_);
+        if (!reservation.is_reserved)
+        {
+            const double speed_mps = std::sqrt(
+                ego_swarm::squared_norm(planning_state.velocity));
+            if (std::isfinite(speed_mps) && speed_mps <= 0.2)
+            {
+                (void)publish_waiting_hold(
+                    current, target,
+                    "Formation reservation unavailable; retrying", now,
+                    peer_data_valid);
+                (void)peer_trajectories_.prune(now_s);
+                return;
+            }
+            publish_emergency_brake(
+                planning_state, target,
+                "Formation reservation unavailable while moving", now,
+                peer_data_valid);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+        accepted_start_time_s = reservation.start_time_s;
+        result.trajectory_start_time_s = accepted_start_time_s;
+    }
     const auto safety_result = validate_plan(
-        result.trajectory, planning_state, now_s, plan_start_time_s);
+        result.trajectory, planning_state, now_s, accepted_start_time_s,
+        &snapshot.peers);
     if (!safety_result.is_safe)
     {
         const double speed_mps = std::sqrt(
@@ -1835,9 +2022,11 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
 
     clear_terminal_hold();
+    const rclcpp::Time accepted_start_time = now +
+        rclcpp::Duration::from_seconds(accepted_start_time_s - now_s);
     active_plan_ = result;
     active_plan_target_ = target;
-    active_plan_start_time_ = plan_start_time;
+    active_plan_start_time_ = accepted_start_time;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
     waiting_for_replan_ = false;
@@ -1848,7 +2037,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         active_plan_trajectory_id_);
     publish_status(
         active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-        active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
+        active_plan_.is_hold
+            ? "Holding until replanning is safe" : "ok",
         &active_plan_, true, peer_data_valid, now);
     (void)peer_trajectories_.prune(now_s);
 }
@@ -2145,42 +2335,110 @@ void EgoSwarmPlannerNode::clear_terminal_hold()
     terminal_hold_trajectory_id_ = 0U;
 }
 
+bool EgoSwarmPlannerNode::get_formation_target_for_agent(
+    const int agent_id, ego_swarm::Vector3& target) const
+{
+    if (!has_formation_ || !has_accepted_formation_epoch_)
+    {
+        return false;
+    }
+    const auto assignment = formation_assignment_.find(agent_id);
+    if (assignment == formation_assignment_.end())
+    {
+        return false;
+    }
+    std::vector<ego_swarm::Vector3> offsets;
+    if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+            accepted_formation_epoch_.member_agent_ids.size(),
+            formation_config_, offsets) ||
+        assignment->second >= offsets.size())
+    {
+        return false;
+    }
+    std::vector<ego_swarm::FormationSlot> slots;
+    slots.reserve(offsets.size());
+    for (std::size_t index = 0U; index < offsets.size(); ++index)
+    {
+        ego_swarm::FormationSlot geometry_slot;
+        geometry_slot.rank = index;
+        geometry_slot.offset_ned = offsets.at(index);
+        geometry_slot.is_valid = true;
+        slots.push_back(geometry_slot);
+    }
+    if (!ego_swarm::FormationSlotPlanner::are_slots_safe(
+            slots, formation_min_distance_m_))
+    {
+        return false;
+    }
+    target = ego_swarm::add_vectors(
+        formation_center_, offsets.at(assignment->second));
+    return ego_swarm::is_finite_vector(target);
+}
+
+ego_swarm::FormationConvergenceResult
+EgoSwarmPlannerNode::evaluate_formation_convergence(const double now_s) const
+{
+    ego_swarm::FormationConvergenceResult result;
+    if (!has_formation_ || !has_accepted_formation_epoch_ ||
+        !std::isfinite(now_s))
+    {
+        return result;
+    }
+
+    std::vector<ego_swarm::FormationConvergenceObservation> observations;
+    observations.reserve(accepted_formation_epoch_.member_agent_ids.size());
+    const auto now_steady = std::chrono::steady_clock::now();
+    for (const int member_id : accepted_formation_epoch_.member_agent_ids)
+    {
+        ego_swarm::FormationConvergenceObservation observation;
+        observation.agent_id = member_id;
+        observation.has_same_epoch =
+            candidate_adopted_agents_.find(member_id) !=
+            candidate_adopted_agents_.end();
+        if (!get_formation_target_for_agent(member_id, observation.target))
+        {
+            observations.push_back(observation);
+            continue;
+        }
+
+        if (member_id == agent_index_)
+        {
+            observation.has_fresh_state =
+                get_position_in_swarm_frame(own_state_, observation.position);
+            observation.has_fresh_occupancy =
+                has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid();
+        }
+        else
+        {
+            const auto peer_entry = peers_.find(member_id);
+            if (peer_entry != peers_.end() && peer_entry->second.has_state)
+            {
+                const PeerState& peer = peer_entry->second;
+                const double age_s = std::chrono::duration<double>(
+                    now_steady - peer.last_arrival).count();
+                observation.has_fresh_state = age_s >= 0.0 &&
+                    age_s <= peer_trajectory_timeout_s_ &&
+                    get_position_in_swarm_frame(
+                        peer.state, observation.position);
+
+                ego_swarm::PeerTrajectory peer_trajectory;
+                observation.has_fresh_occupancy =
+                    peer_trajectories_.get_fresh(
+                        member_id, now_s, peer_trajectory) &&
+                    peer_trajectory.terminal_hold;
+            }
+        }
+        observations.push_back(observation);
+    }
+    return ego_swarm::FormationConvergenceEvaluator::evaluate(
+        observations, global_arrival_tolerance_m_);
+}
+
 bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
 {
     if (has_formation_)
     {
-        const auto assignment = formation_assignment_.find(agent_index_);
-        if (!has_accepted_formation_epoch_ ||
-            assignment == formation_assignment_.end())
-        {
-            return false;
-        }
-        std::vector<ego_swarm::Vector3> offsets;
-        if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
-                accepted_formation_epoch_.member_agent_ids.size(),
-                formation_config_, offsets) ||
-            assignment->second >= offsets.size())
-        {
-            return false;
-        }
-        std::vector<ego_swarm::FormationSlot> slots;
-        slots.reserve(offsets.size());
-        for (std::size_t index = 0U; index < offsets.size(); ++index)
-        {
-            ego_swarm::FormationSlot geometry_slot;
-            geometry_slot.rank = index;
-            geometry_slot.offset_ned = offsets.at(index);
-            geometry_slot.is_valid = true;
-            slots.push_back(geometry_slot);
-        }
-        if (!ego_swarm::FormationSlotPlanner::are_slots_safe(
-                slots, formation_min_distance_m_))
-        {
-            return false;
-        }
-        target = ego_swarm::add_vectors(
-            formation_center_, offsets.at(assignment->second));
-        return ego_swarm::is_finite_vector(target);
+        return get_formation_target_for_agent(agent_index_, target);
     }
 
     if (!has_goal_ || !ego_swarm::is_finite_vector(goal_position_))
@@ -2233,17 +2491,36 @@ ego_swarm::SafetyValidationResult EgoSwarmPlannerNode::validate_plan(
     const ego_swarm::BsplineTrajectory& trajectory,
     const ego_swarm::VehiclePlanningState& state,
     const double now_s,
-    const double trajectory_start_time_s) const
+    const double trajectory_start_time_s,
+    const std::vector<ego_swarm::PeerTrajectory>* peer_snapshot) const
 {
     ego_swarm::SafetyValidationContext context;
     context.self_state = state;
     context.now_s = now_s;
     context.trajectory_start_time_s = trajectory_start_time_s;
     context.max_time_skew_s = max_peer_time_skew_s_;
+    context.max_future_start_delay_s = reservation_lead_time_s_ +
+        reservation_horizon_s_ + 1.0;
     context.frame_revision = frame_revision_;
     context.trajectory_frame_revision = frame_revision_;
     context.self_agent_id = agent_index_;
-    context.peer_table = &peer_trajectories_;
+    ego_swarm::PeerTrajectoryTable snapshot_table;
+    if (peer_snapshot != nullptr)
+    {
+        (void)snapshot_table.set_config(
+            ego_swarm::PeerTrajectoryTableConfig{
+                peer_trajectory_timeout_s_, max_peer_time_skew_s_,
+                reservation_lead_time_s_ + reservation_horizon_s_ + 1.0});
+        for (const auto& peer : *peer_snapshot)
+        {
+            (void)snapshot_table.update(peer);
+        }
+        context.peer_table = &snapshot_table;
+    }
+    else
+    {
+        context.peer_table = &peer_trajectories_;
+    }
     context.obstacle_map = &obstacle_map_;
     return safety_validator_.validate(trajectory, context);
 }
@@ -2589,7 +2866,8 @@ void EgoSwarmPlannerNode::publish_status(
     status.map_valid = obstacle_map_.is_fresh(stamp.seconds());
     status.localization_valid = localization_valid;
     status.peer_data_valid = peer_data_valid;
-    status.planning_time_ms = 0.0F;
+    status.planning_time_ms = result == nullptr
+        ? 0.0F : static_cast<float>(result->planning_time_ms);
     status.min_obstacle_distance_m = result == nullptr
         ? 0.0F : static_cast<float>(result->minimum_obstacle_distance_m);
     status.min_peer_distance_m = result == nullptr

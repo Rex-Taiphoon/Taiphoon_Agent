@@ -40,6 +40,7 @@ struct PeerTrajectoryTableConfig
 {
     double timeout_s{1.0};
     double max_peer_time_skew_s{0.5};
+    double max_future_start_delay_s{0.0};
 };
 
 constexpr double PEER_TRAJECTORY_TIME_EPSILON_S = 1.0e-6;
@@ -91,7 +92,9 @@ public:
     {
         if (!is_finite(config.timeout_s) || config.timeout_s <= 0.0 ||
             !is_finite(config.max_peer_time_skew_s) ||
-            config.max_peer_time_skew_s < 0.0)
+            config.max_peer_time_skew_s < 0.0 ||
+            !is_finite(config.max_future_start_delay_s) ||
+            config.max_future_start_delay_s < 0.0)
         {
             return false;
         }
@@ -499,12 +502,15 @@ private:
         }
 
         const double max_skew_s = config_.max_peer_time_skew_s;
+        const double max_future_start_delay_s =
+            config_.max_future_start_delay_s;
         if (!is_finite(max_skew_s) || max_skew_s < 0.0 ||
             std::abs(peer_trajectory.message_time_s -
                      peer_trajectory.receive_time_s) >
                 max_skew_s + PEER_TRAJECTORY_TIME_EPSILON_S ||
             peer_trajectory.start_time_s > peer_trajectory.receive_time_s +
-                max_skew_s + PEER_TRAJECTORY_TIME_EPSILON_S ||
+                max_skew_s + max_future_start_delay_s +
+                PEER_TRAJECTORY_TIME_EPSILON_S ||
             (!peer_trajectory.terminal_hold &&
              peer_trajectory.end_time_s < peer_trajectory.receive_time_s -
                  max_skew_s - PEER_TRAJECTORY_TIME_EPSILON_S))

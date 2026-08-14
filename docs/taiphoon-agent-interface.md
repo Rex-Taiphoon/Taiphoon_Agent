@@ -82,14 +82,17 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 local NED 輸出軌跡。 |
-| **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count` |
+| **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count`、Phase 6 backend／optimizer／reservation 參數 |
 
 **內部組件**：
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalObstacleMap`：PointCloud2 局部障礙物資料處理
 - `PeerTrajectoryTable`：同儕未來軌跡保存、timestamp sanity、freshness 與 expiration；ACTIVE 與 TERMINAL_HOLD 軌跡參與 planner，完成任務的終點由 heartbeat 保持佔位
-- `EgoSwarmPlanner`：deterministic candidate baseline 局部軌跡成本與安全評估；不宣稱完整原始 EGO-Swarm nonlinear optimizer
+- `DeterministicPlanner`／`EgoSwarmPlanner`：deterministic candidate baseline 與舊呼叫相容層
+- `OptimizedEgoPlanner`：指定 backend 後執行 pure C++ continuous control-point optimizer；失敗會使用 deterministic fallback
+- `FormationReservationPlanner`：以 future `AgentTrajectory.start_time` 表示 reservation，不新增 ROS2 message
+- `FormationConvergenceEvaluator`：由 fresh state、槽位誤差、epoch 與 terminal occupancy 推導 convergence；槽位到達不使用速度門檻
 
 **實際參數**：
 
@@ -118,6 +121,13 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
 | `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
+| `planner_backend` | `string` | `deterministic` | 只接受 `deterministic` 或 `optimized` |
+| `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
+| `optimizer_time_budget_ms` | `double` | `20.0` | optimized backend 單次 wall-time budget |
+| `formation_crossing_penalty_m` | `double` | `10.0` | assignment 水平 crossing 等價成本 |
+| `reservation_lead_time_s` | `double` | `0.5` | future trajectory reservation 最短提前時間 |
+| `reservation_step_s` | `double` | `0.5` | reservation start time 搜尋步進 |
+| `reservation_horizon_s` | `double` | `5.0` | reservation start time 最遠搜尋範圍 |
 
 ### 2.3 obstacle_cloud_simulator
 

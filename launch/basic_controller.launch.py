@@ -189,6 +189,19 @@ def launch_nodes(context, *args, **kwargs):
                     "formation_slot_switch_penalty_m")},
                 {"formation_member_stable_scan_count": LaunchConfiguration(
                     "formation_member_stable_scan_count")},
+                {"planner_backend": LaunchConfiguration("planner_backend")},
+                {"optimizer_max_iterations": LaunchConfiguration(
+                    "optimizer_max_iterations")},
+                {"optimizer_time_budget_ms": LaunchConfiguration(
+                    "optimizer_time_budget_ms")},
+                {"formation_crossing_penalty_m": LaunchConfiguration(
+                    "formation_crossing_penalty_m")},
+                {"reservation_lead_time_s": LaunchConfiguration(
+                    "reservation_lead_time_s")},
+                {"reservation_step_s": LaunchConfiguration(
+                    "reservation_step_s")},
+                {"reservation_horizon_s": LaunchConfiguration(
+                    "reservation_horizon_s")},
             ],
             output="screen",
             emulate_tty=True,
@@ -340,6 +353,34 @@ def generate_launch_description():
             "formation_member_stable_scan_count",
             default_value="2",
             description="成員集合連續穩定 discovery 掃描次數"),
+        DeclareLaunchArgument(
+            "planner_backend",
+            default_value="deterministic",
+            description="Planner backend：deterministic 或 optimized"),
+        DeclareLaunchArgument(
+            "optimizer_max_iterations",
+            default_value="40",
+            description="Optimized backend 最大 solver iteration 次數"),
+        DeclareLaunchArgument(
+            "optimizer_time_budget_ms",
+            default_value="20.0",
+            description="單次 optimized backend wall-time budget（毫秒）"),
+        DeclareLaunchArgument(
+            "formation_crossing_penalty_m",
+            default_value="10.0",
+            description="編隊 assignment 水平 crossing 等價成本（公尺）"),
+        DeclareLaunchArgument(
+            "reservation_lead_time_s",
+            default_value="0.5",
+            description="Future trajectory reservation 最短提前時間（秒）"),
+        DeclareLaunchArgument(
+            "reservation_step_s",
+            default_value="0.5",
+            description="Reservation start time 搜尋步進（秒）"),
+        DeclareLaunchArgument(
+            "reservation_horizon_s",
+            default_value="5.0",
+            description="Reservation start time 最遠搜尋範圍（秒）"),
         DeclareLaunchArgument(
             "obstacle_clearance_m",
             default_value="1.0",

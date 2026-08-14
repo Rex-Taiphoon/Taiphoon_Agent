@@ -885,3 +885,40 @@ stale_peer_count
 actual_min_peer_distance
 minimum_obstacle_clearance
 ```
+
+---
+
+# Phase 6 Backend Seam
+
+Phase 6 將 planner domain 拆成可替換的 pure C++ seam：
+
+```text
+ROS2 callbacks
+    ↓ immutable PlanningSnapshot
+ITrajectoryPlanner
+    ├─ DeterministicPlanner
+    └─ OptimizedEgoPlanner
+          └─ failure → DeterministicPlanner(snapshot)
+    ↓ formation reservation
+ContinuousSafetyValidator
+    ├─ safe → AgentTrajectory
+    └─ unsafe → HOLD / EmergencyBrakePlanner
+    ↓
+BasicController → PX4 TrajectorySetpoint
+```
+
+`PlanningSnapshot` 固定單一 cycle 的自身 p/v/a、目標、時間、frame revision、fresh
+peer trajectory value copy、障礙物 map reference 與路徑高度約束。backend 不重新讀取
+Node 的 mutable callback table；Node 也不在 planner 內實作 objective 或 solver。
+
+`OptimizedEgoPlanner` 使用無外部 dependency 的 continuous B-spline projected-gradient
+solver。起終點固定，只修改中間 control points；central finite-difference、backtracking、
+有限值檢查、iteration/time budget 與 hard p/v/a/j feasibility 都在 pure C++ module
+中完成。CIRCLE／HORI_LINEAR 使用 `FIXED_Z`，VERT_LINEAR 使用 `LINEAR_Z`，不可用額外
+垂直 detour 降低 peer cost。`planner_backend` 預設 `deterministic`，只有顯式設定
+`optimized` 才組裝 optimizer。
+
+編隊 assignment 在 Hungarian 結果後加入 deterministic pairwise crossing refinement；
+reservation 使用既有 `AgentTrajectory.start_time` 表示 future occupancy，不增加 topic
+或 message。Convergence evaluator 只回傳診斷衍生結果，要求 fresh state、相同 epoch／
+assignment、槽位誤差與 fresh terminal occupancy 全部成立；槽位到達不使用速度門檻。

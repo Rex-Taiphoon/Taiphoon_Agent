@@ -46,9 +46,40 @@ public:
         const double slot_switch_penalty_m,
         FormationAssignmentResult& out_result)
     {
+        return assign(
+            agent_ids, agent_positions_ned, config, previous_assignment,
+            slot_switch_penalty_m, 10.0, out_result);
+    }
+
+    /**
+     * @brief 以 slot-switch 與水平 crossing penalty 建立 assignment。
+     *
+     * Hungarian 先求 distance/switch 的基準解，再以 deterministic pairwise
+     * swap refinement 降低交叉成本，避免把 pairwise crossing state 塞進
+     * Hungarian 的淺層輸入矩陣。
+     *
+     * @param agent_ids Agent ID
+     * @param agent_positions_ned canonical NED 位置
+     * @param config formation 幾何
+     * @param previous_assignment parent epoch assignment
+     * @param slot_switch_penalty_m 換槽位成本
+     * @param crossing_penalty_m 水平路徑 crossing 成本
+     * @param[out] out_result assignment 結果
+     * @return true 表示建立完整有效 assignment
+     */
+    static bool assign(
+        const std::vector<int>& agent_ids,
+        const std::vector<Vector3>& agent_positions_ned,
+        const FormationConfig& config,
+        const std::map<int, std::size_t>& previous_assignment,
+        const double slot_switch_penalty_m,
+        const double crossing_penalty_m,
+        FormationAssignmentResult& out_result)
+    {
         out_result = FormationAssignmentResult{};
         if (agent_ids.empty() || agent_ids.size() != agent_positions_ned.size() ||
-            !is_finite(slot_switch_penalty_m) || slot_switch_penalty_m < 0.0)
+            !is_finite(slot_switch_penalty_m) || slot_switch_penalty_m < 0.0 ||
+            !is_finite(crossing_penalty_m) || crossing_penalty_m < 0.0)
         {
             return false;
         }
@@ -122,6 +153,10 @@ public:
             return false;
         }
 
+        refine_crossings(
+            sorted_agents, slot_offsets, costs, crossing_penalty_m,
+            row_to_column);
+
         FormationAssignmentResult result;
         result.slots.reserve(count);
         for (std::size_t row = 0U; row < count; ++row)
@@ -148,6 +183,135 @@ public:
     }
 
 private:
+    static double orientation_2d(
+        const Vector3& first,
+        const Vector3& second,
+        const Vector3& third)
+    {
+        return (second.at(0) - first.at(0)) *
+                (third.at(1) - first.at(1)) -
+            (second.at(1) - first.at(1)) *
+                (third.at(0) - first.at(0));
+    }
+
+    static bool segments_cross_2d(
+        const Vector3& first_start,
+        const Vector3& first_end,
+        const Vector3& second_start,
+        const Vector3& second_end)
+    {
+        const double first_side = orientation_2d(
+            first_start, first_end, second_start);
+        const double second_side = orientation_2d(
+            first_start, first_end, second_end);
+        const double third_side = orientation_2d(
+            second_start, second_end, first_start);
+        const double fourth_side = orientation_2d(
+            second_start, second_end, first_end);
+        return is_finite(first_side) && is_finite(second_side) &&
+            is_finite(third_side) && is_finite(fourth_side) &&
+            ((first_side > EGO_SWARM_EPSILON_M &&
+              second_side < -EGO_SWARM_EPSILON_M) ||
+             (first_side < -EGO_SWARM_EPSILON_M &&
+              second_side > EGO_SWARM_EPSILON_M)) &&
+            ((third_side > EGO_SWARM_EPSILON_M &&
+              fourth_side < -EGO_SWARM_EPSILON_M) ||
+             (third_side < -EGO_SWARM_EPSILON_M &&
+              fourth_side > EGO_SWARM_EPSILON_M));
+    }
+
+    static std::size_t crossing_count(
+        const std::vector<std::pair<int, Vector3>>& sorted_agents,
+        const std::vector<Vector3>& slot_offsets,
+        const std::vector<std::size_t>& row_to_column)
+    {
+        std::size_t count = 0U;
+        for (std::size_t first = 0U;
+             first < sorted_agents.size(); ++first)
+        {
+            for (std::size_t second = first + 1U;
+                 second < sorted_agents.size(); ++second)
+            {
+                if (segments_cross_2d(
+                        sorted_agents.at(first).second,
+                        slot_offsets.at(row_to_column.at(first)),
+                        sorted_agents.at(second).second,
+                        slot_offsets.at(row_to_column.at(second))))
+                {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
+    static double assignment_objective(
+        const std::vector<std::vector<double>>& costs,
+        const std::vector<std::size_t>& row_to_column,
+        const double crossing_penalty_m,
+        const std::vector<std::pair<int, Vector3>>& sorted_agents,
+        const std::vector<Vector3>& slot_offsets)
+    {
+        double total = 0.0;
+        for (std::size_t row = 0U; row < row_to_column.size(); ++row)
+        {
+            total += costs.at(row).at(row_to_column.at(row));
+        }
+        total += static_cast<double>(crossing_count(
+            sorted_agents, slot_offsets, row_to_column)) * crossing_penalty_m;
+        return total;
+    }
+
+    static void refine_crossings(
+        const std::vector<std::pair<int, Vector3>>& sorted_agents,
+        const std::vector<Vector3>& slot_offsets,
+        const std::vector<std::vector<double>>& costs,
+        const double crossing_penalty_m,
+        std::vector<std::size_t>& row_to_column)
+    {
+        if (row_to_column.size() < 2U)
+        {
+            return;
+        }
+        double current_objective = assignment_objective(
+            costs, row_to_column, crossing_penalty_m,
+            sorted_agents, slot_offsets);
+        const std::size_t max_rounds = row_to_column.size() *
+            row_to_column.size();
+        for (std::size_t round = 0U; round < max_rounds; ++round)
+        {
+            bool changed = false;
+            std::vector<std::size_t> best = row_to_column;
+            double best_objective = current_objective;
+            for (std::size_t first = 0U;
+                 first < row_to_column.size(); ++first)
+            {
+                for (std::size_t second = first + 1U;
+                     second < row_to_column.size(); ++second)
+                {
+                    std::vector<std::size_t> candidate = row_to_column;
+                    std::swap(
+                        candidate.at(first), candidate.at(second));
+                    const double objective = assignment_objective(
+                        costs, candidate, crossing_penalty_m,
+                        sorted_agents, slot_offsets);
+                    if (objective < best_objective - EGO_SWARM_EPSILON_M)
+                    {
+                        best = candidate;
+                        best_objective = objective;
+                        changed = true;
+                    }
+                }
+            }
+            if (!changed)
+            {
+                return;
+            }
+            row_to_column = best;
+            current_objective = best_objective;
+        }
+    }
+
     static bool hungarian(
         const std::vector<std::vector<double>>& costs,
         std::vector<std::size_t>& row_to_column)

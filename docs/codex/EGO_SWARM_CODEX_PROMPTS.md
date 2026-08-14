@@ -373,8 +373,8 @@ Formation convergence 必須具備：
   epoch identity、snapshot hash、center 與 deterministic slot assignment。
 - 每個 Agent 的 trajectory ID 在 runtime lifetime 單調遞增；舊封包晚到時
   只能忽略，不得清除最新 predecessor occupancy 或阻塞整個 transition。
-- predecessor readiness 使用 fresh AgentState、槽位距離、速度及最新
-  occupancy heartbeat 判定，不得依賴單一 terminal trajectory 封包的到達順序。
+- predecessor readiness 使用 fresh AgentState、槽位距離及最新 occupancy
+  heartbeat 判定；槽位到達不使用位置差分速度門檻，不得依賴單一 terminal trajectory 封包的到達順序。
 - 固定順序無解時，必須重新搜尋水平 lateral path 或重新安排時間；不得
   讓全隊永久停在 `Formation transition waiting`。
 - 只有所有成員在固定高度抵達槽位且 heartbeat fresh，才算編隊收斂。

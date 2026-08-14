@@ -12,12 +12,13 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <vector>
 
-#include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/ITrajectoryPlanner.hpp"
 #include "ego_swarm/TrajectoryPriority.hpp"
 #include "perception/IObstacleMap.hpp"
 
@@ -26,62 +27,6 @@ namespace taiphoon
 namespace ego_swarm
 {
 
-/// EGO-Swarm deterministic candidate planner 設定。
-struct PlannerConfig
-{
-    double knot_interval_s{1.0};
-    std::size_t control_point_count{6U};
-    double sample_interval_s{0.1};
-    double max_velocity_mps{2.0};
-    double max_acceleration_mps2{1.0};
-    double max_jerk_mps3{2.0};
-    // 舊參數名稱保留，讓既有 launch / 純邏輯呼叫端可以平滑遷移。
-    double max_velocity_m_s{2.0};
-    double max_acceleration_m_s2{1.0};
-    double candidate_offset_m{3.0};
-    double obstacle_clearance_m{1.0};
-    double peer_collision_min_distance_m{3.0};
-    double goal_weight{1.0};
-    double smoothness_weight{0.1};
-    double obstacle_weight{10.0};
-    double peer_weight{10.0};
-};
-
-/// 局部規劃結果；失敗時可包含由目前位置構成的有限值 hold 軌跡。
-struct PlannerResult
-{
-    bool is_valid{false};
-    bool is_hold{true};
-    BsplineTrajectory trajectory{};
-    double cost{0.0};
-    double minimum_obstacle_distance_m{0.0};
-    double minimum_peer_distance_m{0.0};
-
-    /**
-     * @brief 檢查規劃結果中所有可輸出的數值
-     *
-     * @return true 表示成本、距離與軌跡控制點皆為有限值
-     */
-    bool has_finite_output() const
-    {
-        if (!is_finite(cost) ||
-            !is_finite(minimum_obstacle_distance_m) ||
-            !is_finite(minimum_peer_distance_m))
-        {
-            return false;
-        }
-
-        for (const Vector3& control_point : trajectory.control_points())
-        {
-            if (!is_finite_vector(control_point))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-};
-
 /**
  * @brief EGO-Swarm 風格局部規劃深層模組
  *
@@ -89,7 +34,7 @@ struct PlannerResult
  * 時間，即可取得一條 deterministic B-spline。完整梯度最佳化可在
  * build_candidates 與 evaluate_candidate 的內部 seam 後續替換。
  */
-class EgoSwarmPlanner
+class EgoSwarmPlanner : public ITrajectoryPlanner
 {
 public:
     /**
@@ -133,6 +78,59 @@ public:
     }
 
     /**
+     * @brief 依 immutable planning snapshot 執行 deterministic backend。
+     *
+     * Peer trajectories 在 Node 建立 snapshot 時已完成 freshness 驗證；
+     * 這裡複製到 local table，避免 planner 執行期間重新讀取 callback state。
+     *
+     * @param snapshot 單一 planner cycle 的唯讀資料
+     * @return deterministic planner 結果
+     */
+    PlannerResult plan(const PlanningSnapshot& snapshot) const override
+    {
+        const auto start = std::chrono::steady_clock::now();
+        const auto finish = [&start](PlannerResult output)
+        {
+            output.planning_time_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            return output;
+        };
+        PlannerResult result;
+        result.backend = PlannerBackendKind::DETERMINISTIC;
+        result.trajectory_start_time_s = snapshot.trajectory_start_time_s;
+        if (!snapshot.is_valid())
+        {
+            result.termination = PlannerTerminationReason::INVALID_INPUT;
+            return finish(result);
+        }
+
+        PeerTrajectoryTableConfig table_config;
+        table_config.timeout_s = 1.0e9;
+        table_config.max_peer_time_skew_s = 1.0e9;
+        PeerTrajectoryTable peer_table(table_config);
+        for (const PeerTrajectory& peer : snapshot.peers)
+        {
+            if (!peer_table.update(peer))
+            {
+                result.termination = PlannerTerminationReason::INVALID_INPUT;
+                return finish(result);
+            }
+        }
+
+        PlannerResult output = plan(
+            snapshot.self_state.position,
+            snapshot.local_goal,
+            *snapshot.obstacle_map,
+            peer_table,
+            snapshot.trajectory_start_time_s,
+            snapshot.self_agent_id,
+            snapshot.path_constraint != PathConstraint::FREE_3D);
+        output.planning_time_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return output;
+    }
+
+    /**
      * @brief 產生一條避開障礙物與同儕未來軌跡的局部軌跡
      *
      * 只有 table 判定為 ACTIVE 或 TERMINAL_HOLD 的同儕軌跡會參與評估；
@@ -158,7 +156,17 @@ public:
         const int self_agent_id,
         const bool preserve_altitude = false) const
     {
+        const auto start = std::chrono::steady_clock::now();
+        const auto finish = [&start](PlannerResult output)
+        {
+            output.planning_time_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            return output;
+        };
         PlannerResult result;
+        result.backend = PlannerBackendKind::DETERMINISTIC;
+        result.trajectory_start_time_s = now_s;
+        result.termination = PlannerTerminationReason::INVALID_INPUT;
         if (!is_valid_config(config_) ||
             !is_finite_vector(current_position) ||
             !is_finite_vector(target_position) ||
@@ -166,7 +174,7 @@ public:
             !obstacle_map.is_valid() ||
             !obstacle_map.is_fresh(now_s))
         {
-            return result;
+            return finish(result);
         }
 
         const std::vector<Vector3> offsets = build_candidate_offsets(
@@ -227,7 +235,10 @@ public:
 
         if (!has_best)
         {
-            return make_hold_result(current_position);
+            result = make_hold_result(current_position);
+            result.termination = PlannerTerminationReason::NO_FEASIBLE_PATH;
+            result.trajectory_start_time_s = now_s;
+            return finish(result);
         }
 
         result.is_valid = true;
@@ -238,7 +249,12 @@ public:
             best_evaluation.minimum_obstacle_distance_m;
         result.minimum_peer_distance_m =
             best_evaluation.minimum_peer_distance_m;
-        return result;
+        result.goal_cost = best_evaluation.goal_cost;
+        result.smoothness_cost = best_evaluation.smoothness_cost;
+        result.obstacle_cost = best_evaluation.obstacle_cost;
+        result.peer_cost = best_evaluation.peer_cost;
+        result.termination = PlannerTerminationReason::SUCCESS;
+        return finish(result);
     }
 
     /**
@@ -275,6 +291,10 @@ private:
     {
         bool is_safe{false};
         double cost{0.0};
+        double goal_cost{0.0};
+        double smoothness_cost{0.0};
+        double obstacle_cost{0.0};
+        double peer_cost{0.0};
         double minimum_obstacle_distance_m{0.0};
         double minimum_peer_distance_m{0.0};
     };
@@ -572,6 +592,10 @@ private:
             config_.smoothness_weight * smoothness_cost +
             config_.obstacle_weight * obstacle_cost / sample_divisor +
             config_.peer_weight * peer_cost / sample_divisor;
+        evaluation.goal_cost = goal_cost / sample_divisor;
+        evaluation.smoothness_cost = smoothness_cost;
+        evaluation.obstacle_cost = obstacle_cost / sample_divisor;
+        evaluation.peer_cost = peer_cost / sample_divisor;
         evaluation.minimum_obstacle_distance_m = minimum_obstacle_distance;
         evaluation.minimum_peer_distance_m = minimum_peer_distance;
         evaluation.is_safe = is_finite(evaluation.cost) &&
@@ -734,7 +758,8 @@ private:
             {
                 return false;
             }
-            if (absolute_sample_time_s > peer.end_time_s +
+            if (!peer.terminal_hold &&
+                absolute_sample_time_s > peer.end_time_s +
                 EGO_SWARM_EPSILON_M)
             {
                 continue;

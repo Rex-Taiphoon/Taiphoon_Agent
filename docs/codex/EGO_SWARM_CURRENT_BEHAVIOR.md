@@ -15,7 +15,12 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
                          ↓
       receiver-local NED position + fresh LocalObstacleMap + peer table
                          ↓
-              EgoSwarmPlanner::plan
+              immutable PlanningSnapshot
+                         ↓
+              selected ITrajectoryPlanner
+              optimized failure → deterministic fallback
+                         ↓
+              FormationReservation + ContinuousSafetyValidator
                          ↓
         AgentTrajectory（valid 或 current-position hold）
                          ↓
@@ -80,6 +85,25 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
   `RawPointObstacleMap`。只有 `explicit_empty` source 產生的 valid empty map
   代表沒有障礙物。
 
+### Phase 6 planner backend
+
+- Node 每個 planning cycle 先複製自身狀態、目標、frame revision、fresh peer
+  trajectories 與 obstacle-map reference 成為 immutable `PlanningSnapshot`；backend
+  不在計算期間重新查詢 mutable peer table。
+- `planner_backend` 預設為 `deterministic`。`optimized` 使用單一直線 seed 的
+  continuous B-spline projected-gradient solver；只最佳化中間 control points，並以
+  `candidate_offset_m`、`FIXED_Z`／`LINEAR_Z` projection 限制搜尋範圍。
+- Objective 分離為 terminal goal、smoothness、p/v/a/j excess、obstacle clearance
+  barrier 與 time-aligned peer separation barrier；solver 具 central finite difference、
+  backtracking、finite-value check、iteration／wall-time budget。非 `CONVERGED` 或
+  hard feasibility 失敗不得發布中間結果。
+- optimized 失敗時以同一 snapshot 呼叫 deterministic fallback，兩者都需通過同一個
+  `ContinuousSafetyValidator`；兩者都失敗則靜止編隊 HOLD／週期重試，移動中 Agent
+  使用 `EmergencyBrakePlanner`。
+- Formation assignment 在 Hungarian 後加入 deterministic pairwise crossing refinement。
+  Reservation 以 future `AgentTrajectory.start_time` 表示，不新增 reservation topic；
+  `FormationConvergenceEvaluator` 只產生診斷衍生狀態，不引入新的 Formation FSM。
+
 ## ROS2 assembly behavior
 
 ### `EgoSwarmPlannerNode`
@@ -119,6 +143,9 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
   任務並停止新的移動軌跡。status reason 為
   `No mission target; BasicController keeps its hold setpoint`；軌跡逾時後
   BasicController 仍使用最後控制點，不回退至即時 odometry。
+- 編隊到達與 `formation_converged` 只依槽位位置誤差及 fresh state／epoch／occupancy
+  validity；不以位置差分或飛控殘餘速度阻止建立 terminal hold。普通 MOVE 仍保留
+  到達時的速度煞停條件。
 - 沒有 mission goal 或 formation goal 時，planner 對尚未完成煞車的 Agent 持續發布
   emergency brake；煞停後持續發布 `terminal_hold=true` 的終點 heartbeat。
   BasicController 保留其固定位置／高度 setpoint。

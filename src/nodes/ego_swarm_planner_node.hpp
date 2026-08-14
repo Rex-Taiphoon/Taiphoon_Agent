@@ -28,11 +28,16 @@
 #include "taiphoon_agent/msg/planner_status.hpp"
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
+#include "ego_swarm/FormationConvergence.hpp"
+#include "ego_swarm/FormationReservation.hpp"
+#include "ego_swarm/DeterministicPlanner.hpp"
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/EgoSwarmPlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
+#include "ego_swarm/ITrajectoryPlanner.hpp"
 #include "ego_swarm/MovementFrame.hpp"
+#include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
@@ -63,6 +68,12 @@ constexpr double DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M = 2.0;
 constexpr int DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT = 2;
 constexpr double FORMATION_PLAN_START_DELAY_S = 0.5;
 constexpr double PEER_REPLAN_RETRY_DELAY_S = 0.5;
+constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 20.0;
+constexpr int DEFAULT_OPTIMIZER_MAX_ITERATIONS = 40;
+constexpr double DEFAULT_FORMATION_CROSSING_PENALTY_M = 10.0;
+constexpr double DEFAULT_RESERVATION_LEAD_TIME_S = 0.5;
+constexpr double DEFAULT_RESERVATION_STEP_S = 0.5;
+constexpr double DEFAULT_RESERVATION_HORIZON_S = 5.0;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -82,6 +93,10 @@ private:
     {
         taiphoon_agent::msg::AgentState state{};
         std::chrono::steady_clock::time_point last_arrival{};
+        ego_swarm::Vector3 previous_position_ned{0.0, 0.0, 0.0};
+        ego_swarm::Vector3 velocity_ned{0.0, 0.0, 0.0};
+        double previous_position_time_s{0.0};
+        bool has_velocity{false};
         bool has_state{false};
     };
 
@@ -108,6 +123,10 @@ private:
     bool attitude_is_fresh() const;
     bool make_formation_proposal(const std::vector<int>& member_ids);
     bool update_formation_assignment();
+    bool get_formation_target_for_agent(
+        int agent_id, ego_swarm::Vector3& target) const;
+    ego_swarm::FormationConvergenceResult evaluate_formation_convergence(
+        double now_s) const;
     bool epoch_is_valid(
         const taiphoon_agent::msg::FormationEpoch& epoch) const;
     bool epoch_is_same_snapshot(
@@ -152,7 +171,8 @@ private:
         const ego_swarm::BsplineTrajectory& trajectory,
         const ego_swarm::VehiclePlanningState& state,
         double now_s,
-        double trajectory_start_time_s) const;
+        double trajectory_start_time_s,
+        const std::vector<ego_swarm::PeerTrajectory>* peer_snapshot = nullptr) const;
     bool publish_emergency_brake(
         const ego_swarm::VehiclePlanningState& state,
         const ego_swarm::Vector3& active_target,
@@ -199,9 +219,19 @@ private:
         DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M;
     int formation_member_stable_scan_count_ =
         DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT;
+    std::string planner_backend_{"deterministic"};
+    int optimizer_max_iterations_{DEFAULT_OPTIMIZER_MAX_ITERATIONS};
+    double optimizer_time_budget_ms_{DEFAULT_OPTIMIZER_TIME_BUDGET_MS};
+    double formation_crossing_penalty_m_ =
+        DEFAULT_FORMATION_CROSSING_PENALTY_M;
+    double reservation_lead_time_s_{DEFAULT_RESERVATION_LEAD_TIME_S};
+    double reservation_step_s_{DEFAULT_RESERVATION_STEP_S};
+    double reservation_horizon_s_{DEFAULT_RESERVATION_HORIZON_S};
 
     ego_swarm::PlannerConfig planner_config_{};
     ego_swarm::EgoSwarmPlanner planner_{};
+    std::unique_ptr<ego_swarm::ITrajectoryPlanner> selected_planner_{};
+    std::unique_ptr<ego_swarm::ITrajectoryPlanner> fallback_planner_{};
     ego_swarm::ContinuousSafetyValidator safety_validator_{};
     ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};

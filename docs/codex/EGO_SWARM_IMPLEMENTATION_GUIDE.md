@@ -476,8 +476,8 @@ CIRCLE 不得只依賴一次性的 terminal trajectory 封包才能收斂：
 - 每個 Agent 的 trajectory ID 在整個 runtime lifetime 單調遞增，不得因
   emergency brake、terminal hold 或 replan 回退；舊封包被忽略時不得清除
   最新的 predecessor occupancy。
-- predecessor readiness 必須由 fresh AgentState、目標槽位誤差、速度與
-  最新有效 occupancy heartbeat 共同判定；不能因單一舊 trajectory 封包晚到
+- predecessor readiness 必須由 fresh AgentState、目標槽位誤差與最新有效
+  occupancy heartbeat 共同判定；槽位到達不使用位置差分速度門檻，也不能因單一舊 trajectory 封包晚到
   就永久停在 transition waiting。
 - 若安全順序不存在，planner 必須重新搜尋水平 lateral path、更新
   reservation／執行批次，或安全 HOLD 並週期性重試；不得讓整個 CIRCLE

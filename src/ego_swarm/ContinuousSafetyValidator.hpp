@@ -51,6 +51,7 @@ struct SafetyValidationContext
     double now_s{0.0};
     double trajectory_start_time_s{0.0};
     double max_time_skew_s{0.5};
+    double max_future_start_delay_s{0.0};
     uint32_t frame_revision{0U};
     uint32_t trajectory_frame_revision{0U};
     int self_agent_id{0};
@@ -257,7 +258,9 @@ private:
             !std::isfinite(context.trajectory_start_time_s) ||
             !std::isfinite(context.self_state.timestamp_s) ||
             !std::isfinite(context.max_time_skew_s) ||
-            context.max_time_skew_s < 0.0)
+            context.max_time_skew_s < 0.0 ||
+            !std::isfinite(context.max_future_start_delay_s) ||
+            context.max_future_start_delay_s < 0.0)
         {
             return false;
         }
@@ -269,7 +272,8 @@ private:
             return false;
         }
         if (context.trajectory_start_time_s > context.now_s +
-                context.max_time_skew_s + TIME_EPSILON_S)
+                context.max_time_skew_s +
+                context.max_future_start_delay_s + TIME_EPSILON_S)
         {
             return false;
         }
@@ -406,7 +410,8 @@ private:
         }
         for (const PeerTrajectory& peer : peers)
         {
-            if (absolute_time_s > peer.end_time_s + EGO_SWARM_EPSILON_M)
+            if (!peer.terminal_hold &&
+                absolute_time_s > peer.end_time_s + EGO_SWARM_EPSILON_M)
             {
                 continue;
             }

@@ -674,8 +674,23 @@ Agent 仍把該終點視為佔位障礙。
 | `move_attitude_timeout_s` | double | `1.0` | 水平 MOVE 可使用的 AgentAttitude freshness window |
 | `formation_slot_switch_penalty_m` | double | `2.0` | minimum-cost assignment 換槽位成本 |
 | `formation_member_stable_scan_count` | int | `2` | discovery 成員集合連續穩定掃描次數 |
+| `planner_backend` | string | `deterministic` | 只接受 `deterministic` 或 `optimized` |
+| `optimizer_max_iterations` | int | `40` | optimized projected-gradient iteration 上限 |
+| `optimizer_time_budget_ms` | double | `20.0` | optimized backend 單次 wall-time 上限（毫秒） |
+| `formation_crossing_penalty_m` | double | `10.0` | assignment 水平 crossing 等價成本 |
+| `reservation_lead_time_s` | double | `0.5` | future trajectory reservation 最短提前時間 |
+| `reservation_step_s` | double | `0.5` | reservation start time 搜尋步進 |
+| `reservation_horizon_s` | double | `5.0` | reservation start time 最遠搜尋範圍 |
 
-目前核心是 deterministic candidate baseline，並非完整原始 EGO-Swarm nonlinear optimizer。
+目前核心預設是 deterministic candidate baseline；指定 `planner_backend=optimized` 才會
+啟用內建 pure C++ continuous control-point projected-gradient backend，不引入外部
+optimizer dependency。optimized backend 只使用單一直線 B-spline seed，起終點為硬約束，
+中間控制點受 `candidate_offset_m` 限制；`FIXED_Z` 與 `LINEAR_Z` 路徑會分別固定高度或
+只允許起終點之間的線性高度變化。objective 包含 terminal goal、smoothness、動力學超限、
+障礙物 clearance barrier 與 peer time-aligned separation barrier。
+若 optimizer 失敗，Node 會以同一份 planning snapshot 呼叫 deterministic fallback，再
+通過同一個 ContinuousSafetyValidator；兩者都失敗時，靜止編隊維持 HOLD／週期重試，
+移動中的 Agent 使用 EmergencyBrakePlanner。
 EGO-Swarm 會依候選路徑長度、最大速度、最大加速度與最大 jerk 計算每條 B-spline
 的 duration；若 analytic p/v/a/j 取樣仍超限，會逐步延長候選時間後才交給
 ContinuousSafetyValidator。

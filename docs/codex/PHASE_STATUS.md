@@ -9,9 +9,9 @@
 | 1 Swarm Safety Foundation | Accepted | | Docker: 162 tests passed | Human SITL verification: basic functions OK | Deterministic origin/frame freeze, peer lifecycle/freshness and timestamp sanity implemented; human acceptance confirmed |
 | 2 Obstacle Abstraction | Accepted | | Docker: 171 tests passed | Basic SITL smoke passed | Pure C++ map abstraction, explicit empty／ground truth／synthetic sensor and freshness gate implemented；四機 Agent/PX4 已完成 quick_takeoff、HOLD、MOVE_FORWARD、MODE_RTL、MODE_LAND 基本鏈路驗證，未納入編隊驗證；人類開發者已確認驗證完成 |
 | 3 B-Spline p/v/a/j + PX4 | Accepted | | Docker: 174 tests passed | 四機 SITL 基本鏈路與非零 p/v/a feed-forward smoke passed | 人類開發者已確認驗證完成；未提前進入 Phase 4 |
-| 4 Dynamic Safety + Brake | Ready for Review | EGO-Swarm-dev (uncommitted) | Docker: 190 tests passed | 四機 Agent/PX4 quick_takeoff、六方向移動、編隊與 peer safety smoke passed | WGS84 transport、receiver-local NED Adapter、ContinuousSafetyValidator、EmergencyBrakePlanner 與 terminal hold heartbeat 已實作；人類開發者確認前不得標記 Accepted |
-| 5 Safe Formation | Ready for Review | EGO-Swarm-dev (uncommitted) | Docker: 209 tests passed | 四機 SITL：無衝突時可並行規劃；衝突時局部等待／重規劃；fmu4 Agent 失效後 sequence 2 自動重編為 `[1,2,3]`，恢復後 sequence 3 納回四機 | 水平路線、時間／Agent ID 仲裁、無額外上下繞行、單調 trajectory ID、Agent failure recovery 已驗證；等待人類開發者審查，不標記 Accepted |
-| 6 Optimized EGO Backend | Not Started | | | | |
+| 4 Dynamic Safety + Brake | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 190 tests passed | 四機 Agent/PX4 quick_takeoff、六方向移動、編隊與 peer safety smoke passed | WGS84 transport、receiver-local NED Adapter、ContinuousSafetyValidator、EmergencyBrakePlanner 與 terminal hold heartbeat 已實作；2026-08-14 人類開發者確認基本指令與動態安全驗證完成 |
+| 5 Safe Formation | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 209 tests passed | 四機 SITL：無衝突時可並行規劃；衝突時局部等待／重規劃；fmu4 Agent 失效後 sequence 2 自動重編為 `[1,2,3]`，恢復後 sequence 3 納回四機 | 水平路線、時間／Agent ID 仲裁、無額外上下繞行、單調 trajectory ID、Agent failure recovery 已驗證；2026-08-14 人類開發者確認編隊功能驗證完成 |
+| 6 Optimized EGO Backend | Ready for Review | | Docker: 220 tests passed | 四機 optimized SITL smoke passed；固定高度、fallback、reservation HOLD 與 convergence 已觀測 | Backend seam、continuous control-point optimizer、crossing refinement、reservation、convergence 與 ROS2 parameters implemented；human acceptance pending |
 | 7 Topological Initial Guesses | Not Started | | | | |
 | 8 Multi-PX4 SITL Validation | Not Started | | | | |
 | 9 Real Sensor Integration | Not Started | | | | |
@@ -99,8 +99,8 @@ Accepted
   基本鏈路驗證完成，狀態更新為 `Accepted`。
 - Phase 3 B-Spline p/v/a/j + PX4：人類開發者確認 analytic derivative、PX4
   feed-forward 與四機基本指令驗證完成，狀態更新為 `Accepted`。
-- Phase 4 已完成實作與驗證，等待人類開發者審查與接受；不得由 Codex 自行宣告
-  `Accepted`。Phase 5 目前同樣等待人類 review，未宣告 `Accepted`。
+- Phase 4 Dynamic Safety + Brake：2026-08-14 人類開發者確認基本指令、動態安全與煞車驗證完成，狀態更新為 `Accepted`。
+- Phase 5 Safe Formation：2026-08-14 人類開發者確認編隊與 Agent failure recovery 驗證完成，狀態更新為 `Accepted`。
 
 ## Phase 5 Verification Record（2026-08-13）
 
@@ -124,6 +124,29 @@ Accepted
 - Emergency brake 進行中沿同一條時間軸發布，未再觀察到舊 terminal hold trajectory ID
   覆蓋新軌跡或 `peer table latest` out-of-order rejection。
 
+## Phase 6 Verification Record（2026-08-14）
+
+- 純 C++ planner seam 已完成：`ITrajectoryPlanner`、`PlanningSnapshot`、
+  `DeterministicPlanner`、`OptimizedEgoPlanner`、projected-gradient solver、
+  formation reservation 與 convergence evaluator；未新增 ROS2 message/topic，且
+  `BasicController` 仍是唯一 PX4 `TrajectorySetpoint` 發布端。
+- Docker 內先完成 `colcon build --packages-select taiphoon_agent`，再執行完整套件
+  測試；結果為 `220 tests, 0 errors, 0 failures, 0 skipped`。
+- 依 Agent 先於 PX4 的順序啟動四機 SITL，`quick_takeoff.sh` 後四台均確認
+  `flight_mode=5`、`armed=true`、`landed=false`、`online=true`、
+  `px4_state_valid=true`，且 PlannerStatus 的 localization／peer freshness 均有效。
+- optimized open-space MOVE 執行中觀測到 `reason=ok`、`planning_time_ms=12.12` ms、
+  `min_peer_distance_m=13.17`；其他 active planner samples 的實測規劃時間約
+  `2.46–4.95` ms，均維持至少 3 m peer distance。
+- optimized CIRCLE 與 HORI_LINEAR 編隊均完成固定高度控制點驗證；以
+  `FORMATION_CIRCLE 10 8` 讀取 fmu1 trajectory 時，所有 WGS84 control-point altitude
+  均為 `527.15234375`。編隊 transition 中觀測到 timeout fallback warning，輸家只進入
+  `formation slot occupied`／retry HOLD，未發布 optimizer 中間結果；其他 Agent 可繼續
+  規劃，並觀測到 `formation_converged; terminal hold active`。
+- Phase 6 pure C++ tests 已涵蓋 point obstacle lateral offset、固定／線性 Z、NaN／
+  timeout／iteration limit／divergence、fallback、reservation、assignment crossing
+  refinement 與 convergence 條件；Phase 7 維持 `Not Started`，human acceptance pending。
+
 ---
 
 ## Current Accepted Safety Contract
@@ -143,12 +166,14 @@ Accepted
 - Phase 3 已提供 analytic p/v/a/j derivative 與 PX4 p/v/a feed-forward；Phase 4
   新增的是 hard dynamic safety gate，不是 optimized planner cost。
 - Phase 4 已建立 WGS84 transport、receiver-local NED conversion、terminal hold、
-  continuous trajectory safety validator 與動態 emergency brake；尚待人類開發者接受。
+  continuous trajectory safety validator 與動態 emergency brake；2026-08-14 已由人類開發者確認驗證完成。
 - FormationEpoch 已提供跨 Agent snapshot/ADOPTED 同步、deterministic assignment、
-  無衝突並行、衝突局部仲裁與成員失效重編；Phase 6 的 crossing penalty、連續
-  reservation 與 optimized backend 仍未實作。
-- Phase 5 編隊 Node 已禁止額外的上下垂直避碰 candidate；Phase 6 只保留給更完整的
-  optimized planner／reservation contract，不得在本次 Phase 5 之外擴張 scope。
+  crossing refinement、連續 reservation、無衝突並行、衝突局部仲裁與成員失效重編；
+  optimized backend 失敗時仍會回到同一 snapshot 的 deterministic fallback 並重過
+  共同 safety validator。
+- Phase 5 編隊 Node 已禁止額外的上下垂直避碰 candidate；Phase 6 optimized planner
+  仍維持 CIRCLE／HORI_LINEAR 固定高度與 VERT_LINEAR 線性 Z 約束；多 topology initial
+  guesses 依 scope 留待 Phase 7。
 
 ---
 
@@ -159,4 +184,3 @@ Accepted
 | Item | Origin Phase | Target Phase | Reason |
 |---|---:|---:|---|
 | Real sensor adapter and sensor latency/dropout characterization | 2 | 9 | Phase 2 只完成 simulation sources 與 pure C++ LocalObstacleMap seam |
-| Formation transition reservation／crossing penalty | 5 | 6 | Phase 5 先完成 epoch、assignment 與 safety gate；尚未加入 crossing cost 或額外 reservation |

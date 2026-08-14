@@ -81,6 +81,10 @@ ament_target_dependencies(agent_supervisor
 add_executable(ego_swarm_planner
   src/main_ego_swarm_planner.cpp
   src/nodes/ego_swarm_planner_node.cpp
+  src/ego_swarm/FormationConvergence.cpp
+  src/ego_swarm/FormationReservation.cpp
+  src/ego_swarm/OptimizedEgoPlanner.cpp
+  src/ego_swarm/ProjectedGradientSolver.cpp
   src/perception/RawPointObstacleMap.cpp
 )
 
@@ -252,6 +256,20 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_dynamic_safety PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # Phase 6 planner seam、optimizer、reservation 與 convergence 測試
+  ament_add_gtest(test_phase6_planner
+    test/phase6_planner_test.cpp
+    src/ego_swarm/FormationConvergence.cpp
+    src/ego_swarm/FormationReservation.cpp
+    src/ego_swarm/OptimizedEgoPlanner.cpp
+    src/ego_swarm/ProjectedGradientSolver.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_phase6_planner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
