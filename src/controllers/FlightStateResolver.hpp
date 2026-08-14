@@ -57,6 +57,9 @@ struct FlightStateResolution
 class FlightStateResolver
 {
 public:
+    /// PX4 VehicleStatus NAVIGATION_STATE_OFFBOARD 的原始值
+    static constexpr uint8_t PX4_NAV_STATE_OFFBOARD = 14U;
+
     /// PX4 VehicleStatus NAVIGATION_STATE_AUTO_RTL 的原始值
     static constexpr uint8_t PX4_NAV_STATE_AUTO_RTL = 5U;
 

@@ -41,7 +41,7 @@ namespace nodes
 
 constexpr double DEFAULT_TARGET_ALTITUDE_M = 3.0;
 constexpr double DEFAULT_HOVER_DURATION_S = 3.0;
-constexpr double CONTROL_LOOP_RATE_HZ = 20.0;
+constexpr double CONTROL_LOOP_RATE_HZ = 10.0;
 constexpr double DEFAULT_STATE_PUBLISH_RATE_HZ = 10.0;
 constexpr double DEFAULT_POSITION_DEVIATION_THRESHOLD_M = 2.0;
 

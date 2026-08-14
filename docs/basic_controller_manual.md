@@ -177,7 +177,7 @@ ros2 run taiphoon_agent formation_node --ros-args \
 啟動後，無人機將自動依序執行：
 
 1. **解鎖（Arm）**：發送 VehicleCommand（CMD=400, param1=1）
-2. **起飛（Takeoff）**：以 20Hz 頻率發送 OffboardControlMode + TrajectorySetpoint
+2. **起飛（Takeoff）**：以 10Hz 頻率發送 OffboardControlMode + TrajectorySetpoint
 3. **抵達目標高度後自動停懸**：維持高度直到秒數達標
 4. **降落（Land）**：設定目標高度為 0，降至地面後進入 IDLE
 

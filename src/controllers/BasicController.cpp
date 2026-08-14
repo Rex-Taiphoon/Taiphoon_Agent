@@ -89,10 +89,9 @@ void BasicController::shutdown()
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "BasicController shutting down");
 
+    stop_offboard_session();
     {
         std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
-        timed_trajectory_ = TimedTrajectory{};
-        has_timed_trajectory_ = false;
         has_frame_revision_ = false;
         timed_trajectory_frame_revision_ = 0U;
         timed_trajectory_epoch_start_ = rclcpp::Time(
@@ -114,6 +113,42 @@ void BasicController::shutdown()
 bool BasicController::is_initialized() const
 {
     return is_initialized_.load();
+}
+
+void BasicController::clear_timed_trajectory()
+{
+    std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+    timed_trajectory_ = TimedTrajectory{};
+    has_timed_trajectory_ = false;
+}
+
+void BasicController::stop_offboard_session()
+{
+    offboard_prestream_pair_count_.store(0U);
+    offboard_mode_request_sent_.store(false);
+    offboard_session_active_.store(false);
+    offboard_cmd_echo_received_.store(false);
+    offboard_cmd_rejected_.store(false);
+    offboard_mode_request_time_ = rclcpp::Time(
+        static_cast<int64_t>(0), RCL_ROS_TIME);
+    clear_timed_trajectory();
+}
+
+void BasicController::begin_offboard_session()
+{
+    stop_offboard_session();
+    offboard_entry_failed_.store(false);
+    offboard_start_time_ = node_->now();
+    flight_state_.store(FlightState::OFFBOARD_INIT);
+}
+
+void BasicController::fail_offboard_entry(const char* reason)
+{
+    stop_offboard_session();
+    offboard_entry_failed_.store(true);
+    flight_state_.store(FlightState::ERROR);
+    RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                 "Offboard entry failed: %s", reason);
 }
 
 
@@ -155,6 +190,7 @@ bool BasicController::disarm()
     bool result = send_arm_command(false);
     if (result)
     {
+        stop_offboard_session();
         flight_state_.store(FlightState::IDLE);
         rtl_cmd_sent_ = false;
         land_cmd_sent_ = false;
@@ -243,6 +279,7 @@ bool BasicController::land()
     }
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Landing (target_system=%d)", target_system_);
+    stop_offboard_session();
     flight_state_.store(FlightState::LAND);
     land_cmd_sent_ = false;
     return true;
@@ -270,12 +307,8 @@ bool BasicController::execute_takeoff_land_sequence(float altitude_m, float hove
     }
     target_altitude_m_.store(altitude_m);
     hover_duration_s_.store(hover_duration_s);
-    is_offboard_timer_active_ = true;
-    offboard_cmd_sending_ = false;
-    offboard_cmd_echo_received_.store(false);
+    begin_offboard_session();
     arm_cmd_echo_received_.store(false);
-    offboard_start_time_ = node_->now();
-    flight_state_.store(FlightState::OFFBOARD_INIT);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Takeoff-land sequence started: alt=%.2f m, hover=%.2f s",
                 altitude_m, hover_duration_s);
@@ -364,6 +397,7 @@ bool BasicController::switch_to_rtl_mode()
     }
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Switching to RTL mode (target_system=%d)", target_system_);
+    stop_offboard_session();
     flight_state_.store(FlightState::RTL);
     rtl_cmd_sent_ = false;
     return true;
@@ -379,6 +413,7 @@ bool BasicController::switch_to_land_mode()
     }
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Switching to LAND mode (target_system=%d)", target_system_);
+    stop_offboard_session();
     flight_state_.store(FlightState::LAND);
     land_cmd_sent_ = false;
     return true;
@@ -392,12 +427,8 @@ bool BasicController::switch_to_offboard_mode()
                      "Cannot switch to OFFBOARD: not initialized");
         return false;
     }
-    is_offboard_timer_active_ = true;
-    offboard_cmd_sending_ = false;
-    offboard_cmd_echo_received_.store(false);
+    begin_offboard_session();
     arm_cmd_echo_received_.store(false);
-    offboard_start_time_ = node_->now();
-    flight_state_.store(FlightState::OFFBOARD_INIT);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Switching to OFFBOARD mode (target_system=%d)", target_system_);
     return true;
@@ -414,6 +445,7 @@ bool BasicController::switch_to_hold_mode()
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Switching to HOLD mode (target_system=%d)", target_system_);
     bool result = send_hold_mode_command();
+    stop_offboard_session();
     if (result)
     {
         flight_state_.store(FlightState::IDLE);
@@ -781,28 +813,58 @@ bool BasicController::create_vehicle_land_detected_subscriber()
 void BasicController::publish_control_commands()
 {
     if (!is_initialized_.load()) return;
-    if (offboard_control_mode_pub_ == nullptr || trajectory_setpoint_pub_ == nullptr) return;
+
+    // Offboard session 成功後，任何外部模式切換都必須先關閉兩個 PX4
+    // setpoint publisher。OFFBOARD_INIT 期間的非 Offboard nav_state 是
+    // 預期狀態，不能在尚未送出模式命令前誤判為外部離開。
+    if (offboard_session_active_.load() && !is_px4_offboard_confirmed())
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "PX4 left Offboard or VehicleStatus became stale; "
+                    "stopping Offboard output");
+        stop_offboard_session();
+        flight_state_.store(FlightState::IDLE);
+        has_offboard_stopped_ = true;
+    }
 
     update_command_state_from_observation();
 
-    // L1-02: POST_RTL 狀態停止發佈 Offboard 控制命令
-    bool should_publish_offboard = true;
-    auto current_state = flight_state_.load();
-    if (current_state == FlightState::POST_RTL || current_state == FlightState::IDLE)
+    if (flight_state_.load() == FlightState::OFFBOARD_INIT)
     {
-        should_publish_offboard = false;
+        handle_offboard_init_state();
     }
 
-    if (should_publish_offboard)
+    // 這些狀態的 VehicleCommand 必須在輸出閘門 return 前處理，確保
+    // RTL/LAND/HOLD 的模式命令不會因停止 setpoint 而被跳過。
+    auto current_state = flight_state_.load();
+    if (current_state == FlightState::RTL)
     {
-        auto mode_msg = px4_msgs::msg::OffboardControlMode();
-        mode_msg.timestamp = node_->now().nanoseconds() / 1000ULL;
-        mode_msg.position = true;
-        offboard_control_mode_pub_->publish(mode_msg);
+        handle_rtl_state();
     }
+    else if (current_state == FlightState::LAND)
+    {
+        handle_land_state();
+    }
+    else if (current_state == FlightState::POST_RTL)
+    {
+        handle_post_rtl_state();
+    }
+
+    current_state = flight_state_.load();
+    if (!should_publish_offboard_pair()) return;
+    if (offboard_control_mode_pub_ == nullptr ||
+        trajectory_setpoint_pub_ == nullptr)
+    {
+        return;
+    }
+
+    const auto pair_timestamp = node_->now().nanoseconds() / 1000ULL;
+    auto mode_msg = px4_msgs::msg::OffboardControlMode();
+    mode_msg.timestamp = pair_timestamp;
+    mode_msg.position = true;
 
     auto msg = px4_msgs::msg::TrajectorySetpoint();
-    msg.timestamp = node_->now().nanoseconds() / 1000ULL;
+    msg.timestamp = pair_timestamp;
     const auto hold_position = get_safe_hold_position();
     msg.position[0] = hold_position[0];
     msg.position[1] = hold_position[1];
@@ -816,22 +878,18 @@ void BasicController::publish_control_commands()
     msg.yaw = 0.0F;
     msg.yawspeed = 0.0F;
 
-    auto mode_msg_local = px4_msgs::msg::OffboardControlMode();
-    mode_msg_local.timestamp = node_->now().nanoseconds() / 1000ULL;
-    mode_msg_local.position = true;
-
     switch (current_state)
     {
-        case FlightState::OFFBOARD_INIT:  handle_offboard_init_state(mode_msg_local); break;
-        case FlightState::OFFBOARD_ACTIVE: handle_offboard_active_state(msg); break;
-        case FlightState::ARMED:          handle_armed_state(mode_msg_local); break;
+        case FlightState::OFFBOARD_ACTIVE: handle_offboard_active_state(); break;
+        case FlightState::ARMED:          handle_armed_state(mode_msg); break;
         case FlightState::TAKEOFF:        handle_takeoff_state(msg); break;
         case FlightState::HOVER:          handle_hover_state(msg); break;
-        case FlightState::RTL:            handle_rtl_state(msg); break;
-        case FlightState::POST_RTL:       handle_post_rtl_state(msg); break;
-        case FlightState::LAND:           handle_land_state(msg); break;
         case FlightState::MOVING:         handle_moving_state(msg); break;
         case FlightState::IDLE:
+        case FlightState::OFFBOARD_INIT:
+        case FlightState::RTL:
+        case FlightState::LAND:
+        case FlightState::POST_RTL:
         case FlightState::ERROR:
         default: break;
     }
@@ -909,7 +967,34 @@ void BasicController::publish_control_commands()
         msg.yawspeed = 0.0F;
     }
 
+    // 兩筆訊息使用同一 timestamp，並在兩筆都送出後才計入一組，避免
+    // 尚未完成配對就提前切換 Offboard。
+    offboard_control_mode_pub_->publish(mode_msg);
     trajectory_setpoint_pub_->publish(msg);
+
+    if (current_state == FlightState::OFFBOARD_INIT)
+    {
+        const uint32_t completed_pairs =
+            offboard_prestream_pair_count_.fetch_add(1U) + 1U;
+        if (completed_pairs >= OFFBOARD_PRESTREAM_PAIR_COUNT &&
+            !offboard_mode_request_sent_.load())
+        {
+            // 先建立 request 狀態再發布 command，避免多執行緒 executor 在
+            // publish 期間收到 ACK 時被誤判為非本次 Offboard request。
+            offboard_mode_request_sent_.store(true);
+            offboard_mode_request_time_ = node_->now();
+            if (!send_offboard_mode_command())
+            {
+                offboard_mode_request_sent_.store(false);
+                fail_offboard_entry("unable to publish DO_SET_MODE");
+                return;
+            }
+            RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                        "Published %u Offboard prestream pairs; "
+                        "sent one mode request",
+                        completed_pairs);
+        }
+    }
 }
 
 float BasicController::get_current_altitude() const
@@ -1208,47 +1293,50 @@ bool BasicController::hold_current_position()
 // 狀態機處理函式 (單一職責原則)
 // =============================================================================
 
-void BasicController::handle_offboard_init_state(px4_msgs::msg::OffboardControlMode& /*mode_msg*/)
+void BasicController::handle_offboard_init_state()
 {
-    if (!is_offboard_timer_active_) return;
-    auto elapsed = node_->now() - offboard_start_time_;
-    double elapsed_ms = elapsed.seconds() * 1000.0;
-
-    if (!offboard_cmd_sending_ && elapsed_ms < static_cast<double>(HEARTBEAT_WARMUP_MS))
+    if (offboard_entry_failed_.load())
     {
         return;
     }
 
-    if (!offboard_cmd_sending_)
+    if (!is_vehicle_status_fresh())
     {
-        offboard_cmd_sending_ = true;
-        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                    "Heartbeat warmup complete, sending mode switch");
+        fail_offboard_entry("VehicleStatus is unavailable or stale");
+        return;
     }
 
-    if (vehicle_command_pub_ != nullptr) send_offboard_mode_command();
-
-    bool echoed = offboard_cmd_echo_received_.load();
-    bool timeout = (elapsed_ms >= static_cast<double>(HEARTBEAT_WARMUP_MS + VEHICLE_CMD_ECHO_TIMEOUT_MS));
-
-    if (echoed || timeout)
+    if (offboard_cmd_rejected_.load())
     {
-        if (!echoed)
-            RCLCPP_WARN(rclcpp::get_logger("BasicController"),
-                       "Offboard echo timeout after %.0f ms, proceeding", elapsed_ms);
-        is_offboard_timer_active_ = false;
-        offboard_cmd_sending_ = false;
-        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                    "Offboard mode established, waiting for ARM command");
+        fail_offboard_entry("PX4 rejected DO_SET_MODE");
+        return;
+    }
+
+    if (offboard_mode_request_sent_.load() && is_px4_offboard_confirmed())
+    {
+        offboard_session_active_.store(true);
+        offboard_entry_failed_.store(false);
         flight_state_.store(FlightState::OFFBOARD_ACTIVE);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "VehicleStatus confirmed PX4 is in Offboard mode");
+        return;
+    }
+
+    if (offboard_mode_request_sent_.load())
+    {
+        const auto elapsed = node_->now() - offboard_mode_request_time_;
+        const double elapsed_ms = elapsed.seconds() * 1000.0;
+        if (elapsed_ms >= static_cast<double>(VEHICLE_CMD_ECHO_TIMEOUT_MS))
+        {
+            fail_offboard_entry(
+                "VehicleStatus did not confirm Offboard before timeout");
+        }
     }
 }
 
-void BasicController::handle_offboard_active_state(
-    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
+void BasicController::handle_offboard_active_state()
 {
-    // Offboard 已啟用，維持心跳，等待 ARM 命令
-    // 不發送任何位置設定點，保持 Offboard 模式
+    // Offboard 已啟用；配對訊息由 publish_control_commands() 統一發布。
     return;
 }
 
@@ -1258,7 +1346,7 @@ void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*m
     auto elapsed = node_->now() - offboard_start_time_;
     double elapsed_ms = elapsed.seconds() * 1000.0;
     bool timeout = (!echoed && elapsed_ms >= static_cast<double>(
-        HEARTBEAT_WARMUP_MS + VEHICLE_CMD_ECHO_TIMEOUT_MS + 5000.0));
+        VEHICLE_CMD_ECHO_TIMEOUT_MS + 5000.0));
     if (echoed || timeout)
     {
         float alt = target_altitude_m_.load();
@@ -1327,8 +1415,7 @@ void BasicController::handle_hover_state(px4_msgs::msg::TrajectorySetpoint& msg)
     // }
 }
 
-void BasicController::handle_rtl_state(
-    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
+void BasicController::handle_rtl_state()
 {
     if (!rtl_cmd_sent_)
     {
@@ -1355,8 +1442,7 @@ void BasicController::handle_rtl_state(
     }
 }
 
-void BasicController::handle_land_state(
-    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
+void BasicController::handle_land_state()
 {
     if (!land_cmd_sent_)
     {
@@ -1380,8 +1466,7 @@ void BasicController::handle_land_state(
     }
 }
 
-void BasicController::handle_post_rtl_state(
-    px4_msgs::msg::TrajectorySetpoint& /*msg*/)
+void BasicController::handle_post_rtl_state()
 {
     // RTL 降落完成，停止 Offboard 控制；position/yaw 仍維持有限 hold，
     // 實際模式轉換交由下方的 PX4 HOLD 命令處理。
@@ -1561,11 +1646,33 @@ void BasicController::vehicle_command_ack_cb(const px4_msgs::msg::VehicleCommand
     }
     if (msg->command == 176)
     {
-        offboard_cmd_echo_received_.store(true);
+        if (!offboard_mode_request_sent_.load() ||
+            flight_state_.load() != FlightState::OFFBOARD_INIT)
+        {
+            return;
+        }
+
+        if (msg->result ==
+            px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
+        {
+            offboard_cmd_echo_received_.store(true);
+        }
+        else if (msg->result !=
+                     px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_IN_PROGRESS)
+        {
+            offboard_cmd_rejected_.store(true);
+            RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                        "PX4 rejected Offboard mode command (result=%u)",
+                        static_cast<unsigned int>(msg->result));
+        }
     }
     else if (msg->command == 400)
     {
-        arm_cmd_echo_received_.store(true);
+        if (msg->result ==
+            px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
+        {
+            arm_cmd_echo_received_.store(true);
+        }
     }
 }
 
@@ -1614,6 +1721,59 @@ void BasicController::update_command_state_from_observation()
     flight_state_.store(FlightState::HOVER);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "PX4 observation completed command intent, transitioning to HOVER");
+}
+
+bool BasicController::is_vehicle_status_fresh() const
+{
+    if (node_ == nullptr)
+    {
+        return false;
+    }
+
+    const int64_t status_ns = last_vehicle_status_ns_.load();
+    const int64_t now_ns = node_->now().nanoseconds();
+    const int64_t timeout_ns =
+        static_cast<int64_t>(PX4_STATE_TIMEOUT_MS) * 1000000LL;
+    return status_ns > 0 && now_ns >= status_ns &&
+        now_ns - status_ns <= timeout_ns;
+}
+
+bool BasicController::is_px4_offboard_confirmed() const
+{
+    return is_vehicle_status_fresh() &&
+        px4_nav_state_.load() == FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
+}
+
+bool BasicController::should_publish_offboard_pair() const
+{
+    if (!is_vehicle_status_fresh() || offboard_entry_failed_.load())
+    {
+        return false;
+    }
+
+    switch (flight_state_.load())
+    {
+        case FlightState::OFFBOARD_INIT:
+            // PX4 尚未進入 Offboard 時仍須完成 prestream；此狀態只在
+            // 明確開始一次新的 session 後成立。
+            return true;
+
+        case FlightState::OFFBOARD_ACTIVE:
+        case FlightState::ARMED:
+        case FlightState::TAKEOFF:
+        case FlightState::HOVER:
+        case FlightState::MOVING:
+            return offboard_session_active_.load() &&
+                is_px4_offboard_confirmed();
+
+        case FlightState::IDLE:
+        case FlightState::RTL:
+        case FlightState::LAND:
+        case FlightState::POST_RTL:
+        case FlightState::ERROR:
+        default:
+            return false;
+    }
 }
 
 }  // namespace controllers

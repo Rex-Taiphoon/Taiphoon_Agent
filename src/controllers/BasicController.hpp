@@ -34,8 +34,8 @@ namespace taiphoon
 namespace controllers
 {
 
-/// 暖機心跳時間 (毫秒)
-constexpr int HEARTBEAT_WARMUP_MS = 2000;
+/// 進入 Offboard 前必須完成的配對訊息組數。
+constexpr uint32_t OFFBOARD_PRESTREAM_PAIR_COUNT = 10U;
 
 /// 模式切換後 VehicleCommand 回應超時 (毫秒)
 constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
@@ -410,12 +410,9 @@ private:
     /**
      * @brief 處理 OFFBOARD_INIT 狀態
      *
-     * 發送心跳暖機，嘗試切換至 Offboard 模式，等待回應後解鎖
-     *
-     * @param msg OffboardControlMode 訊息 (用於發布心跳)
+     * 檢查配對訊息送出後的 ACK、VehicleStatus 與確認逾時。
      */
-    void handle_offboard_init_state(
-        px4_msgs::msg::OffboardControlMode& /*msg*/);
+    void handle_offboard_init_state();
 
     /**
      * @brief 處理 ARMED 狀態
@@ -449,29 +446,22 @@ private:
      * @brief 處理 RTL 狀態
      *
      * 發送 RTL 命令，等待 PX4 完成降落並上鎖
-     *
-     * @param msg TrajectorySetpoint 訊息 (有限 hold 位置設定)
      */
-    void handle_rtl_state(
-        px4_msgs::msg::TrajectorySetpoint& msg);
+    void handle_rtl_state();
 
     /**
      * @brief 處理 LAND 狀態
      *
      * 發送 LAND 命令，等待 PX4 完成降落
-     *
-     * @param msg TrajectorySetpoint 訊息 (有限 hold 位置設定)
      */
-    void handle_land_state(
-        px4_msgs::msg::TrajectorySetpoint& msg);
+    void handle_land_state();
 
     /**
      * @brief 處理 OFFBOARD_ACTIVE 狀態
      *
      * Offboard 已啟用，維持心跳，等待 ARM 命令
      */
-    void handle_offboard_active_state(
-        px4_msgs::msg::TrajectorySetpoint& msg);
+    void handle_offboard_active_state();
 
     /**
      * @brief 處理 MOVING 狀態
@@ -486,10 +476,9 @@ private:
     /**
      * @brief 處理 POST_RTL 狀態
      *
-     * RTL 降落完成後，停止 Offboard 控制，發送 Hold 模式命令；輸出仍維持有限 hold
+     * RTL 降落完成後，停止 Offboard 控制，發送 Hold 模式命令。
      */
-    void handle_post_rtl_state(
-        px4_msgs::msg::TrajectorySetpoint& msg);
+    void handle_post_rtl_state();
 
     // ==================== 輔助方法 ====================
 
@@ -579,6 +568,42 @@ private:
     void update_command_state_from_observation();
 
     /**
+     * @brief 判斷 VehicleStatus 是否仍在有效時間內。
+     */
+    bool is_vehicle_status_fresh() const;
+
+    /**
+     * @brief 判斷 PX4 是否已實際進入 Offboard。
+     */
+    bool is_px4_offboard_confirmed() const;
+
+    /**
+     * @brief 判斷目前控制週期是否允許發布 Offboard 配對訊息。
+     */
+    bool should_publish_offboard_pair() const;
+
+    /**
+     * @brief 開始一次新的 Offboard 進入流程。
+     */
+    void begin_offboard_session();
+
+    /**
+     * @brief 停止目前 Offboard session 並清除本機定時軌跡。
+     */
+    void stop_offboard_session();
+
+    /**
+     * @brief 將 Offboard 進入失敗標記為 ERROR。
+     * @param reason 失敗原因
+     */
+    void fail_offboard_entry(const char* reason);
+
+    /**
+     * @brief 清除目前保留的本機定時軌跡。
+     */
+    void clear_timed_trajectory();
+
+    /**
      * @brief 取得有限的目前／目標位置，供無有效控制時產生 hold setpoint。
      * @return 優先目前位置，其次目標位置；兩者異常時回傳有限原點
      */
@@ -640,14 +665,20 @@ private:
 
     /// 計時相關
     rclcpp::Time offboard_start_time_;
+    rclcpp::Time offboard_mode_request_time_;
     rclcpp::Time takeoff_start_time_;
-    bool is_offboard_timer_active_{false};
-    bool offboard_cmd_sending_{false};
     int altitude_log_counter_{0};
 
     /// VehicleCommandAck 確認旗標
     std::atomic<bool> offboard_cmd_echo_received_{false};
+    std::atomic<bool> offboard_cmd_rejected_{false};
     std::atomic<bool> arm_cmd_echo_received_{false};
+
+    /// Offboard 進入流程內部狀態
+    std::atomic<uint32_t> offboard_prestream_pair_count_{0U};
+    std::atomic<bool> offboard_mode_request_sent_{false};
+    std::atomic<bool> offboard_session_active_{false};
+    std::atomic<bool> offboard_entry_failed_{false};
 
     /// 車輛解鎖狀態（參閱 px4_msgs/VehicleStatus）
     std::atomic<uint8_t> arming_state_{0};

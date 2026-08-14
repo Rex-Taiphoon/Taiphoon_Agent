@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "controllers/BasicController.hpp"
+#include "controllers/FlightStateResolver.hpp"
+#include "px4_msgs/msg/vehicle_status.hpp"
 #include "px4_msgs/msg/trajectory_setpoint.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -26,6 +28,7 @@ namespace
 constexpr float POSITION_EPSILON_M = 1.0e-4F;
 constexpr int MAX_PUBLISH_ATTEMPTS = 50;
 constexpr auto DISCOVERY_WAIT = std::chrono::milliseconds(20);
+constexpr uint8_t PX4_NAV_STATE_POSCTL = 4U;
 
 using taiphoon::controllers::BasicController;
 using taiphoon::controllers::TimedTrajectory;
@@ -76,7 +79,12 @@ protected:
                     latest_setpoint_ = *msg;
                     has_setpoint_ = true;
                 });
+        vehicle_status_pub_ =
+            node_->create_publisher<px4_msgs::msg::VehicleStatus>(
+                "fmu/out/vehicle_status_v4", rclcpp::QoS(10).best_effort());
         executor_.add_node(node_);
+        enter_offboard_session_for_test();
+        has_setpoint_ = false;
     }
 
     /** @brief 釋放測試建立的 ROS2 資源。 */
@@ -85,6 +93,7 @@ protected:
         controller_->shutdown();
         executor_.remove_node(node_);
         trajectory_setpoint_sub_.reset();
+        vehicle_status_pub_.reset();
         controller_.reset();
         node_.reset();
     }
@@ -149,6 +158,40 @@ protected:
         ASSERT_TRUE(has_setpoint_);
     }
 
+    /** @brief 發布最新 VehicleStatus，讓控制器能判斷輸出閘門。 */
+    void publish_status(uint8_t nav_state)
+    {
+        px4_msgs::msg::VehicleStatus status;
+        status.nav_state = nav_state;
+        status.arming_state =
+            px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+        for (int attempt = 0; attempt < 5; ++attempt)
+        {
+            vehicle_status_pub_->publish(status);
+            executor_.spin_some(DISCOVERY_WAIT);
+        }
+    }
+
+    /** @brief 以測試用 VehicleStatus 完成一次 Offboard 進入流程。 */
+    void enter_offboard_session_for_test()
+    {
+        publish_status(PX4_NAV_STATE_POSCTL);
+        ASSERT_TRUE(controller_->switch_to_offboard_mode());
+        for (uint32_t pair = 0U;
+             pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
+             ++pair)
+        {
+            controller_->publish_control_commands();
+            executor_.spin_some(DISCOVERY_WAIT);
+        }
+        publish_status(
+            taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+        ASSERT_EQ(controller_->get_flight_state(),
+                  taiphoon::controllers::FlightState::OFFBOARD_ACTIVE);
+    }
+
     /** @brief 驗證目前 PX4 設定點各數值欄位均為有限值。 */
     void expect_finite_setpoint_fields() const
     {
@@ -177,6 +220,8 @@ protected:
     std::unique_ptr<BasicController> controller_;
     rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr
         trajectory_setpoint_sub_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleStatus>::SharedPtr
+        vehicle_status_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
     bool has_setpoint_{false};
 };

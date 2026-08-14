@@ -74,6 +74,18 @@ TEST(FlightStateResolverTest, Px4AutomaticModesOverrideAgentIntent)
     EXPECT_EQ(land_resolution.effective_state, FlightState::LAND);
 }
 
+TEST(FlightStateResolverTest, OffboardNavigationStateIsRecognized)
+{
+    auto observation = make_valid_observation();
+    observation.px4_nav_state = FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
+
+    auto resolution = FlightStateResolver::resolve(
+        observation, FlightState::IDLE);
+
+    EXPECT_EQ(resolution.effective_state, FlightState::HOVER);
+    EXPECT_FALSE(resolution.should_transition_to_hover);
+}
+
 TEST(FlightStateResolverTest, TakeoffTransitionsToHoverAtTargetAltitude)
 {
     auto observation = make_valid_observation();

@@ -16,8 +16,13 @@
 #include <string>
 
 #include "controllers/BasicController.hpp"
+#include "controllers/FlightStateResolver.hpp"
+#include "px4_msgs/msg/offboard_control_mode.hpp"
 #include "px4_msgs/msg/trajectory_setpoint.hpp"
+#include "px4_msgs/msg/vehicle_command.hpp"
+#include "px4_msgs/msg/vehicle_command_ack.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
+#include "px4_msgs/msg/vehicle_status.hpp"
 #include "rclcpp/rclcpp.hpp"
 
 namespace
@@ -26,6 +31,7 @@ namespace
 constexpr float POSITION_EPSILON_M = 1.0e-5F;
 constexpr int MAX_PUBLISH_ATTEMPTS = 50;
 constexpr auto DISCOVERY_WAIT = std::chrono::milliseconds(20);
+constexpr uint8_t PX4_NAV_STATE_POSCTL = 4U;
 
 class BasicControllerSetpointTest : public ::testing::Test
 {
@@ -74,7 +80,36 @@ protected:
                     latest_setpoint_ = *msg;
                     has_setpoint_ = true;
                 });
+        offboard_control_mode_sub_ =
+            node_->create_subscription<px4_msgs::msg::OffboardControlMode>(
+                "fmu/in/offboard_control_mode",
+                rclcpp::QoS(10).best_effort(),
+                [this](const px4_msgs::msg::OffboardControlMode::SharedPtr msg)
+                {
+                    if (msg != nullptr) ++offboard_control_mode_count_;
+                });
+        vehicle_command_sub_ =
+            node_->create_subscription<px4_msgs::msg::VehicleCommand>(
+                "fmu/in/vehicle_command",
+                rclcpp::QoS(10).best_effort(),
+                [this](const px4_msgs::msg::VehicleCommand::SharedPtr msg)
+                {
+                    if (msg != nullptr) ++vehicle_command_count_;
+                });
+        vehicle_status_pub_ =
+            node_->create_publisher<px4_msgs::msg::VehicleStatus>(
+                "fmu/out/vehicle_status_v4", rclcpp::QoS(10).best_effort());
+        vehicle_command_ack_pub_ =
+            node_->create_publisher<px4_msgs::msg::VehicleCommandAck>(
+                "fmu/out/vehicle_command_ack_v1", rclcpp::QoS(10).best_effort());
         executor_.add_node(node_);
+
+        // 既有位置鎖定測試需要在有效 Offboard session 中執行；先完成
+        // 真實控制器要求的 10 組配對訊息，再由 VehicleStatus 確認模式。
+        enter_offboard_session_for_test();
+        offboard_control_mode_count_ = 0;
+        vehicle_command_count_ = 0;
+        has_setpoint_ = false;
     }
 
     /** @brief 釋放每個測試建立的 ROS2 實體 */
@@ -83,6 +118,10 @@ protected:
         controller_->shutdown();
         executor_.remove_node(node_);
         trajectory_setpoint_sub_.reset();
+        offboard_control_mode_sub_.reset();
+        vehicle_command_sub_.reset();
+        vehicle_status_pub_.reset();
+        vehicle_command_ack_pub_.reset();
         controller_.reset();
         node_.reset();
     }
@@ -136,6 +175,40 @@ protected:
         ASSERT_TRUE(has_setpoint_);
     }
 
+    /** @brief 發布最新 VehicleStatus，讓控制器能判斷輸出閘門。 */
+    void publish_status(uint8_t nav_state)
+    {
+        px4_msgs::msg::VehicleStatus status;
+        status.nav_state = nav_state;
+        status.arming_state =
+            px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+        for (int attempt = 0; attempt < 5; ++attempt)
+        {
+            vehicle_status_pub_->publish(status);
+            executor_.spin_some(DISCOVERY_WAIT);
+        }
+    }
+
+    /** @brief 以測試用 VehicleStatus 完成一次 Offboard 進入流程。 */
+    void enter_offboard_session_for_test()
+    {
+        publish_status(PX4_NAV_STATE_POSCTL);
+        ASSERT_TRUE(controller_->switch_to_offboard_mode());
+        for (uint32_t pair = 0U;
+             pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
+             ++pair)
+        {
+            controller_->publish_control_commands();
+            executor_.spin_some(DISCOVERY_WAIT);
+        }
+        publish_status(
+            taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+        ASSERT_EQ(controller_->get_flight_state(),
+                  taiphoon::controllers::FlightState::OFFBOARD_ACTIVE);
+    }
+
     /** @brief 驗證位置與偏航欄位均為有限值。 */
     void expect_finite_position_and_yaw() const
     {
@@ -150,8 +223,18 @@ protected:
     std::unique_ptr<taiphoon::controllers::BasicController> controller_;
     rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr
         trajectory_setpoint_sub_;
+    rclcpp::Subscription<px4_msgs::msg::OffboardControlMode>::SharedPtr
+        offboard_control_mode_sub_;
+    rclcpp::Subscription<px4_msgs::msg::VehicleCommand>::SharedPtr
+        vehicle_command_sub_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleStatus>::SharedPtr
+        vehicle_status_pub_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleCommandAck>::SharedPtr
+        vehicle_command_ack_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
     bool has_setpoint_{false};
+    std::size_t offboard_control_mode_count_{0U};
+    std::size_t vehicle_command_count_{0U};
 };
 
 TEST_F(BasicControllerSetpointTest, TakeoffLocksCommandPositionAgainstOdometryDrift)
@@ -212,22 +295,110 @@ TEST_F(BasicControllerSetpointTest, AbsoluteYawSetsMovePointHeading)
 }
 
 TEST_F(BasicControllerSetpointTest,
-       IdleRtlAndLandPublishFinitePositionAndYaw)
+       NonOffboardStopsSetpointAndHeartbeatButStillSendsRtlAndLandCommands)
 {
     controller_->update_odometry(make_odometry(4.0F, -2.0F, -3.0F));
 
-    publish_until_setpoint_received();
-    expect_finite_position_and_yaw();
-
+    publish_status(PX4_NAV_STATE_POSCTL);
     has_setpoint_ = false;
+    offboard_control_mode_count_ = 0U;
+    vehicle_command_count_ = 0U;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+
     ASSERT_TRUE(controller_->switch_to_rtl_mode());
-    publish_until_setpoint_received();
-    expect_finite_position_and_yaw();
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+    EXPECT_GE(vehicle_command_count_, 1U);
 
-    has_setpoint_ = false;
+    const auto command_count_after_rtl = vehicle_command_count_;
     ASSERT_TRUE(controller_->switch_to_land_mode());
-    publish_until_setpoint_received();
-    expect_finite_position_and_yaw();
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+    EXPECT_GT(vehicle_command_count_, command_count_after_rtl);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       OffboardRequiresTenPairsBeforeModeRequestAndStatusConfirmation)
+{
+    publish_status(PX4_NAV_STATE_POSCTL);
+    offboard_control_mode_count_ = 0U;
+    vehicle_command_count_ = 0U;
+    ASSERT_TRUE(controller_->switch_to_offboard_mode());
+
+    for (uint32_t pair = 0U;
+         pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT - 1U;
+         ++pair)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    EXPECT_EQ(offboard_control_mode_count_, 9U);
+    EXPECT_EQ(vehicle_command_count_, 0U);
+
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(offboard_control_mode_count_, 10U);
+    EXPECT_EQ(vehicle_command_count_, 1U);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_INIT);
+
+    px4_msgs::msg::VehicleCommandAck accepted_ack;
+    accepted_ack.command = 176U;
+    accepted_ack.result =
+        px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED;
+    vehicle_command_ack_pub_->publish(accepted_ack);
+    executor_.spin_some(DISCOVERY_WAIT);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_INIT);
+
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_ACTIVE);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       RejectedOffboardCommandStopsOutputAndRequiresNewRequest)
+{
+    publish_status(PX4_NAV_STATE_POSCTL);
+    offboard_control_mode_count_ = 0U;
+    vehicle_command_count_ = 0U;
+    ASSERT_TRUE(controller_->switch_to_offboard_mode());
+    for (uint32_t pair = 0U;
+         pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
+         ++pair)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+
+    px4_msgs::msg::VehicleCommandAck ack;
+    ack.command = 176U;
+    ack.result =
+        px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_DENIED;
+    vehicle_command_ack_pub_->publish(ack);
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    const auto pairs_before_failure = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ERROR);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(offboard_control_mode_count_, pairs_before_failure);
+    EXPECT_EQ(vehicle_command_count_, 1U);
 }
 
 }  // namespace
