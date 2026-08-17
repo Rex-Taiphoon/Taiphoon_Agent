@@ -103,12 +103,7 @@ docker compose up -d fmu1_agent
 ### 建置驗證
 在執行任何測試之前，必須先完成 workspace 建置：
 ```bash
-docker compose exec fmu1_agent colcon build
-```
-
-如果只修改單一套件，請使用局部建置：
-```bash
-docker compose exec fmu1_agent colcon build --packages-select taiphoon_agent
+docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon build"
 ```
 
 ### 單元測試（Unit Tests）
