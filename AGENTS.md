@@ -118,3 +118,29 @@ docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && col
 docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
 docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --all"
 ```
+
+### 多機模擬驗證的快速啟動方法
+以下指令僅限於多機模擬。啟動多機模擬驗證前，先啟動Agent，再啟動PX4模擬器，全部啟動完畢後後等待10秒後才能執行快速起飛
+
+一次啟動多Taiphoon_Agent（目前預設為4台）
+```bash
+docker compose up -d
+```
+一次啟動多台PX4模擬器（目前預設為4台）
+```bash
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --rmw cyclonedds
+```
+快速起飛
+```bash
+bash AutoTest/scripts/quick_takeoff.sh  
+```
+
+一次關閉多Taiphoon_Agent
+```bash
+docker compose down
+```
+
+一次關閉全部PX4模擬器
+```bash
+bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh  
+```
