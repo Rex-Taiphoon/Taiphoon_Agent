@@ -311,23 +311,23 @@ def generate_launch_description():
             description="B-spline 最小基準 knot 間隔（秒）"),
         DeclareLaunchArgument(
             "max_velocity_m_s",
-            default_value="2.0",
+            default_value="2.5",
             description="EGO-Swarm 軌跡最大速度（公尺/秒）"),
         DeclareLaunchArgument(
             "max_acceleration_m_s2",
-            default_value="1.0",
+            default_value="1.5",
             description="EGO-Swarm 軌跡最大加速度（公尺/秒^2）"),
         DeclareLaunchArgument(
             "max_velocity_mps",
-            default_value="2.0",
+            default_value="2.5",
             description="Phase 4 動力學驗證最大速度（公尺/秒）"),
         DeclareLaunchArgument(
             "max_acceleration_mps2",
-            default_value="1.0",
+            default_value="1.5",
             description="Phase 4 動力學驗證最大加速度（公尺/秒^2）"),
         DeclareLaunchArgument(
             "max_jerk_mps3",
-            default_value="2.0",
+            default_value="3.0",
             description="Phase 4 動力學驗證最大 jerk（公尺/秒^3）"),
         DeclareLaunchArgument(
             "candidate_offset_m",
@@ -363,7 +363,7 @@ def generate_launch_description():
             description="Optimized backend 最大 solver iteration 次數"),
         DeclareLaunchArgument(
             "optimizer_time_budget_ms",
-            default_value="20.0",
+            default_value="50.0",
             description="單次 optimized backend wall-time budget（毫秒）"),
         DeclareLaunchArgument(
             "formation_crossing_penalty_m",

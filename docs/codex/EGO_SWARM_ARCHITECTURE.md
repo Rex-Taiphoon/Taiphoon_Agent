@@ -895,9 +895,8 @@ Phase 6 將 planner domain 拆成可替換的 pure C++ seam：
 ROS2 callbacks
     ↓ immutable PlanningSnapshot
 ITrajectoryPlanner
-    ├─ DeterministicPlanner
     └─ OptimizedEgoPlanner
-          └─ failure → DeterministicPlanner(snapshot)
+          └─ failure → HOLD / EmergencyBrakePlanner
     ↓ formation reservation
 ContinuousSafetyValidator
     ├─ safe → AgentTrajectory
@@ -917,7 +916,7 @@ solver。起終點固定，只修改中間 control points；central finite-diffe
 垂直 detour 降低 peer cost。`planner_backend` 預設且唯一合法值為 `optimized`；
 deterministic backend 不再由 runtime 組裝或作 fallback。
 
-Optimizer 的水平搜尋範圍為內部 8 m，peer／formation hard center distance 維持 3 m，
+Optimizer 的水平搜尋範圍為內部 10 m，peer／formation hard center distance 維持 3 m，
 並以額外 soft clearance barrier 將路徑推離障礙物與同儕。若 bounded horizontal search
 找不到安全路徑，靜止／低速 Agent 立即 HOLD 並週期重試，移動中 Agent 先 emergency brake。
 

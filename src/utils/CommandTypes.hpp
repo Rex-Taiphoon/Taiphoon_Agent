@@ -73,7 +73,7 @@ struct ParsedCommand
  *   MOVE_UP x, MOVE_DOWN x,
  *   YAW x
  *
- * 為相容性亦支援簡寫：FORWARD, BACKWARD, LEFT, RIGHT
+ * 為相容性亦支援簡寫：FORWARD, BACKWARD, LEFT, RIGHT, UP, DOWN
  *
  * @param cmd_str 輸入命令字串 (不區分大小寫)
  * @return ParsedCommand 解析結果
@@ -219,7 +219,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
     {
         result.command = AgentCommand::HOLD;
     }
-    else if (cmd_name == "MOVE_UP")
+    else if (cmd_name == "MOVE_UP" || cmd_name == "UP")
     {
         result.command = AgentCommand::MOVE_UP;
         if (tokens.size() >= 2)
@@ -236,7 +236,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             }
         }
     }
-    else if (cmd_name == "MOVE_DOWN")
+    else if (cmd_name == "MOVE_DOWN" || cmd_name == "DOWN")
     {
         result.command = AgentCommand::MOVE_DOWN;
         if (tokens.size() >= 2)

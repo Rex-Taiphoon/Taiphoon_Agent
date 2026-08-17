@@ -4,8 +4,8 @@
 以 EGO-Swarm 實作多機編隊、局部障礙物避讓與同儕未來軌跡避碰，並支援邊緣運算與即時影像處理。
 
 > 本 README 已反映目前 EGO-Swarm runtime。移動命令由 Planner 單一路徑處理，
-> `MOVE_FORWARD/BACKWARD/LEFT/RIGHT` 以命令收到當下的機頭 yaw 固定成 local NED
-> 目標；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
+> `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的目標位置累加；水平位移使用保存的
+> target yaw；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
 > 與 deterministic minimum-cost assignment。
 
 EGO-Swarm 的 Phase 0 基線請參閱 [`docs/codex/README.md`](docs/codex/README.md)；其中
@@ -596,8 +596,9 @@ QoS: reliable, depth 10
 
 `/{agent_namespace}/command` 的 `MOVE_*` 與 `MOVE_POINT` 由 EGO-Swarm Planner
 唯一建立位置目標；BasicController 不再轉發第二份 mission intent。水平 MOVE 會在
-命令收到當下以新鮮 AgentAttitude 的 yaw 轉成固定 local NED 目標，飛行途中 yaw 改變
-不會旋轉既有目標。`MODE_*`、`ARM`、`TAKEOFF`、`LAND`、`YAW` 仍由 BasicController
+第一次需要建立 target yaw 時使用新鮮 AgentAttitude，之後以保存的 target yaw 與
+goal position 累加相對位移；飛行途中實際 yaw 改變不會旋轉既有目標。`YAW` 的相對角度
+也累加到保存的 target yaw；`MODE_*`、`ARM`、`TAKEOFF`、`LAND` 仍由 BasicController
 執行；`planning/mission_intent` 僅保留為相容的獨立輸入。
 
 到達目標後，Planner 會以目標座標填滿固定 hold B-spline，並發布
@@ -664,11 +665,11 @@ Agent 仍把該終點視為佔位障礙。
 | `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
 | `obstacle_clearance_m` | double | `1.0` | EGO-Swarm 與局部障礙物的安全間距 |
 | `knot_interval_s` | double | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由 EGO-Swarm 依候選路徑長度與限制計算 |
-| `max_velocity_m_s` | double | `2.0` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
-| `max_acceleration_m_s2` | double | `1.0` | EGO-Swarm 計算軌跡 duration 使用的最大加速度（公尺/秒^2） |
-| `max_velocity_mps` | double | `2.0` | Phase 4 safety validator／煞車使用的最大速度（公尺/秒）；與舊名稱同步時以此名稱為 canonical |
-| `max_acceleration_mps2` | double | `1.0` | Phase 4 safety validator／煞車使用的最大加速度（公尺/秒^2） |
-| `max_jerk_mps3` | double | `2.0` | Phase 4 safety validator／煞車使用的最大 jerk（公尺/秒^3） |
+| `max_velocity_m_s` | double | `2.5` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
+| `max_acceleration_m_s2` | double | `1.5` | EGO-Swarm 計算軌跡 duration 使用的最大加速度（公尺/秒^2） |
+| `max_velocity_mps` | double | `2.5` | Phase 4 safety validator／煞車使用的最大速度（公尺/秒）；與舊名稱同步時以此名稱為 canonical |
+| `max_acceleration_mps2` | double | `1.5` | Phase 4 safety validator／煞車使用的最大加速度（公尺/秒^2） |
+| `max_jerk_mps3` | double | `3.0` | Phase 4 safety validator／煞車使用的最大 jerk（公尺/秒^3） |
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
 | `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
 | `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |
@@ -677,7 +678,7 @@ Agent 仍把該終點視為佔位障礙。
 | `formation_member_stable_scan_count` | int | `2` | discovery 成員集合連續穩定掃描次數 |
 | `planner_backend` | string | `optimized` | optimized-only runtime；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | int | `40` | optimized projected-gradient iteration 上限 |
-| `optimizer_time_budget_ms` | double | `20.0` | optimized backend 單次 wall-time 上限（毫秒） |
+| `optimizer_time_budget_ms` | double | `50.0` | optimized backend 單次 wall-time 上限（毫秒）；保留 finite-difference 與 SITL callback 負載餘裕 |
 | `formation_crossing_penalty_m` | double | `10.0` | assignment 水平 crossing 等價成本 |
 | `reservation_lead_time_s` | double | `0.5` | future trajectory reservation 最短提前時間 |
 | `reservation_step_s` | double | `0.5` | reservation start time 搜尋步進 |
@@ -686,11 +687,12 @@ Agent 仍把該終點視為佔位障礙。
 目前 runtime 只使用內建 pure C++ continuous control-point projected-gradient backend，
 不引入外部 optimizer dependency。`planner_backend` 只接受 `optimized`；deterministic
 類別保留作為既有純邏輯相容檔案，但不再由 runtime 組裝或作 fallback。Optimized backend
-只使用單一直線 B-spline seed，起終點為硬約束，中間控制點的水平搜尋範圍為內部 8 m；
+只使用單一直線 B-spline seed，起終點為硬約束，中間控制點的水平搜尋範圍為內部 10 m；
 `FIXED_Z` 與 `LINEAR_Z` 路徑會分別固定高度或只允許起終點之間的線性高度變化。
 objective 包含 terminal goal、smoothness、動力學超限、障礙物 clearance barrier 與
 peer time-aligned separation barrier，並保留 obstacle 1 m、peer 3 m 的 hard safety
-門檻。Optimizer 失敗時不使用 deterministic fallback；靜止／低速 Agent 立即建立固定
+門檻。動力學 gate 預設上限為 velocity 2.5 m/s、acceleration 1.5 m/s²、jerk 3.0 m/s³；
+optimizer wall-time budget 為 50 ms。Optimizer 失敗時不使用 deterministic fallback；靜止／低速 Agent 立即建立固定
 位置 HOLD 並週期性重試，移動中的 Agent 使用 EmergencyBrakePlanner 後再 HOLD。
 EGO-Swarm 會依候選路徑長度、最大速度、最大加速度與最大 jerk 計算每條 B-spline
 的 duration；若 analytic p/v/a/j 取樣仍超限，會逐步延長候選時間後才交給

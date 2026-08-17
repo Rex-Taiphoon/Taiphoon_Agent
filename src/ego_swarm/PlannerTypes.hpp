@@ -79,15 +79,20 @@ struct PlannerConfig
     double knot_interval_s{1.0};
     std::size_t control_point_count{6U};
     double sample_interval_s{0.1};
-    double max_velocity_mps{2.0};
-    double max_acceleration_mps2{1.0};
-    double max_jerk_mps3{2.0};
+    // 長距離水平繞行需要保留 tracking 與 lateral detour 的動力學餘裕。
+    // 這些仍是 planner／validator 的 hard upper bounds，不代表命令會
+    // 強制以最大速度飛行。
+    double max_velocity_mps{2.5};
+    double max_acceleration_mps2{1.5};
+    double max_jerk_mps3{3.0};
     // 舊參數名稱保留，讓既有 launch / 純邏輯呼叫端可以平滑遷移。
-    double max_velocity_m_s{2.0};
-    double max_acceleration_m_s2{1.0};
+    double max_velocity_m_s{2.5};
+    double max_acceleration_m_s2{1.5};
     double candidate_offset_m{3.0};
     // optimized backend 的內部水平搜尋範圍；不作為 ROS2 對外參數。
-    double optimizer_search_radius_m{8.0};
+    // 以較大的 envelope 保留大膽側向繞行空間，但仍受 hard validator
+    // 與 dynamic feasibility 共同限制。
+    double optimizer_search_radius_m{10.0};
     double optimizer_peer_soft_margin_m{1.0};
     double optimizer_obstacle_soft_margin_m{0.5};
     double obstacle_clearance_m{1.0};
@@ -98,7 +103,7 @@ struct PlannerConfig
     double obstacle_weight{10.0};
     double peer_weight{10.0};
     int optimizer_max_iterations{40};
-    double optimizer_time_budget_ms{20.0};
+    double optimizer_time_budget_ms{50.0};
     double optimizer_gradient_epsilon_m{0.05};
     double optimizer_initial_step_m{0.20};
     double optimizer_minimum_step_m{0.01};

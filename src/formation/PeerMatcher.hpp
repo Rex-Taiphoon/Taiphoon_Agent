@@ -6,7 +6,8 @@
  *
  * 提供靜態方法：
  * 1. 判斷 node 名稱是否為 agent 節點（/fmu<N>_agent/... 主模式，
- *    /fmu<N>/basic_controller_node 相容模式）— agent 節點存在性即為離線判定依據
+ *    /fmu<N>/ego_swarm_planner 與 /fmu<N>/basic_controller_node 相容模式）
+ *    — agent 節點存在性即為離線判定依據
  * 2. 從 node/topic 名稱擷取 agent 索引數字
  * 3. 過濾 node 列表（含自身），供同儕發現使用
  * 4. 判斷 topic 名稱是否為 /fmu*_agent/state（向後相容）
@@ -49,7 +50,8 @@ public:
      *
      * 主模式：/fmu<數字>_agent/<節點名>（一機一 agent 架構，
      *         如 "/fmu2_agent/mission_planner"、"trajectory_controller"）
-     * 相容模式：/fmu<數字>/basic_controller_node（單容器 launch 部署）
+     * 相容模式：/fmu<數字>/ego_swarm_planner 或
+     *         /fmu<數字>/basic_controller_node（單容器 launch 部署）
      *
      * 機間離線判定以 agent 節點存在性為依據，因此只辨識 agent 命名空間
      * 節點與 basic_controller_node，不將其他 /fmu<數字>/ 節點視為 agent。
@@ -90,12 +92,25 @@ public:
             return pos + agent_suffix.size() < node_name.size();
         }
 
-        // 相容模式：/fmu<數字>/basic_controller_node（完整節點名，無後綴）
+        // 相容模式：/fmu<數字>/ego_swarm_planner 或
+        // /fmu<數字>/basic_controller_node（完整節點名，無後綴）。
+        // Docker SITL 目前將 planner 放在 /fmu<N>/ namespace；若只辨識
+        // basic_controller_node，planner 自身的 peer discovery 會永遠為空。
         if (node_name[pos] == '/')
         {
-            const std::string legacy_node = "/basic_controller_node";
-            return node_name.compare(pos, legacy_node.size(), legacy_node) == 0 &&
-                   node_name.size() == pos + legacy_node.size();
+            const std::string legacy_nodes[] = {
+                "/ego_swarm_planner",
+                "/basic_controller_node",
+            };
+            for (const auto& legacy_node : legacy_nodes)
+            {
+                if (node_name.compare(pos, legacy_node.size(), legacy_node) == 0 &&
+                    node_name.size() == pos + legacy_node.size())
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         return false;

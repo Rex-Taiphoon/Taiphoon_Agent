@@ -37,6 +37,23 @@ constexpr double FORMATION_EPOCH_HEARTBEAT_PERIOD_S = 1.0;
 // 動態煞停距離以外的固定反應裕度，並非放寬碰撞門檻。
 constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
 
+bool normalize_yaw_rad(const double input, double& output)
+{
+    output = 0.0;
+    if (!std::isfinite(input))
+    {
+        return false;
+    }
+    output = std::fmod(input + ego_swarm::EGO_SWARM_PI,
+                       2.0 * ego_swarm::EGO_SWARM_PI);
+    if (output < 0.0)
+    {
+        output += 2.0 * ego_swarm::EGO_SWARM_PI;
+    }
+    output -= ego_swarm::EGO_SWARM_PI;
+    return std::isfinite(output);
+}
+
 std::string optimized_failure_reason(
     const ego_swarm::PlannerTerminationReason reason)
 {
@@ -175,8 +192,9 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_MAX_ACCELERATION_MPS2);
     declare_parameter<double>("max_jerk_mps3", DEFAULT_MAX_JERK_MPS3);
     // 保留 Phase 3 參數名稱，既有 compose / launch 不需同步切換。
-    declare_parameter<double>("max_velocity_m_s", 2.0);
-    declare_parameter<double>("max_acceleration_m_s2", 1.0);
+    declare_parameter<double>("max_velocity_m_s", DEFAULT_MAX_VELOCITY_MPS);
+    declare_parameter<double>("max_acceleration_m_s2",
+                             DEFAULT_MAX_ACCELERATION_MPS2);
     declare_parameter<double>("candidate_offset_m", 3.0);
     declare_parameter<double>("local_arrival_tolerance_m",
                              DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M);
@@ -683,11 +701,12 @@ void EgoSwarmPlannerNode::agent_command_cb(
         case utils::AgentCommand::MOVE_UP:
         case utils::AgentCommand::MOVE_DOWN:
         case utils::AgentCommand::MOVE_POINT:
+        case utils::AgentCommand::YAW:
         case utils::AgentCommand::FORMATION_CANCEL:
             set_goal_from_command(msg->data);
             break;
         default:
-            // MODE_*, ARM, TAKEOFF, LAND 與 YAW 由 BasicController 處理。
+            // MODE_*, ARM, TAKEOFF 與 LAND 由 BasicController 處理。
             break;
     }
 }
@@ -704,6 +723,16 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     const auto parsed = utils::parse_command_string(msg->data);
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
+        ego_swarm::Vector3 preserved_target{};
+        if (has_formation_ && get_formation_target_for_agent(
+                agent_index_, preserved_target))
+        {
+            // 取消編隊後仍保留原本的 slot target，讓下一個相對命令
+            // 不會因 callback 時序改以漂移中的實際位置重新累加。
+            goal_position_ = preserved_target;
+            has_goal_ = true;
+            has_position_target_ = true;
+        }
         has_formation_ = false;
         has_accepted_formation_epoch_ = false;
         has_candidate_formation_epoch_ = false;
@@ -1013,6 +1042,8 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
 
     double latitude_sum = 0.0;
     double longitude_sum = 0.0;
+    ego_swarm::Vector3 target_position_sum{0.0, 0.0, 0.0};
+    bool all_member_targets_available = true;
     for (const int member_id : members)
     {
         taiphoon_agent::msg::AgentState state{};
@@ -1042,16 +1073,86 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         proposal.member_altitudes_m.push_back(altitude);
         latitude_sum += latitude;
         longitude_sum += longitude;
+
+        ego_swarm::Vector3 member_target{};
+        bool member_target_available = false;
+        if (member_id == agent_index_ && has_goal_ &&
+            ego_swarm::is_finite_vector(goal_position_))
+        {
+            member_target = goal_position_;
+            member_target_available = true;
+        }
+        else if (member_id != agent_index_)
+        {
+            ego_swarm::PeerTrajectory peer_trajectory;
+            const double now_s = this->now().seconds();
+            if (std::isfinite(now_s) && peer_trajectories_.get_fresh(
+                    member_id, now_s, peer_trajectory) &&
+                peer_trajectory.trajectory.is_valid())
+            {
+                const auto endpoint = peer_trajectory.trajectory.evaluate(
+                    peer_trajectory.trajectory.duration_s());
+                if (endpoint.is_valid)
+                {
+                    member_target = endpoint.position;
+                    member_target_available = true;
+                }
+            }
+        }
+        // 沒有可用的 peer target 時，只有在所有成員都缺少 target
+        // 的情況下才回退到同步位置中心，避免混用 target／current。
+        if (member_target_available)
+        {
+            target_position_sum = ego_swarm::add_vectors(
+                target_position_sum, member_target);
+        }
+        all_member_targets_available = all_member_targets_available &&
+            member_target_available;
     }
     if (!has_accepted_formation_epoch_)
     {
-        const double count = static_cast<double>(members.size());
-        proposal.center_latitude_deg = latitude_sum / count;
-        proposal.center_longitude_deg = longitude_sum / count;
-        // CIRCLE/HORI 的高度參數是既有 NED 命令語意：相對本機 Home 的
-        // 絕對飛行高度。center altitude 因此使用 proposer 的 frozen Home，
-        // 不能使用成員目前平均高度，否則起飛高度誤差會被再次寫入目標。
-        proposal.center_altitude_m = swarm_frame_.origin().altitude_m;
+        if (has_formation_center_target_)
+        {
+            ego_swarm::GeoCoordinate target_center{};
+            if (!swarm_frame_.from_swarm_ned(
+                    formation_center_, target_center))
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting formation proposal: saved center target is invalid");
+                return false;
+            }
+            proposal.center_latitude_deg = target_center.latitude_deg;
+            proposal.center_longitude_deg = target_center.longitude_deg;
+            proposal.center_altitude_m = target_center.altitude_m;
+        }
+        else if (all_member_targets_available)
+        {
+            const double count = static_cast<double>(members.size());
+            const ego_swarm::Vector3 target_center_ned =
+                ego_swarm::scale_vector(target_position_sum, 1.0 / count);
+            ego_swarm::GeoCoordinate target_center{};
+            if (!swarm_frame_.from_swarm_ned(
+                    target_center_ned, target_center))
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting formation proposal: member target center is invalid");
+                return false;
+            }
+            proposal.center_latitude_deg = target_center.latitude_deg;
+            proposal.center_longitude_deg = target_center.longitude_deg;
+            proposal.center_altitude_m = target_center.altitude_m;
+        }
+        else
+        {
+            const double count = static_cast<double>(members.size());
+            proposal.center_latitude_deg = latitude_sum / count;
+            proposal.center_longitude_deg = longitude_sum / count;
+            // 第一次若沒有完整成員 target，才以同步成員位置建立初始
+            // 中心；之後的 CIRCLE/HORI/VERT 均沿用保存的目標中心。
+            proposal.center_altitude_m = swarm_frame_.origin().altitude_m;
+        }
     }
     proposal.snapshot_hash = formation_epoch_hash(proposal);
 
@@ -1131,6 +1232,7 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
     }
     formation_assignment_ = assignment.agent_to_slot;
     formation_center_ = center;
+    has_formation_center_target_ = true;
     return true;
 }
 
@@ -1500,10 +1602,16 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 : taiphoon_agent::msg::FormationEpoch::PROPOSAL);
     }
     std::vector<int> expected_peer_ids;
-    expected_peer_ids.reserve(peers_.size());
-    for (const auto& entry : peers_)
+    // PeerMatcher 先更新 currently_discovered_peers_，再由下一批 DDS
+    // callback 填入 peers_。若只從 peers_ 建 expected list，這段 race
+    // 期間 all_fresh(empty) 會錯誤放行一條沒有 peer occupancy 的直線。
+    expected_peer_ids.reserve(currently_discovered_peers_.size());
+    for (const int peer_id : currently_discovered_peers_)
     {
-        expected_peer_ids.push_back(entry.first);
+        if (peer_id > 0 && peer_id != agent_index_)
+        {
+            expected_peer_ids.push_back(peer_id);
+        }
     }
     const bool peer_data_valid = peer_trajectories_.all_fresh(
         now_s, expected_peer_ids);
@@ -1569,6 +1677,28 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             }
         }
 
+        // TAKEOFF／LAND 等 BasicController 任務不會經過本 planner 的
+        // mission goal callback。若待命時先建立了 terminal hold，飛機
+        // 之後起飛便不能繼續廣播起飛前的位置，否則其他 Agent 會把
+        // 舊高度當成真實 occupancy，planner 可能錯誤放行同高度直線。
+        // 只在沒有 active brake 的待命路徑更新 heartbeat，保留單一
+        // trajectory publisher 與原本的 BasicController 指令邊界。
+        ego_swarm::Vector3 current{};
+        const bool current_position_available =
+            get_position_in_swarm_frame(own_state_, current);
+        if (has_terminal_hold_ && current_position_available &&
+            ego_swarm::distance_between_centers(
+                current, terminal_hold_position_) >
+            local_arrival_tolerance_m_)
+        {
+            terminal_hold_position_ = current;
+            terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
+                current, planner_config_);
+            terminal_hold_start_time_ = now;
+            terminal_hold_trajectory_id_ = ++trajectory_id_;
+            has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
+        }
+
         if (has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid())
         {
             publish_plan(
@@ -1585,9 +1715,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         // 待命中的 Agent 也必須廣播自己的固定位置，讓其他 Agent 在
         // 下一個任務開始前就能建立完整 peer occupancy snapshot；不能把
         // 「目前沒有移動任務」誤當成「空氣中沒有 peer」。
-        ego_swarm::Vector3 current{};
-        if (!has_terminal_hold_ &&
-            get_position_in_swarm_frame(own_state_, current))
+        if (!has_terminal_hold_ && current_position_available)
         {
             terminal_hold_position_ = current;
             terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
@@ -1629,6 +1757,19 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
 
+    // 無論目前是否已經進入 safety recovery，target 都必須保留為最後
+    // 的任務目標。Recovery 只能改變當下執行的安全軌跡，不能把任務
+    // 目標悄悄改成目前位置，否則煞停後永遠不會重新規劃原任務。
+    ego_swarm::Vector3 target{};
+    if (!get_current_target(target))
+    {
+        publish_emergency_brake(
+            planning_state, current, "target unavailable", now,
+            peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
     // Peer trajectory 是預測資料；實際飛機可能因 PX4 estimator 或控制
     // 延遲偏離宣告路徑，因此每個 planner tick 仍必須檢查 live WGS84
     // 位置。低於硬性碰撞距離立即煞停；進入額外 1 m 警戒帶且本機正
@@ -1650,19 +1791,46 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         std::max(
             LIVE_PEER_REACTION_BUFFER_M,
             stopping_distance_m + LIVE_PEER_REACTION_BUFFER_M);
+    const bool is_moving = std::isfinite(current_speed_mps) &&
+        current_speed_mps > 0.05;
+    const bool has_valid_active_route = has_active_plan_ &&
+        !emergency_brake_active_ && !waiting_for_replan_ &&
+        active_plan_.trajectory.is_valid();
     // 實際飛控位置與 AgentTrajectory 可能存在 tracking delay；進入反應
-    // 警戒帶就直接煞停，不能等到 live distance 已低於 3 m 才處置。
+    // 警戒帶且尚未有已驗證的 active route 才直接煞停，不能等到 live
+    // distance 已低於 3 m 才處置。已有 route 時，後面的 common validator
+    // 會用同一份 peer snapshot 檢查整條路徑；若此時僅因起飛／隊形的
+    // 初始間距落在 reaction buffer 內便煞停，永遠沒有機會執行已規劃
+    // 的水平繞行。
     if (!std::isfinite(live_peer_distance) ||
         live_peer_distance < collision_distance)
     {
+        // 舊 active route 已經不能再作為安全恢復路徑；保留 target，讓
+        // brake 完成後以最後任務目標重新進入 optimizer。若目前已在
+        // collision margin 內，先煞停／固定原高度仍是必要的 fail-closed
+        // 動作，不能發布一條從不安全起點穿越 peer 的假安全路徑。
+        if (!emergency_brake_active_)
+        {
+            invalidate_active_plan();
+        }
+        if (!is_moving)
+        {
+            (void)publish_waiting_hold(
+                current, target,
+                "optimized_no_feasible_horizontal_path; replan final target",
+                now, peer_data_valid);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
         publish_emergency_brake(
-            planning_state, current,
+            planning_state, target,
             "optimized_emergency_brake: live peer position inside collision margin", now,
             peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
         return;
     }
-    if (live_peer_distance < live_warning_distance)
+    if (is_moving && live_peer_distance < live_warning_distance &&
+        !has_valid_active_route && !has_goal_ && !has_formation_)
     {
         publish_emergency_brake(
             planning_state, current,
@@ -1702,16 +1870,6 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 "Formation membership change pending; holding safely",
                 &terminal_hold_plan_, true, peer_data_valid, now);
         }
-        (void)peer_trajectories_.prune(now_s);
-        return;
-    }
-
-    ego_swarm::Vector3 target{};
-    if (!get_current_target(target))
-    {
-        publish_emergency_brake(
-            planning_state, current, "target unavailable", now,
-            peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
         return;
     }
@@ -2034,6 +2192,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     active_plan_start_time_ = accepted_start_time;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
+    emergency_brake_active_ = false;
     waiting_for_replan_ = false;
     waiting_retry_time_s_ = 0.0;
     formation_initial_plan_pending_ = false;
@@ -2320,6 +2479,7 @@ ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
 void EgoSwarmPlannerNode::invalidate_active_plan()
 {
     has_active_plan_ = false;
+    emergency_brake_active_ = false;
     waiting_for_replan_ = false;
     waiting_retry_time_s_ = 0.0;
     active_plan_ = ego_swarm::PlannerResult{};
@@ -2541,8 +2701,43 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     // 狀態；若保留舊 hold，後續 heartbeat 可能帶著較小 trajectory ID
     // 覆寫/回退 PeerTrajectoryTable，讓其他 Agent 永遠等不到新的
     // predecessor 狀態。煞停完成並重新到位後會以新 ID 建立 hold。
+    if (emergency_brake_active_ && has_active_plan_ &&
+        active_plan_.trajectory.is_valid())
+    {
+        const double elapsed_s = (now - active_plan_start_time_).seconds();
+        if (std::isfinite(elapsed_s) && elapsed_s >= 0.0 &&
+            elapsed_s <= active_plan_.trajectory.duration_s() +
+                TRAJECTORY_DURATION_ABSOLUTE_EPSILON_S)
+        {
+            publish_plan(
+                active_plan_, state.position, now, active_plan_start_time_,
+                active_plan_trajectory_id_);
+            publish_status(
+                PLANNER_STATE_HOLD, "Emergency brake in progress",
+                &active_plan_, true, peer_data_valid, now);
+            return true;
+        }
+        emergency_brake_active_ = false;
+        const double speed_mps = std::sqrt(
+            ego_swarm::squared_norm(state.velocity));
+        if (std::isfinite(speed_mps) && speed_mps <= 0.05)
+        {
+            return publish_waiting_hold(
+                state.position, active_target,
+                "optimized_no_feasible_horizontal_path; brake complete",
+                now, peer_data_valid);
+        }
+    }
+
     clear_terminal_hold();
-    const auto brake_result = emergency_brake_planner_.plan(state);
+    const bool fixed_z_path = preserve_altitude_ ||
+        (has_formation_ && has_accepted_formation_epoch_ &&
+         formation_config_.type != ego_swarm::FormationType::VERT_LINEAR);
+    const ego_swarm::PathConstraint brake_path_constraint = fixed_z_path
+        ? ego_swarm::PathConstraint::FIXED_Z
+        : ego_swarm::PathConstraint::FREE_3D;
+    const auto brake_result = emergency_brake_planner_.plan(
+        state, brake_path_constraint);
     if (!brake_result.is_valid || !brake_result.has_finite_output())
     {
         RCLCPP_ERROR(
@@ -2560,6 +2755,7 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     active_plan_start_time_ = now;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
+    emergency_brake_active_ = true;
     waiting_for_replan_ = false;
     waiting_retry_time_s_ = 0.0;
     publish_plan(
@@ -2600,6 +2796,7 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
     active_plan_start_time_ = now;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
+    emergency_brake_active_ = false;
     waiting_for_replan_ = true;
     waiting_retry_time_s_ = now.seconds() + PEER_REPLAN_RETRY_DELAY_S;
     publish_plan(
@@ -2615,13 +2812,55 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     const auto parsed = utils::parse_command_string(command);
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
+        ego_swarm::Vector3 preserved_target{};
+        if (has_formation_ && get_formation_target_for_agent(
+                agent_index_, preserved_target))
+        {
+            goal_position_ = preserved_target;
+            has_goal_ = true;
+            has_position_target_ = true;
+        }
         has_formation_ = false;
-        has_goal_ = false;
         formation_initial_plan_pending_ = false;
         preserve_altitude_ = false;
         invalidate_active_plan();
         return;
     }
+
+    if (parsed.command == utils::AgentCommand::YAW)
+    {
+        if (!parsed.has_param || !std::isfinite(parsed.param_value))
+        {
+            return;
+        }
+        double base_yaw_rad = 0.0;
+        if (has_target_yaw_)
+        {
+            base_yaw_rad = target_yaw_rad_;
+        }
+        else if (!attitude_is_fresh() ||
+                 !ego_swarm::quaternion_to_ned_yaw(
+                     own_attitude_.q, base_yaw_rad))
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Rejecting YAW: no fresh attitude is available to initialize "
+                "the target yaw");
+            return;
+        }
+        double next_yaw_rad = 0.0;
+        if (!normalize_yaw_rad(
+                base_yaw_rad + parsed.param_value *
+                    ego_swarm::DEGREES_TO_RADIANS,
+                next_yaw_rad))
+        {
+            return;
+        }
+        target_yaw_rad_ = next_yaw_rad;
+        has_target_yaw_ = true;
+        return;
+    }
+
     if (!has_own_state_ || !update_swarm_frame())
     {
         RCLCPP_WARN(get_logger(),
@@ -2641,9 +2880,21 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         goal_position_ = ego_swarm::Vector3{
             parsed.param_value, parsed.param2, parsed.param3};
         has_goal_ = ego_swarm::is_finite_vector(goal_position_);
+        has_position_target_ = has_goal_;
         has_formation_ = false;
         formation_initial_plan_pending_ = false;
         preserve_altitude_ = false;
+        if (std::isfinite(parsed.param4))
+        {
+            double absolute_yaw_rad = 0.0;
+            if (normalize_yaw_rad(
+                    parsed.param4 * ego_swarm::DEGREES_TO_RADIANS,
+                    absolute_yaw_rad))
+            {
+                target_yaw_rad_ = absolute_yaw_rad;
+                has_target_yaw_ = true;
+            }
+        }
         invalidate_active_plan();
         return;
     }
@@ -2652,61 +2903,41 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     {
         return;
     }
-    goal_position_ = current;
+    ego_swarm::Vector3 command_base = current;
+    if (has_formation_)
+    {
+        if (!get_formation_target_for_agent(agent_index_, command_base))
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Rejecting relative MOVE: current formation target is invalid");
+            return;
+        }
+    }
+    else if (has_position_target_ &&
+             ego_swarm::is_finite_vector(goal_position_))
+    {
+        command_base = goal_position_;
+    }
+    goal_position_ = command_base;
     bool preserve_altitude = false;
     double forward_m = 0.0;
     double right_m = 0.0;
     switch (parsed.command)
     {
         case utils::AgentCommand::MOVE_FORWARD:
-            if (!attitude_is_fresh())
-            {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "Rejecting horizontal MOVE: attitude is missing, "
-                    "invalid, or older than %.2f s; holding current target",
-                    move_attitude_timeout_s_);
-                return;
-            }
             forward_m = parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_BACKWARD:
-            if (!attitude_is_fresh())
-            {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "Rejecting horizontal MOVE: attitude is missing, "
-                    "invalid, or older than %.2f s; holding current target",
-                    move_attitude_timeout_s_);
-                return;
-            }
             forward_m = -parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_LEFT:
-            if (!attitude_is_fresh())
-            {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "Rejecting horizontal MOVE: attitude is missing, "
-                    "invalid, or older than %.2f s; holding current target",
-                    move_attitude_timeout_s_);
-                return;
-            }
             right_m = -parsed.param_value;
             preserve_altitude = true;
             break;
         case utils::AgentCommand::MOVE_RIGHT:
-            if (!attitude_is_fresh())
-            {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "Rejecting horizontal MOVE: attitude is missing, "
-                    "invalid, or older than %.2f s; holding current target",
-                    move_attitude_timeout_s_);
-                return;
-            }
             right_m = parsed.param_value;
             preserve_altitude = true;
             break;
@@ -2721,23 +2952,36 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     }
     if (preserve_altitude)
     {
-        double yaw_rad = 0.0;
+        if (!has_target_yaw_)
+        {
+            if (!attitude_is_fresh() ||
+                !ego_swarm::quaternion_to_ned_yaw(
+                    own_attitude_.q, target_yaw_rad_))
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting horizontal MOVE: target yaw cannot be initialized "
+                    "from a fresh attitude");
+                return;
+            }
+            has_target_yaw_ = true;
+        }
         ego_swarm::Vector3 body_offset{};
-        if (!ego_swarm::quaternion_to_ned_yaw(own_attitude_.q, yaw_rad) ||
-            !ego_swarm::body_horizontal_offset_to_ned(
-                yaw_rad, forward_m, right_m, body_offset))
+        if (!ego_swarm::body_horizontal_offset_to_ned(
+                target_yaw_rad_, forward_m, right_m, body_offset))
         {
             RCLCPP_WARN(
                 get_logger(),
-                "Rejecting horizontal MOVE: attitude cannot produce finite "
-                "body-to-NED transform");
+                "Rejecting horizontal MOVE: target yaw cannot produce a "
+                "finite body-to-NED transform");
             return;
         }
-        // 這個 offset 只在命令 callback 計算一次；後續 yaw 變化不會
-        // 旋轉既有目標。
+        // 位移以保存的 target yaw 計算一次；後續實際 yaw 變化不會
+        // 旋轉既有目標，也不會改變下一個相對命令的累積基準。
         goal_position_ = ego_swarm::add_vectors(goal_position_, body_offset);
     }
     has_goal_ = ego_swarm::is_finite_vector(goal_position_);
+    has_position_target_ = has_goal_;
     has_formation_ = false;
     formation_initial_plan_pending_ = false;
     preserve_altitude_ = preserve_altitude;

@@ -46,9 +46,9 @@ inline bool quaternion_to_ned_yaw(
 }
 
 /**
- * @brief 以命令收到當下的機頭方向將 body 位移轉成 NED 位移。
+ * @brief 以保存的目標機頭方向將 body 位移轉成 NED 位移。
  *
- * @param yaw_rad 命令收到當下的固定 yaw
+ * @param yaw_rad 目前保存的 target yaw
  * @param forward_m body-forward 位移（公尺）
  * @param right_m body-right 位移（公尺）
  * @param[out] offset_ned 固定 local NED 位移

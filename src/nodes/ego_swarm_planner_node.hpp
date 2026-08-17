@@ -59,15 +59,17 @@ constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
 constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 2.0;
 constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 1.0;
 constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
-constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.0;
-constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.0;
-constexpr double DEFAULT_MAX_JERK_MPS3 = 2.0;
+constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.5;
+constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.5;
+constexpr double DEFAULT_MAX_JERK_MPS3 = 3.0;
 constexpr double DEFAULT_MOVE_ATTITUDE_TIMEOUT_S = 1.0;
 constexpr double DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M = 2.0;
 constexpr int DEFAULT_FORMATION_MEMBER_STABLE_SCAN_COUNT = 2;
 constexpr double FORMATION_PLAN_START_DELAY_S = 0.5;
 constexpr double PEER_REPLAN_RETRY_DELAY_S = 0.5;
-constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 20.0;
+// SITL 與實機 callback 負載下，central finite-difference 需要保留足夠
+// 的 wall-time；仍遠低於 10 Hz planner cycle，避免移動中反覆 timeout。
+constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 50.0;
 constexpr int DEFAULT_OPTIMIZER_MAX_ITERATIONS = 40;
 constexpr double DEFAULT_FORMATION_CROSSING_PENALTY_M = 10.0;
 constexpr double DEFAULT_RESERVATION_LEAD_TIME_S = 0.5;
@@ -248,12 +250,15 @@ private:
     ego_swarm::Vector3 previous_velocity_ned_{0.0, 0.0, 0.0};
     ego_swarm::VehiclePlanningState vehicle_motion_state_{};
     bool has_goal_{false};
+    /// 目標到達後仍保留最後的任務目標，供下一個相對命令累加。
+    bool has_position_target_{false};
     bool has_formation_{false};
     bool formation_command_pending_{false};
     bool formation_membership_change_pending_{false};
     bool formation_initial_plan_pending_{false};
     bool preserve_altitude_{false};
     bool has_active_plan_{false};
+    bool emergency_brake_active_{false};
     bool waiting_for_replan_{false};
     double waiting_retry_time_s_{0.0};
     bool has_terminal_hold_{false};
@@ -261,6 +266,9 @@ private:
     taiphoon_agent::msg::AgentAttitude own_attitude_{};
     bool has_own_attitude_{false};
     std::chrono::steady_clock::time_point attitude_last_arrival_{};
+    /// 累積相對命令使用的目標 yaw；未設定前以第一筆有效 attitude 初始化。
+    bool has_target_yaw_{false};
+    double target_yaw_rad_{0.0};
     ego_swarm::Vector3 goal_position_{0.0, 0.0, 0.0};
     ego_swarm::PlannerResult active_plan_{};
     ego_swarm::Vector3 active_plan_target_{0.0, 0.0, 0.0};
@@ -275,6 +283,8 @@ private:
     perception::RawPointObstacleMap obstacle_map_{};
     ego_swarm::FormationConfig formation_config_{};
     ego_swarm::Vector3 formation_center_{0.0, 0.0, 0.0};
+    /// 是否已有可供後續編隊命令沿用的 formation center target。
+    bool has_formation_center_target_{false};
     std::map<int, std::size_t> formation_assignment_{};
 
     bool has_accepted_formation_epoch_{false};

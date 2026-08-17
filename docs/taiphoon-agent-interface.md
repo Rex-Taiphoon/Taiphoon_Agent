@@ -110,11 +110,11 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
 | `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
-| `max_velocity_m_s` | `double` | `2.0` | duration 計算使用的最大速度 |
-| `max_acceleration_m_s2` | `double` | `1.0` | duration 計算使用的最大加速度 |
-| `max_velocity_mps` | `double` | `2.0` | Phase 4 safety validator／emergency brake 的最大速度；canonical 名稱 |
-| `max_acceleration_mps2` | `double` | `1.0` | Phase 4 safety validator／emergency brake 的最大加速度 |
-| `max_jerk_mps3` | `double` | `2.0` | Phase 4 safety validator／emergency brake 的最大 jerk |
+| `max_velocity_m_s` | `double` | `2.5` | duration 計算使用的最大速度 |
+| `max_acceleration_m_s2` | `double` | `1.5` | duration 計算使用的最大加速度 |
+| `max_velocity_mps` | `double` | `2.5` | Phase 4 safety validator／emergency brake 的最大速度；canonical 名稱 |
+| `max_acceleration_mps2` | `double` | `1.5` | Phase 4 safety validator／emergency brake 的最大加速度 |
+| `max_jerk_mps3` | `double` | `3.0` | Phase 4 safety validator／emergency brake 的最大 jerk |
 | `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 本機 Home 建立的 global-to-local NED 到達容許誤差 |
@@ -123,7 +123,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 | `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
-| `optimizer_time_budget_ms` | `double` | `20.0` | optimized backend 單次 wall-time budget |
+| `optimizer_time_budget_ms` | `double` | `50.0` | optimized backend 單次 wall-time budget |
 | `formation_crossing_penalty_m` | `double` | `10.0` | assignment 水平 crossing 等價成本 |
 | `reservation_lead_time_s` | `double` | `0.5` | future trajectory reservation 最短提前時間 |
 | `reservation_step_s` | `double` | `0.5` | reservation start time 搜尋步進 |
@@ -429,8 +429,10 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
   local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
-- 水平 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT` 使用命令收到當下的 AgentAttitude yaw；
-  attitude 缺失、非有限或超過 `move_attitude_timeout_s` 時拒絕水平 MOVE 並保持目前目標。
+- `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的 mission goal position 累加；
+  水平位移使用保存的 target yaw。只有尚未建立 target yaw 的第一個水平命令需要新鮮
+  AgentAttitude；後續命令不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
+- `YAW` 的相對角度累加到保存的 target yaw；`MOVE_POINT` 的絕對 yaw 會重設 target yaw。
 - 編隊 assignment 使用 FormationEpoch center 建立的 canonical NED、距離加換槽 penalty
   的 deterministic Hungarian；成員 discovery 連續兩次穩定後自動重編隊。
 - 編隊 transition 每次只釋放一台安全前序 Agent；路徑優先使用直線，受阻時只允許

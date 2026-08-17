@@ -128,11 +128,14 @@ TEST(PeerMatcherTest, IsAgentNodeMatch)
     // 相容模式：/fmu<N>/basic_controller_node（單容器 launch 部署）
     EXPECT_TRUE(PeerMatcher::is_agent_node("/fmu1/basic_controller_node"));
     EXPECT_TRUE(PeerMatcher::is_agent_node("/fmu3/basic_controller_node"));
+    // Docker SITL：planner 與 PX4 namespace 共用 /fmu<N>/ 前綴
+    EXPECT_TRUE(PeerMatcher::is_agent_node("/fmu1/ego_swarm_planner"));
+    EXPECT_TRUE(PeerMatcher::is_agent_node("/fmu3/ego_swarm_planner"));
 }
 
 TEST(PeerMatcherTest, IsAgentNodeNoMatch)
 {
-    // 相容模式只認 basic_controller_node，不將其他 /fmu<N>/ 節點視為 agent
+    // 相容模式只認 agent planner/controller，不將其他 /fmu<N>/ 節點視為 agent
     EXPECT_FALSE(PeerMatcher::is_agent_node("/fmu3/mission_planner"));
     EXPECT_FALSE(PeerMatcher::is_agent_node("/fmu10/some_node"));
     // 必須是 "_agent/" 接續（不可為其他後綴）
@@ -150,6 +153,7 @@ TEST(PeerMatcherTest, IsAgentNodeNoMatch)
 TEST(PeerMatcherTest, ExtractAgentIndexFromNode)
 {
     EXPECT_EQ(PeerMatcher::extract_agent_index_from_node("/fmu1/basic_controller_node"), 1);
+    EXPECT_EQ(PeerMatcher::extract_agent_index_from_node("/fmu2/ego_swarm_planner"), 2);
     EXPECT_EQ(PeerMatcher::extract_agent_index_from_node("/fmu2_agent/mission_planner"), 2);
     EXPECT_EQ(PeerMatcher::extract_agent_index_from_node("/fmu10_agent/trajectory_controller"), 10);
     EXPECT_EQ(PeerMatcher::extract_agent_index_from_node("/fmu3_agent/basic_controller_node"), 3);

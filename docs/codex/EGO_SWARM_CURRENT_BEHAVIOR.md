@@ -91,7 +91,7 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
   不在計算期間重新查詢 mutable peer table。
 - `planner_backend` 預設為 `optimized` 且是唯一合法 runtime backend。Optimizer 使用
   單一直線 seed 的 continuous B-spline projected-gradient solver；只最佳化中間 control
-  points，水平搜尋範圍為內部 8 m，並以 `FIXED_Z`／`LINEAR_Z` projection 限制高度。
+  points，水平搜尋範圍為內部 10 m，並以 `FIXED_Z`／`LINEAR_Z` projection 限制高度。
 - Objective 分離為 terminal goal、smoothness、p/v/a/j excess、obstacle clearance
   barrier 與 time-aligned peer separation barrier；solver 具 central finite difference、
   backtracking、finite-value check、iteration／wall-time budget。非 `CONVERGED` 或
@@ -99,6 +99,9 @@ AgentState / GPS / mission intent / PointCloud2 / WGS84 peer AgentTrajectory
 - optimized 失敗時不呼叫 deterministic fallback；靜止／低速 Agent 立即建立固定位置
   HOLD 並週期重試，移動中 Agent 使用 `EmergencyBrakePlanner`。所有可發布的 optimized
   trajectory 仍需通過同一個 `ContinuousSafetyValidator`。
+- planner／validator 的 dynamics gate 預設上限為 velocity 2.5 m/s、acceleration
+  1.5 m/s²、jerk 3.0 m/s³；optimizer wall-time budget 為 50 ms，以降低長距離水平
+  繞行因動力學檢查或 finite-difference iteration 不足而 infeasible 的機率。
 - Formation assignment 在 Hungarian 後加入 deterministic pairwise crossing refinement。
   Reservation 以 future `AgentTrajectory.start_time` 表示，不新增 reservation topic；
   `FormationConvergenceEvaluator` 只產生診斷衍生狀態，不引入新的 Formation FSM。

@@ -11,7 +11,7 @@
 | 3 B-Spline p/v/a/j + PX4 | Accepted | | Docker: 174 tests passed | 四機 SITL 基本鏈路與非零 p/v/a feed-forward smoke passed | 人類開發者已確認驗證完成；未提前進入 Phase 4 |
 | 4 Dynamic Safety + Brake | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 190 tests passed | 四機 Agent/PX4 quick_takeoff、六方向移動、編隊與 peer safety smoke passed | WGS84 transport、receiver-local NED Adapter、ContinuousSafetyValidator、EmergencyBrakePlanner 與 terminal hold heartbeat 已實作；2026-08-14 人類開發者確認基本指令與動態安全驗證完成 |
 | 5 Safe Formation | Accepted | EGO-Swarm-dev (uncommitted) | Docker: 209 tests passed | 四機 SITL：無衝突時可並行規劃；衝突時局部等待／重規劃；fmu4 Agent 失效後 sequence 2 自動重編為 `[1,2,3]`，恢復後 sequence 3 納回四機 | 水平路線、時間／Agent ID 仲裁、無額外上下繞行、單調 trajectory ID、Agent failure recovery 已驗證；2026-08-14 人類開發者確認編隊功能驗證完成 |
-| 6 Optimized EGO Backend | In Progress | | Docker: 226 tests passed；optimized-only SITL 的 Forward 40 smoke 通過，四機水平編隊長時間安全驗證仍待修正 | optimized-only runtime、expanded horizontal search、priority occupancy hardening 與 fail-closed HOLD／brake 已實作 | deterministic 不再作 runtime fallback；3 m hard peer distance 維持；Forward 40 中曾反覆觸發 live peer warning brake 後恢復；Hori transition 曾觀察到實測距離低於 3 m；human acceptance pending |
+| 6 Optimized EGO Backend | Accepted | | Docker: 237 tests passed；兩項 optimized-only 四機 SITL 避障驗收通過 | optimized-only runtime、10 m internal horizontal search、priority occupancy hardening、長距離 smoothstep seed、dynamics gate 2.5/1.5/3.0 與 fail-closed HOLD／brake 已實作 | deterministic 不再作 runtime fallback；3 m hard peer distance 維持；功能 1／2 均符合機間距、固定高度與 20 秒內到位條件；2026-08-17 人類開發者確認 Phase 6 修改與驗證完成 |
 | 7 Topological Initial Guesses | Not Started | | | | |
 | 8 Multi-PX4 SITL Validation | Not Started | | | | |
 | 9 Real Sensor Integration | Not Started | | | | |
@@ -159,6 +159,24 @@ Accepted
 - Phase 6 pure C++ tests 已涵蓋 point obstacle lateral offset、固定／線性 Z、NaN／
   timeout／iteration limit／divergence、optimized failure fail-closed、reservation、assignment crossing
   refinement 與 convergence 條件；Phase 7 維持 `Not Started`，human acceptance pending。
+
+## Phase 6 Acceptance Verification Record（2026-08-17，最終重測）
+
+- Docker 內重新建置 `taiphoon_agent`，並完成完整套件測試：`237 tests, 0 errors, 0 failures, 0 skipped`。
+  `PlannerConfig`／launch／compose／entrypoint 的 dynamics gate 與 optimizer budget 已同步為
+  `max velocity=2.5 m/s`、`max acceleration=1.5 m/s²`、`max jerk=3.0 m/s³`、`50 ms`；
+  基本命令 parser 針對性回歸測試通過。
+- 功能 1：依序執行四機 `quick_takeoff`、UAV1 `YAW 90`、UAV1 `MOVE_FORWARD 30`，等待
+  terminal hold，再執行 `MOVE_BACKWARD 30`。前進在 `17.402 s` 到達 `29.278 m` 監控門檻，
+  後退在 `16.972 s` 到達 `29.283 m`；全程最小機間距 `3.755 m`，低於 3 m 的最長連續時間
+  `0 s`，兩段 active trajectory 的 Z span 均為 `0 m`。
+- 功能 2：依序執行四機 `quick_takeoff`、`FORMATION_CIRCLE 5 10`、等待全員到位、
+  `FORMATION_CANCEL`、UAV1（不轉 YAW）`MOVE_FORWARD 5`、`MOVE_RIGHT 20`。前進在
+  `5.053 s` 到位；右移在 `15.204 s` 到位並移動 `19.378 m`；全程最小機間距 `3.664 m`，
+  低於 3 m 的最長連續時間 `0 s`，兩段 active trajectory 的 Z span 均為 `0 m`。
+- SITL 驗證期間未觀察到垂直繞行；移動段由 optimized backend 直接產生並通過 common
+  safety validator。測試完成後已停止 PX4 SITL 與 Agent 容器。
+  Phase 7 維持 `Not Started`；2026-08-17 人類開發者確認 Phase 6 修改與驗證完成，狀態更新為 `Accepted`。
 
 ---
 

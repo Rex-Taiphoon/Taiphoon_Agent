@@ -60,9 +60,12 @@ public:
     /**
      * @brief 從目前位置、速度、加速度產生 braking trajectory
      * @param state 單一 planner cycle 的自身狀態
+     * @param path_constraint 水平任務的高度約束
      * @return 有限且可取樣的 emergency trajectory；輸入無效時回傳無效結果
      */
-    PlannerResult plan(const VehiclePlanningState& state) const
+    PlannerResult plan(
+        const VehiclePlanningState& state,
+        const PathConstraint path_constraint = PathConstraint::FREE_3D) const
     {
         PlannerResult result;
         if (!is_valid_config(config_) || !state.is_finite())
@@ -70,14 +73,24 @@ public:
             return result;
         }
 
-        const double speed_mps = vector_norm(state.velocity);
-        const Vector3 effective_acceleration = braking_acceleration(state);
+        VehiclePlanningState constrained_state = state;
+        if (path_constraint == PathConstraint::FIXED_Z)
+        {
+            // 水平任務即使收到起飛殘餘的垂直速度，也不能讓 emergency
+            // trajectory 以升降方式煞停，否則安全處置本身會違反固定 Z。
+            constrained_state.velocity.at(2) = 0.0;
+            constrained_state.acceleration.at(2) = 0.0;
+        }
+
+        const double speed_mps = vector_norm(constrained_state.velocity);
+        const Vector3 effective_acceleration = braking_acceleration(
+            constrained_state);
         const double acceleration_mps2 = vector_norm(effective_acceleration);
         constexpr double STATIONARY_SPEED_EPSILON_MPS = 0.05;
         if (speed_mps <= STATIONARY_SPEED_EPSILON_MPS)
         {
             const std::vector<Vector3> hold_points(
-                config_.control_point_count, state.position);
+                config_.control_point_count, constrained_state.position);
             result.trajectory = BsplineTrajectory(
                 hold_points, config_.knot_interval_s);
             result.is_valid = result.trajectory.is_valid();
@@ -94,7 +107,7 @@ public:
         for (std::size_t attempt = 0U;
              attempt < MAX_DURATION_ATTEMPTS; ++attempt)
         {
-            VehiclePlanningState effective_state = state;
+            VehiclePlanningState effective_state = constrained_state;
             effective_state.acceleration = effective_acceleration;
             const BsplineTrajectory candidate = build_candidate(
                 effective_state, duration_s);

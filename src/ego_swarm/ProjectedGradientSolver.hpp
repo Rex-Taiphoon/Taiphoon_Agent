@@ -73,6 +73,11 @@ struct ProjectedGradientSolverConfig
     double initial_step_m{0.20};
     double minimum_step_m{0.01};
     double convergence_tolerance{1.0e-3};
+    // Optional domain hard-clearance hints used only to recognize that a
+    // bounded side-step already satisfies the final safety geometry. The
+    // common safety validator remains the authoritative final check.
+    double hard_peer_distance_m{3.0};
+    double hard_obstacle_clearance_m{1.0};
 };
 
 /// solver 結果；尚未經 safety validator 驗證，不可直接發布。

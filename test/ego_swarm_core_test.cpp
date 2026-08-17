@@ -271,6 +271,19 @@ TEST(CommandParserTest, ParsesVerticalFormationSpacingAsSingleParameter)
     EXPECT_FLOAT_EQ(parsed.param_value, 3.0F);
 }
 
+TEST(CommandParserTest, ParsesVerticalMovementAliases)
+{
+    const auto up = taiphoon::utils::parse_command_string("UP 1");
+    EXPECT_EQ(up.command, taiphoon::utils::AgentCommand::MOVE_UP);
+    EXPECT_TRUE(up.has_param);
+    EXPECT_FLOAT_EQ(up.param_value, 1.0F);
+
+    const auto down = taiphoon::utils::parse_command_string("DOWN 2");
+    EXPECT_EQ(down.command, taiphoon::utils::AgentCommand::MOVE_DOWN);
+    EXPECT_TRUE(down.has_param);
+    EXPECT_FLOAT_EQ(down.param_value, 2.0F);
+}
+
 TEST(CommandParserTest, ParsesCircleAndHorizontalFormationParameters)
 {
     const auto circle = taiphoon::utils::parse_command_string(

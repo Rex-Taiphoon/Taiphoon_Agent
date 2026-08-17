@@ -37,6 +37,20 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         return std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - begin).count();
     };
+    const auto is_hard_clear = [&config](
+        const OptimizationEvaluation& evaluation)
+    {
+        const bool peer_clear = evaluation.minimum_peer_distance_m <=
+                EGO_SWARM_EPSILON_M ||
+            evaluation.minimum_peer_distance_m +
+                config.convergence_tolerance >= config.hard_peer_distance_m;
+        const bool obstacle_clear = evaluation.obstacle_cost <=
+                config.convergence_tolerance ||
+            evaluation.minimum_obstacle_distance_m +
+                config.convergence_tolerance >=
+                config.hard_obstacle_clearance_m;
+        return peer_clear && obstacle_clear;
+    };
 
     if (elapsed_ms() >= config.time_budget_ms)
     {
@@ -70,6 +84,203 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
     {
         improved_points = base;
         improved_evaluation = base_evaluation;
+
+        // Prefer one smooth corridor-shaped translation for a long peer
+        // line.  The first/last interior points stay on the direct seed so
+        // endpoint velocity remains bounded; the middle points carry the
+        // lateral clearance.  This is still a projected deformation of the
+        // single seed, not an additional topology.
+        if (base.size() >= 6U)
+        {
+            const double horizontal_delta_x =
+                base.back().at(0) - base.front().at(0);
+            const double horizontal_delta_y =
+                base.back().at(1) - base.front().at(1);
+            const std::size_t forward_axis =
+                std::abs(horizontal_delta_y) >=
+                    std::abs(horizontal_delta_x) ? 1U : 0U;
+            const std::size_t lateral_axis = 1U - forward_axis;
+            const double forward_delta =
+                base.back().at(forward_axis) -
+                base.front().at(forward_axis);
+            const double lateral_delta =
+                base.back().at(lateral_axis) -
+                base.front().at(lateral_axis);
+            // Body-frame MOVE after a yaw can leave a small lateral residual
+            // in the global NED goal.  Treat a mostly-forward route as the
+            // same corridor case; otherwise the generic translation probe
+            // may find a geometrically clear but dynamically sharp detour
+            // before this smooth bounded candidate is considered.
+            const double lateral_residual_tolerance = std::max(
+                1.0, 0.1 * std::abs(forward_delta));
+            if (std::abs(forward_delta) > EGO_SWARM_EPSILON_M &&
+                std::abs(lateral_delta) <= lateral_residual_tolerance)
+            {
+                const bool long_forward_route =
+                    std::abs(forward_delta) > 25.0;
+                const double corridor_step = long_forward_route
+                    ? std::max(step, 10.0)
+                    : std::max(step, 8.0);
+                for (const double direction : {-1.0, 1.0})
+                {
+                    if (elapsed_ms() >= config.time_budget_ms)
+                    {
+                        return false;
+                    }
+                    std::vector<Vector3> candidate = base;
+                    for (std::size_t point_index = 1U;
+                         point_index + 1U < candidate.size(); ++point_index)
+                    {
+                        const double ratio = static_cast<double>(point_index) /
+                            static_cast<double>(candidate.size() - 1U);
+                        const double smooth_ratio = ratio * ratio *
+                            (3.0 - 2.0 * ratio);
+                        // Raise the lateral offset early enough for a peer
+                        // that is already close to the current position.
+                        // The previous sin^2 profile left the first interior
+                        // point near the centerline, so a valid route could
+                        // still pass below 3 m before reaching the side.
+                        double lateral_profile = long_forward_route
+                            ? 0.65
+                            : 0.85;
+                        if (point_index == 1U ||
+                            point_index + 2U == candidate.size())
+                        {
+                            // Keep the endpoint derivative within the
+                            // velocity bound while moving sideways early.
+                            // The forward component is non-zero as well;
+                            // long routes need a smaller lateral start so
+                            // the combined endpoint velocity stays below
+                            // the hard limit. Preserve the established
+                            // profile for shorter obstacle transitions.
+                            lateral_profile = long_forward_route ? 0.25 : 0.40;
+                        }
+                        candidate.at(point_index).at(forward_axis) =
+                            base.front().at(forward_axis) +
+                            forward_delta * smooth_ratio;
+                        candidate.at(point_index).at(lateral_axis) =
+                            base.front().at(lateral_axis) + direction *
+                            corridor_step * lateral_profile;
+                    }
+                    if (!projection(candidate) ||
+                        !is_finite_control_points(candidate))
+                    {
+                        continue;
+                    }
+                    const OptimizationEvaluation evaluation =
+                        objective.evaluate(candidate);
+                    if (evaluation.is_valid &&
+                        is_finite(evaluation.total_cost) &&
+                        base_evaluation.total_cost - evaluation.total_cost >
+                            config.convergence_tolerance)
+                    {
+                        improved_points = candidate;
+                        improved_evaluation = evaluation;
+                        return true;
+                    }
+                }
+            }
+
+            const double corridor_step = std::max(step, 8.0);
+            for (const std::size_t axis : {0U, 1U})
+            {
+                for (const double direction : {-1.0, 1.0})
+                {
+                    if (elapsed_ms() >= config.time_budget_ms)
+                    {
+                        return false;
+                    }
+                    std::vector<Vector3> candidate = base;
+                    for (std::size_t point_index = 1U;
+                         point_index + 1U < candidate.size(); ++point_index)
+                    {
+                        double profile = 1.0;
+                        if (point_index == 1U ||
+                            point_index + 2U == candidate.size())
+                        {
+                            profile = 0.0;
+                        }
+                        else if (point_index == 2U || point_index == 3U ||
+                                 point_index + 3U == candidate.size() ||
+                                 point_index + 4U == candidate.size())
+                        {
+                            profile = 0.75;
+                        }
+                        candidate.at(point_index).at(axis) +=
+                            direction * corridor_step * profile;
+                    }
+                    if (!projection(candidate) ||
+                        !is_finite_control_points(candidate))
+                    {
+                        continue;
+                    }
+                    const OptimizationEvaluation evaluation =
+                        objective.evaluate(candidate);
+                    if (evaluation.is_valid &&
+                        is_finite(evaluation.total_cost) &&
+                        base_evaluation.total_cost - evaluation.total_cost >
+                            config.convergence_tolerance)
+                    {
+                        improved_points = candidate;
+                        improved_evaluation = evaluation;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Try a few bounded horizontal translations before per-control-point
+        // coordinate descent.  This is important when a symmetric barrier
+        // makes the lateral finite-difference gradient zero: a single large
+        // continuous side-step can leave the centerline in one evaluation,
+        // while many small point-wise steps would consume the 20 ms budget.
+        for (const double coarse_step : {8.0, 6.0, 4.5, 4.0, 2.0, 1.0, 0.5})
+        {
+            const double candidate_step = std::max(step, coarse_step);
+            for (const std::size_t axis : {0U, 1U})
+            {
+                for (const double direction : {-1.0, 1.0})
+                {
+                    if (elapsed_ms() >= config.time_budget_ms)
+                    {
+                        return false;
+                    }
+                    std::vector<Vector3> candidate = base;
+                    for (std::size_t point_index = 1U;
+                         point_index + 1U < candidate.size(); ++point_index)
+                    {
+                        const double normalized_index =
+                            static_cast<double>(point_index) /
+                            static_cast<double>(candidate.size() - 1U);
+                        const double sine_profile = std::sin(
+                            3.14159265358979323846 * normalized_index);
+                        const double sine_squared = sine_profile *
+                            sine_profile;
+                        const double smooth_profile = sine_squared *
+                            sine_squared;
+                        candidate.at(point_index).at(axis) +=
+                            direction * candidate_step * smooth_profile;
+                    }
+                    if (!projection(candidate) ||
+                        !is_finite_control_points(candidate))
+                    {
+                        continue;
+                    }
+                    const OptimizationEvaluation evaluation =
+                        objective.evaluate(candidate);
+                    if (evaluation.is_valid &&
+                        is_finite(evaluation.total_cost) &&
+                        base_evaluation.total_cost - evaluation.total_cost >
+                            config.convergence_tolerance)
+                    {
+                        improved_points = candidate;
+                        improved_evaluation = evaluation;
+                        return true;
+                    }
+                }
+            }
+        }
+
         for (std::size_t point_index = 1U;
              point_index + 1U < base.size(); ++point_index)
         {
@@ -102,41 +313,6 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
                 }
             }
         }
-        // 對稱障礙群可能讓單一 control point 的有限差分方向都沒有
-        // 改善；此時沿同一水平軸同步推移中間控制點，仍是同一個
-        // continuous seed 的 bounded line-search，不是新增 topology seed。
-        for (std::size_t axis : {0U, 1U, 2U})
-        {
-            for (const double direction : {-1.0, 1.0})
-            {
-                if (elapsed_ms() >= config.time_budget_ms)
-                {
-                    return false;
-                }
-                std::vector<Vector3> candidate = base;
-                for (std::size_t point_index = 1U;
-                     point_index + 1U < candidate.size(); ++point_index)
-                {
-                    candidate.at(point_index).at(axis) += direction * step;
-                }
-                if (!projection(candidate) ||
-                    !is_finite_control_points(candidate))
-                {
-                    continue;
-                }
-                const OptimizationEvaluation evaluation =
-                    objective.evaluate(candidate);
-                if (evaluation.is_valid &&
-                    is_finite(evaluation.total_cost) &&
-                    base_evaluation.total_cost - evaluation.total_cost >
-                        config.convergence_tolerance)
-                {
-                    improved_points = candidate;
-                    improved_evaluation = evaluation;
-                    return true;
-                }
-            }
-        }
         return false;
     };
     for (int iteration = 0; iteration < config.max_iterations; ++iteration)
@@ -149,6 +325,50 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
             result.is_valid = true;
             result.termination = SolverTerminationReason::TIMEOUT;
             return result;
+        }
+
+        // Resolve a symmetric peer-barrier stationary point before applying
+        // the normalized finite-difference gradient.  Otherwise tiny
+        // numerical asymmetries can move the seed toward a sharp, dynamic-
+        // infeasible corner before the horizontal escape is considered.
+        if (current_evaluation.peer_cost >
+            config.convergence_tolerance)
+        {
+            std::vector<Vector3> side_candidate;
+            OptimizationEvaluation side_evaluation;
+            if (find_coordinate_improvement(
+                    current, current_evaluation, step_m,
+                    side_candidate, side_evaluation))
+            {
+                if (is_hard_clear(side_evaluation))
+                {
+                    result.control_points = side_candidate;
+                    result.evaluation = side_evaluation;
+                    result.is_valid = true;
+                    result.termination =
+                        SolverTerminationReason::CONVERGED;
+                    return result;
+                }
+                if (side_evaluation.total_cost <
+                    current_evaluation.total_cost)
+                {
+                    current = side_candidate;
+                    current_evaluation = side_evaluation;
+                    continue;
+                }
+            }
+            // 已經通過 hard clearance 的 seed 即使仍有少量 soft cost，
+            // 也不應因 finite-difference budget 耗盡而回報 timeout。
+            // side probe 沒有找到更低成本候選時，保留這條可交給共同
+            // safety validator 的可行路徑。
+            if (is_hard_clear(current_evaluation))
+            {
+                result.control_points = current;
+                result.evaluation = current_evaluation;
+                result.is_valid = true;
+                result.termination = SolverTerminationReason::CONVERGED;
+                return result;
+            }
         }
 
         std::vector<Vector3> gradient(
@@ -173,6 +393,19 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
                     result.termination =
                         SolverTerminationReason::NONFINITE_GRADIENT;
                     return result;
+                }
+
+                // Projection 可能把某個自由度固定住（例如 FIXED_Z
+                // 或 LINEAR_Z）。若正負 finite-difference 擾動在投影
+                // 後完全相同，該軸的梯度必為零；跳過 objective 評估，
+                // 把有限的 planner budget 留給真正可移動的水平軸。
+                if (std::abs(
+                        plus.at(point_index).at(axis) -
+                        minus.at(point_index).at(axis)) <=
+                    config.convergence_tolerance)
+                {
+                    gradient.at(point_index).at(axis) = 0.0;
+                    continue;
                 }
 
                 const OptimizationEvaluation plus_evaluation =
@@ -348,8 +581,40 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
             candidate_evaluation.total_cost;
         if (improvement > config.convergence_tolerance)
         {
-            current = candidate;
-            current_evaluation = candidate_evaluation;
+            // A peer barrier can improve along the path direction while its
+            // lateral gradient remains exactly zero on a symmetric center
+            // line.  Always give the bounded horizontal coordinate escape a
+            // chance while peer cost remains active, then keep whichever
+            // continuous candidate has the lower objective cost.
+            std::vector<Vector3> side_candidate;
+            OptimizationEvaluation side_evaluation;
+            const bool has_side_improvement =
+                current_evaluation.peer_cost >
+                    config.convergence_tolerance &&
+                find_coordinate_improvement(
+                    current, current_evaluation, step_m,
+                    side_candidate, side_evaluation);
+            if (has_side_improvement &&
+                is_hard_clear(side_evaluation))
+            {
+                result.control_points = side_candidate;
+                result.evaluation = side_evaluation;
+                result.is_valid = true;
+                result.termination = SolverTerminationReason::CONVERGED;
+                return result;
+            }
+            if (has_side_improvement &&
+                side_evaluation.total_cost <
+                    candidate_evaluation.total_cost)
+            {
+                current = side_candidate;
+                current_evaluation = side_evaluation;
+            }
+            else
+            {
+                current = candidate;
+                current_evaluation = candidate_evaluation;
+            }
             step_m = std::min(config.initial_step_m, step_m * 1.1);
             continue;
         }
@@ -405,7 +670,11 @@ bool ProjectedGradientSolver::is_valid_config(
            config.minimum_step_m > EGO_SWARM_EPSILON_M &&
            config.initial_step_m >= config.minimum_step_m &&
            is_finite(config.convergence_tolerance) &&
-           config.convergence_tolerance > EGO_SWARM_EPSILON_M;
+           config.convergence_tolerance > EGO_SWARM_EPSILON_M &&
+           is_finite(config.hard_peer_distance_m) &&
+           config.hard_peer_distance_m >= 0.0 &&
+           is_finite(config.hard_obstacle_clearance_m) &&
+           config.hard_obstacle_clearance_m >= 0.0;
 }
 
 bool ProjectedGradientSolver::is_finite_control_points(
