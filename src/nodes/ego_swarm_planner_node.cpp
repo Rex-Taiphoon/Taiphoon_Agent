@@ -2039,9 +2039,37 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         planning_state.position = current;
     }
 
-    // Step 5 先明確建立兩種語意；Local Goal 接入前，Planning Target
-    // 與 Final Target 相同。後續 segmented planning 只會替換前者。
-    const ego_swarm::Vector3 planning_target = final_target;
+    const auto planning_target_result = ego_swarm::select_planning_target(
+        planner_feature_flags_.enable_local_goal_planning,
+        current,
+        final_target,
+        path_constraint,
+        ego_swarm::LocalGoalConfig{
+            planner_feature_flags_.local_goal_horizon_m});
+    if (!planning_target_result.is_valid)
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "Local Goal selection failed; fail-closed hold/brake");
+        const double speed_mps = std::sqrt(
+            ego_swarm::squared_norm(planning_state.velocity));
+        if (std::isfinite(speed_mps) && speed_mps <= 0.2)
+        {
+            (void)publish_waiting_hold(
+                current, final_target,
+                "local_goal_selection_failed", now, peer_data_valid);
+        }
+        else
+        {
+            publish_emergency_brake(
+                planning_state, final_target,
+                "optimized_emergency_brake: local_goal_selection_failed",
+                now, peer_data_valid);
+        }
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+    const ego_swarm::Vector3 planning_target = planning_target_result.goal;
 
     // 等待中的固定位置路線只保留短時間，讓衝突中的 Agent 有機會
     // 發布較早路線或新的水平路線；不把等待轉成永久 hold。

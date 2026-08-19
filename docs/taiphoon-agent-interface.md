@@ -87,6 +87,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 **內部組件**：
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
 - `FormationSlotPlanner`：虛擬編隊槽位計算
+- `LocalGoalSelector`／`PlanningTargetSelector`：Local Goal 開啟時依 Final Target、
+  PathConstraint 與 horizon 產生本輪 Planning Target；功能關閉時直接保留 Final Target
 - `Planner target semantics`：明確區分任務 `Final Target`、本輪 `Planning Target`、
   目前 active segment 的 `active_plan_target_` 與其所屬任務的
   `active_plan_final_target_`；到達判斷、terminal hold 與 recovery 只使用 `Final Target`

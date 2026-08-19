@@ -258,6 +258,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Planning Target 與 Local Goal feature gate 純邏輯測試
+  ament_add_gtest(test_planning_target_selector
+    test/planning_target_selector_test.cpp
+  )
+
+  target_include_directories(test_planning_target_selector PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Planner Feature Flags 純邏輯測試
   ament_add_gtest(test_planner_feature_flags
     test/planner_feature_flags_test.cpp
