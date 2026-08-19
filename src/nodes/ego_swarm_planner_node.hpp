@@ -37,6 +37,7 @@
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/PlannerFeatureFlags.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
@@ -228,6 +229,7 @@ private:
     double reservation_lead_time_s_{DEFAULT_RESERVATION_LEAD_TIME_S};
     double reservation_step_s_{DEFAULT_RESERVATION_STEP_S};
     double reservation_horizon_s_{DEFAULT_RESERVATION_HORIZON_S};
+    ego_swarm::PlannerFeatureFlags planner_feature_flags_{};
 
     ego_swarm::PlannerConfig planner_config_{};
     std::unique_ptr<ego_swarm::ITrajectoryPlanner> selected_planner_{};

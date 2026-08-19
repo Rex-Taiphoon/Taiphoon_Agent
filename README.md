@@ -657,6 +657,11 @@ Agent 仍把該終點視為佔位障礙。
 | `obstacle_cloud_timeout_s` | double | `1.0` | 局部障礙物地圖 freshness timeout；逾時後 planner 進入 HOLD |
 | `require_obstacle_cloud` | bool | `true` | 是否要求 fresh obstacle map；missing/stale 不會被當成 explicit empty |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
+| `enable_local_goal_planning` | bool | `false` | Local Goal segmented planning 功能旗標；預設關閉以維持舊架構行為 |
+| `enable_generic_trajectory_reservation` | bool | `false` | 所有 moving trajectory 共用 reservation 功能旗標；預設關閉 |
+| `local_goal_horizon_m` | double | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
+| `local_goal_replan_ratio` | double | `0.70` | 依 segment progress 允許重新規劃的比例；Step3 僅保存設定 |
+| `minimum_replan_interval_s` | double | `0.5` | 正常 progress-based replan 最短間隔（秒）；Step3 僅保存設定 |
 | `formation_min_distance_m` | double | `3.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
 | `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
 | `obstacle_clearance_m` | double | `1.0` | EGO-Swarm 與局部障礙物的安全間距 |

@@ -173,6 +173,17 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("planning_rate_hz", DEFAULT_EGO_PLANNER_RATE_HZ);
+    declare_parameter<bool>("enable_local_goal_planning", false);
+    declare_parameter<bool>("enable_generic_trajectory_reservation", false);
+    declare_parameter<double>(
+        "local_goal_horizon_m",
+        ego_swarm::DEFAULT_LOCAL_GOAL_HORIZON_M);
+    declare_parameter<double>(
+        "local_goal_replan_ratio",
+        ego_swarm::DEFAULT_LOCAL_GOAL_REPLAN_RATIO);
+    declare_parameter<double>(
+        "minimum_replan_interval_s",
+        ego_swarm::DEFAULT_MINIMUM_REPLAN_INTERVAL_S);
     declare_parameter<double>("peer_trajectory_timeout_s",
                              DEFAULT_PEER_TRAJECTORY_TIMEOUT_S);
     declare_parameter<double>("max_peer_time_skew_s",
@@ -239,6 +250,20 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     {
         planning_rate_hz_ = DEFAULT_EGO_PLANNER_RATE_HZ;
     }
+
+    ego_swarm::PlannerFeatureFlags requested_feature_flags{};
+    requested_feature_flags.enable_local_goal_planning = get_parameter(
+        "enable_local_goal_planning").as_bool();
+    requested_feature_flags.enable_generic_trajectory_reservation =
+        get_parameter("enable_generic_trajectory_reservation").as_bool();
+    requested_feature_flags.local_goal_horizon_m = get_parameter(
+        "local_goal_horizon_m").as_double();
+    requested_feature_flags.local_goal_replan_ratio = get_parameter(
+        "local_goal_replan_ratio").as_double();
+    requested_feature_flags.minimum_replan_interval_s = get_parameter(
+        "minimum_replan_interval_s").as_double();
+    planner_feature_flags_ = ego_swarm::normalize_planner_feature_flags(
+        requested_feature_flags);
 
     peer_trajectory_timeout_s_ = get_parameter(
         "peer_trajectory_timeout_s").as_double();
@@ -439,7 +464,10 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 "obstacle_clearance=%.2f m peer_timeout=%.2f s "
                 "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
                 "require_obstacle_cloud=%s move_attitude_timeout=%.2f s "
-                "slot_switch_penalty=%.2f m member_stable_scans=%d",
+                "slot_switch_penalty=%.2f m member_stable_scans=%d "
+                "feature_local_goal=%s feature_generic_reservation=%s "
+                "local_goal_horizon=%.2f m local_goal_replan_ratio=%.2f "
+                "minimum_replan_interval=%.2f s",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 planner_backend_.c_str(), optimizer_max_iterations_,
                 optimizer_time_budget_ms_, reservation_lead_time_s_,
@@ -452,7 +480,13 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 obstacle_cloud_timeout_s_,
                 require_obstacle_cloud_ ? "true" : "false",
                 move_attitude_timeout_s_, formation_slot_switch_penalty_m_,
-                formation_member_stable_scan_count_);
+                formation_member_stable_scan_count_,
+                planner_feature_flags_.enable_local_goal_planning ? "true" : "false",
+                planner_feature_flags_.enable_generic_trajectory_reservation ?
+                    "true" : "false",
+                planner_feature_flags_.local_goal_horizon_m,
+                planner_feature_flags_.local_goal_replan_ratio,
+                planner_feature_flags_.minimum_replan_interval_s);
 }
 
 bool EgoSwarmPlannerNode::initialize_subscribers()

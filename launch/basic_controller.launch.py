@@ -148,6 +148,18 @@ def launch_nodes(context, *args, **kwargs):
                 {"agent_index": i},
                 {"swarm_origin_agent_index": LaunchConfiguration(
                     "swarm_origin_agent_index")},
+                {"enable_local_goal_planning": ParameterValue(
+                    LaunchConfiguration("enable_local_goal_planning"),
+                    value_type=bool)},
+                {"enable_generic_trajectory_reservation": ParameterValue(
+                    LaunchConfiguration("enable_generic_trajectory_reservation"),
+                    value_type=bool)},
+                {"local_goal_horizon_m": LaunchConfiguration(
+                    "local_goal_horizon_m")},
+                {"local_goal_replan_ratio": LaunchConfiguration(
+                    "local_goal_replan_ratio")},
+                {"minimum_replan_interval_s": LaunchConfiguration(
+                    "minimum_replan_interval_s")},
                 {"peer_trajectory_timeout_s": LaunchConfiguration(
                     "peer_trajectory_timeout_s")},
                 {"max_peer_time_skew_s": LaunchConfiguration(
@@ -285,6 +297,26 @@ def generate_launch_description():
             "swarm_origin_agent_index",
             default_value="1",
             description="已保留的相容參數；全球 WGS84 軌跡改用各 Agent 自身 Home"),
+        DeclareLaunchArgument(
+            "enable_local_goal_planning",
+            default_value="false",
+            description="是否啟用 Local Goal segmented planning"),
+        DeclareLaunchArgument(
+            "enable_generic_trajectory_reservation",
+            default_value="false",
+            description="是否啟用所有 moving trajectory 共用 reservation"),
+        DeclareLaunchArgument(
+            "local_goal_horizon_m",
+            default_value="10.0",
+            description="Local Goal 單段距離 horizon（公尺）"),
+        DeclareLaunchArgument(
+            "local_goal_replan_ratio",
+            default_value="0.70",
+            description="Local Goal progress-based replan 比例"),
+        DeclareLaunchArgument(
+            "minimum_replan_interval_s",
+            default_value="0.5",
+            description="正常 progress-based replan 最短間隔（秒）"),
         DeclareLaunchArgument(
             "peer_trajectory_timeout_s",
             default_value="2.0",

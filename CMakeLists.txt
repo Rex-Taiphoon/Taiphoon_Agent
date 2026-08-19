@@ -258,6 +258,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Planner Feature Flags 純邏輯測試
+  ament_add_gtest(test_planner_feature_flags
+    test/planner_feature_flags_test.cpp
+  )
+
+  target_include_directories(test_planner_feature_flags PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp
