@@ -312,6 +312,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 即時同儕距離碰撞判定測試
+  ament_add_gtest(test_live_peer_distance_policy
+    test/live_peer_distance_policy_test.cpp
+  )
+
+  target_include_directories(test_live_peer_distance_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp

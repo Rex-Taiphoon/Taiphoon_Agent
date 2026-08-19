@@ -34,6 +34,7 @@
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/ITrajectoryPlanner.hpp"
+#include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
@@ -152,7 +153,7 @@ private:
     bool formation_config_matches(
         const ego_swarm::FormationConfig& first,
         const ego_swarm::FormationConfig& second) const;
-    double live_peer_min_distance(
+    ego_swarm::LivePeerDistanceResult live_peer_min_distance(
         const ego_swarm::Vector3& current) const;
     bool update_swarm_frame();
     bool update_local_swarm_transform();

@@ -861,12 +861,13 @@ bool EgoSwarmPlannerNode::formation_config_matches(
         std::abs(first.vertical_offset_m - second.vertical_offset_m) <= 1.0e-9;
 }
 
-double EgoSwarmPlannerNode::live_peer_min_distance(
+ego_swarm::LivePeerDistanceResult
+EgoSwarmPlannerNode::live_peer_min_distance(
     const ego_swarm::Vector3& current) const
 {
     if (!ego_swarm::is_finite_vector(current))
     {
-        return 0.0;
+        return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
     }
 
     std::vector<int> peer_ids;
@@ -885,34 +886,41 @@ double EgoSwarmPlannerNode::live_peer_min_distance(
     }
 
     double minimum_distance = std::numeric_limits<double>::infinity();
+    std::size_t peer_count = 0U;
     for (const int peer_id : peer_ids)
     {
         if (peer_id == agent_index_)
         {
             continue;
         }
+        ++peer_count;
         const auto peer_iterator = peers_.find(peer_id);
         if (peer_iterator == peers_.end() ||
             !peer_iterator->second.has_state ||
             !is_finite_state_position(peer_iterator->second.state))
         {
-            return 0.0;
+            return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
         }
         ego_swarm::Vector3 peer_position{};
         if (!get_position_in_swarm_frame(
                 peer_iterator->second.state, peer_position))
         {
-            return 0.0;
+            return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
         }
         const double distance = ego_swarm::distance_between_centers(
             current, peer_position);
         if (!std::isfinite(distance))
         {
-            return 0.0;
+            return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
         }
         minimum_distance = std::min(minimum_distance, distance);
     }
-    return std::isfinite(minimum_distance) ? minimum_distance : 0.0;
+    if (peer_count == 0U)
+    {
+        return ego_swarm::LivePeerDistanceResult{false, true, 0.0};
+    }
+    return ego_swarm::LivePeerDistanceResult{
+        true, std::isfinite(minimum_distance), minimum_distance};
 }
 
 std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
@@ -1808,7 +1816,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // 延遲偏離宣告路徑，因此每個 planner tick 仍必須檢查 live WGS84
     // 位置。低於硬性碰撞距離立即煞停；進入額外 1 m 警戒帶且本機正
     // 執行移動軌跡時提前煞停，保留飛控反應時間。
-    const double live_peer_distance = live_peer_min_distance(current);
+    const auto live_peer_distance = live_peer_min_distance(current);
     const double collision_distance = std::max(
         formation_min_distance_m_,
         planner_config_.peer_collision_min_distance_m);
@@ -1836,8 +1844,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // 會用同一份 peer snapshot 檢查整條路徑；若此時僅因起飛／隊形的
     // 初始間距落在 reaction buffer 內便煞停，永遠沒有機會執行已規劃
     // 的水平繞行。
-    if (!std::isfinite(live_peer_distance) ||
-        live_peer_distance < collision_distance)
+    if (ego_swarm::live_peer_collision_detected(
+            live_peer_distance, collision_distance))
     {
         // 舊 active route 已經不能再作為安全恢復路徑；保留 Final Target，讓
         // brake 完成後以最後任務目標重新進入 optimizer。若目前已在
@@ -1863,7 +1871,9 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         (void)peer_trajectories_.prune(now_s);
         return;
     }
-    if (is_moving && live_peer_distance < live_warning_distance &&
+    if (is_moving && live_peer_distance.has_peer &&
+        live_peer_distance.data_valid &&
+        live_peer_distance.minimum_distance_m < live_warning_distance &&
         !has_valid_active_route && !has_goal_ && !has_formation_)
     {
         publish_emergency_brake(
@@ -3301,7 +3311,12 @@ void EgoSwarmPlannerNode::publish_status(
         ego_swarm::Vector3 current{};
         if (get_position_in_swarm_frame(own_state_, current))
         {
-            minimum_peer_distance_m = live_peer_min_distance(current);
+            const auto live_peer_distance = live_peer_min_distance(current);
+            if (live_peer_distance.has_peer && live_peer_distance.data_valid)
+            {
+                minimum_peer_distance_m =
+                    live_peer_distance.minimum_distance_m;
+            }
         }
     }
     status.min_peer_distance_m = static_cast<float>(minimum_peer_distance_m);
