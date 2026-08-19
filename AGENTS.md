@@ -76,6 +76,7 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - `README.md`應該保持最新狀態
 - 當`msg/`資料更新時，必須同步更新一份`msg/`裡面的介面檔案(.msg/.srv/.action)到與專案目錄同級的`Taiphoon_Agent_Interfaces`資料夾，包含`taiphoon-agent-interface.md`
 - 本次功能開發期間，需要參閱`docs/taiphoon-agent-development-spec.md`內容，並且未經人類開發者同意禁止修改
+- 當需要參閱舊架構時，可以參考`docs/codex/step1-data-flow-analysis.md`，未經人類開發者同意禁止修改
 
 **Ask first:**
 - 使用Git commit與push時，應確認提交的內容，使用 `模組: 更改項目` 格式，內容簡短明確。
