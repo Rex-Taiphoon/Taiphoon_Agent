@@ -320,15 +320,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "max_velocity_mps",
             default_value="2.5",
-            description="Phase 4 動力學驗證最大速度（公尺/秒）"),
+            description="動力學驗證最大速度（公尺/秒）"),
         DeclareLaunchArgument(
             "max_acceleration_mps2",
             default_value="1.5",
-            description="Phase 4 動力學驗證最大加速度（公尺/秒^2）"),
+            description="動力學驗證最大加速度（公尺/秒^2）"),
         DeclareLaunchArgument(
             "max_jerk_mps3",
             default_value="3.0",
-            description="Phase 4 動力學驗證最大 jerk（公尺/秒^3）"),
+            description="動力學驗證最大 jerk（公尺/秒^3）"),
         DeclareLaunchArgument(
             "candidate_offset_m",
             default_value="3.0",

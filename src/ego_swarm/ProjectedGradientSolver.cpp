@@ -622,7 +622,7 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         // 障礙物 clearance barrier 在幾何轉折或 nearest-point 切換處可能
         // 讓整體 normalized gradient 的 backtracking 方向暫時不降成本。
         // 以同一個 step 做 deterministic coordinate line-search，仍只在
-        // bounded projection 內搜尋，不引入 Phase 7 的多 topology seed。
+        // bounded projection 內搜尋，不引入多 topology seed。
         std::vector<Vector3> best_coordinate;
         OptimizationEvaluation best_coordinate_evaluation;
         if ((current_evaluation.obstacle_cost >

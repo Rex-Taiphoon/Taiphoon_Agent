@@ -1,6 +1,6 @@
 /**
  * @file dynamic_safety_test.cpp
- * @brief Phase 4 dynamic safety 與 emergency brake 純 C++ 測試
+ * @brief Dynamic safety 與 emergency brake 純 C++ 測試
  * @author Taiphoon Agent Team
  * @date 2026-08-12
  */

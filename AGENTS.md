@@ -49,8 +49,8 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 每個任務開始時先指定一個主角色；跨模組或安全關鍵工作再指定協作角色。
 - `CHARACTERS.md` 不取代根目錄或子目錄的 `AGENTS.md`：角色文件負責協作責任，`AGENTS.md` 負責專案與模組技術規範。
 - `CONTEXT.md` 僅負責領域詞彙與架構語言，不作為實作規格或角色規約使用。
-- 任何 EGO-Swarm、機群編隊、trajectory planning、obstacle avoidance 相關工作開始前，先閱讀 `docs/codex/README.md` 及其指定文件。
-- `docs/codex/EGO_SWARM_IMPLEMENTATION_GUIDE.md` 定義分階段 scope；AI Agent 一次只實作一個已指定 Phase。
+- 任何 EGO-Swarm、機群編隊、trajectory planning、obstacle avoidance 相關工作開始前，先閱讀 `CONTEXT.md`、`docs/taiphoon-agent-interface.md`、對應子目錄的 `AGENTS.md` 及現有程式碼。
+- 開發範圍以目前程式碼、介面文件與人類開發者明確指定的需求為準，不引用已不存在的歷史規劃文件。
 - 規則衝突時，安全與人類確認要求優先，其次是本文件與對應子目錄 `AGENTS.md`，再依 `CHARACTERS.md` 補充跨模組協作行為。
 
 ## Topic & interface conventions

@@ -1,6 +1,6 @@
 /**
- * @file phase6_planner_test.cpp
- * @brief Phase 6 planner seam、optimizer、reservation 與 convergence 測試
+ * @file optimized_planner_test.cpp
+ * @brief Planner seam、optimizer、reservation 與 convergence 測試
  */
 
 #include <gtest/gtest.h>
@@ -134,7 +134,7 @@ struct NonfinitePerturbationObjective final : IOptimizationObjective
     }
 };
 
-TEST(Phase6SolverTest, NominalAndFailureReasonsAreExplicit)
+TEST(OptimizedSolverTest, NominalAndFailureReasonsAreExplicit)
 {
     ProjectedGradientSolver solver;
     ProjectedGradientSolverConfig config;
@@ -166,7 +166,7 @@ TEST(Phase6SolverTest, NominalAndFailureReasonsAreExplicit)
     EXPECT_EQ(timeout.termination, SolverTerminationReason::TIMEOUT);
 }
 
-TEST(Phase6PlannerTest, OptimizedPlannerConvergesInOpenSpace)
+TEST(OptimizedPlannerTest, OptimizedPlannerConvergesInOpenSpace)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -191,7 +191,7 @@ TEST(Phase6PlannerTest, OptimizedPlannerConvergesInOpenSpace)
     EXPECT_NEAR(endpoint.position.at(0), snapshot.local_goal.at(0), 1.0e-6);
 }
 
-TEST(Phase6PlannerTest, LongHorizontalMoveReachesThirtyMetersWithinTwentySeconds)
+TEST(OptimizedPlannerTest, LongHorizontalMoveReachesThirtyMetersWithinTwentySeconds)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -229,7 +229,7 @@ TEST(Phase6PlannerTest, LongHorizontalMoveReachesThirtyMetersWithinTwentySeconds
     }
 }
 
-TEST(Phase6PlannerTest, ClearSeedSkipsSolverWithNonEmptyFarObstacleMap)
+TEST(OptimizedPlannerTest, ClearSeedSkipsSolverWithNonEmptyFarObstacleMap)
 {
     RawPointObstacleMap map;
     ASSERT_TRUE(map.update({Vector3{100.0, 100.0, 0.0}}, 0.0));
@@ -246,7 +246,7 @@ TEST(Phase6PlannerTest, ClearSeedSkipsSolverWithNonEmptyFarObstacleMap)
     EXPECT_LT(result.planning_time_ms, config.optimizer_time_budget_ms);
 }
 
-TEST(Phase6PlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
+TEST(OptimizedPlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -275,7 +275,7 @@ TEST(Phase6PlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
     EXPECT_LT(result.planning_time_ms, config.optimizer_time_budget_ms * 1.5);
 }
 
-TEST(Phase6PlannerTest, HorizontalMoveAroundTerminalPeerLineStaysSafe)
+TEST(OptimizedPlannerTest, HorizontalMoveAroundTerminalPeerLineStaysSafe)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -325,7 +325,7 @@ TEST(Phase6PlannerTest, HorizontalMoveAroundTerminalPeerLineStaysSafe)
     EXPECT_TRUE(has_lateral_departure);
 }
 
-TEST(Phase6PlannerTest, HorizontalMoveWithYawResidualStillFindsSidePath)
+TEST(OptimizedPlannerTest, HorizontalMoveWithYawResidualStillFindsSidePath)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -363,7 +363,7 @@ TEST(Phase6PlannerTest, HorizontalMoveWithYawResidualStillFindsSidePath)
     }
 }
 
-TEST(Phase6PlannerTest, HorizontalMoveNearPeerUsesEarlySideClearance)
+TEST(OptimizedPlannerTest, HorizontalMoveNearPeerUsesEarlySideClearance)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -401,7 +401,7 @@ TEST(Phase6PlannerTest, HorizontalMoveNearPeerUsesEarlySideClearance)
     }
 }
 
-TEST(Phase6PlannerTest, LongHorizontalMoveAroundEastLineStaysFeasible)
+TEST(OptimizedPlannerTest, LongHorizontalMoveAroundEastLineStaysFeasible)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -445,7 +445,7 @@ TEST(Phase6PlannerTest, LongHorizontalMoveAroundEastLineStaysFeasible)
     }
 }
 
-TEST(Phase6PlannerTest, LongHorizontalMoveMatchesSitlEastLineSnapshot)
+TEST(OptimizedPlannerTest, LongHorizontalMoveMatchesSitlEastLineSnapshot)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -486,7 +486,7 @@ TEST(Phase6PlannerTest, LongHorizontalMoveMatchesSitlEastLineSnapshot)
     }
 }
 
-TEST(Phase6PlannerTest, ReverseLongHorizontalMoveMatchesSitlEastLineSnapshot)
+TEST(OptimizedPlannerTest, ReverseLongHorizontalMoveMatchesSitlEastLineSnapshot)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -526,7 +526,7 @@ TEST(Phase6PlannerTest, ReverseLongHorizontalMoveMatchesSitlEastLineSnapshot)
     }
 }
 
-TEST(Phase6PlannerTest, AltitudeProjectionHonorsFixedAndLinearPaths)
+TEST(OptimizedPlannerTest, AltitudeProjectionHonorsFixedAndLinearPaths)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -565,7 +565,7 @@ TEST(Phase6PlannerTest, AltitudeProjectionHonorsFixedAndLinearPaths)
     }
 }
 
-TEST(Phase6SafetyTest, HorizontalEmergencyBrakeKeepsFixedAltitude)
+TEST(OptimizedSafetyTest, HorizontalEmergencyBrakeKeepsFixedAltitude)
 {
     PlannerConfig config;
     EmergencyBrakePlanner planner(config);
@@ -583,7 +583,7 @@ TEST(Phase6SafetyTest, HorizontalEmergencyBrakeKeepsFixedAltitude)
     }
 }
 
-TEST(Phase6PlannerTest, PointObstacleProducesAFeasibleLateralOffset)
+TEST(OptimizedPlannerTest, PointObstacleProducesAFeasibleLateralOffset)
 {
     RawPointObstacleMap map;
     ASSERT_TRUE(map.update({Vector3{4.0, 0.5, 0.0}}, 0.0));
@@ -618,7 +618,7 @@ TEST(Phase6PlannerTest, PointObstacleProducesAFeasibleLateralOffset)
     EXPECT_TRUE(has_lateral_offset);
 }
 
-TEST(Phase6PlannerTest, DenseWallUsesExpandedHorizontalSearchEnvelope)
+TEST(OptimizedPlannerTest, DenseWallUsesExpandedHorizontalSearchEnvelope)
 {
     RawPointObstacleMap map;
     std::vector<Vector3> wall_points;
@@ -666,7 +666,7 @@ TEST(Phase6PlannerTest, DenseWallUsesExpandedHorizontalSearchEnvelope)
     EXPECT_TRUE(has_wall_clearance_offset);
 }
 
-TEST(Phase6PlannerTest, TerminalHoldIsNeverIgnoredByPriority)
+TEST(OptimizedPlannerTest, TerminalHoldIsNeverIgnoredByPriority)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -686,7 +686,7 @@ TEST(Phase6PlannerTest, TerminalHoldIsNeverIgnoredByPriority)
                     config.peer_collision_min_distance_m);
 }
 
-TEST(Phase6PlannerTest, TerminalHoldRemainsHardOccupancyAfterShortHeartbeat)
+TEST(OptimizedPlannerTest, TerminalHoldRemainsHardOccupancyAfterShortHeartbeat)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -712,7 +712,7 @@ TEST(Phase6PlannerTest, TerminalHoldRemainsHardOccupancyAfterShortHeartbeat)
                     config.peer_collision_min_distance_m);
 }
 
-TEST(Phase6PlannerTest, OptimizerCanUseExpandedHorizontalSearchEnvelope)
+TEST(OptimizedPlannerTest, OptimizerCanUseExpandedHorizontalSearchEnvelope)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -744,7 +744,7 @@ TEST(Phase6PlannerTest, OptimizerCanUseExpandedHorizontalSearchEnvelope)
     }
 }
 
-TEST(Phase6ReservationTest, TerminalHoldCannotBeBypassedByPriority)
+TEST(OptimizedReservationTest, TerminalHoldCannotBeBypassedByPriority)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -759,7 +759,7 @@ TEST(Phase6ReservationTest, TerminalHoldCannotBeBypassedByPriority)
     EXPECT_FALSE(decision.is_reserved);
 }
 
-TEST(Phase6SafetyTest, TerminalHoldCannotBeBypassedByPriority)
+TEST(OptimizedSafetyTest, TerminalHoldCannotBeBypassedByPriority)
 {
     RawPointObstacleMap map = make_empty_map();
     const PeerTrajectory peer = make_terminal_hold_peer(
@@ -793,7 +793,7 @@ TEST(Phase6SafetyTest, TerminalHoldCannotBeBypassedByPriority)
     EXPECT_EQ(result.reason, SafetyFailureReason::PEER_COLLISION);
 }
 
-TEST(Phase6PlannerTest, OptimizedFailureHasNoExecutableFallback)
+TEST(OptimizedPlannerTest, OptimizedFailureHasNoExecutableFallback)
 {
     RawPointObstacleMap map;
     ASSERT_TRUE(map.update({Vector3{4.0, 0.0, 0.0}}, 0.0));
@@ -810,7 +810,7 @@ TEST(Phase6PlannerTest, OptimizedFailureHasNoExecutableFallback)
     EXPECT_FALSE(primary.trajectory.is_valid());
 }
 
-TEST(Phase6ReservationTest, ConflictingPathsAreTimeSeparated)
+TEST(OptimizedReservationTest, ConflictingPathsAreTimeSeparated)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -834,7 +834,7 @@ TEST(Phase6ReservationTest, ConflictingPathsAreTimeSeparated)
     EXPECT_GT(decision.start_time_s, snapshot.trajectory_start_time_s);
 }
 
-TEST(Phase6ConvergenceTest, UsesPositionAndDataValidityWithoutVelocityGate)
+TEST(OptimizedConvergenceTest, UsesPositionAndDataValidityWithoutVelocityGate)
 {
     std::vector<FormationConvergenceObservation> observations(2U);
     for (std::size_t index = 0U; index < observations.size(); ++index)

@@ -1,6 +1,6 @@
 /**
  * @file DeterministicPlanner.hpp
- * @brief deterministic candidate planner 的 Phase 6 backend 名稱
+ * @brief deterministic candidate planner 的相容 backend 名稱
  * @author Taiphoon Agent Team
  * @date 2026-08-14
  */

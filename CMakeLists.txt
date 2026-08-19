@@ -249,7 +249,7 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  # Phase 4 dynamic safety 與 emergency brake 測試（純 C++）
+  # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp
     src/perception/RawPointObstacleMap.cpp
@@ -259,9 +259,9 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  # Phase 6 planner seam、optimizer、reservation 與 convergence 測試
-  ament_add_gtest(test_phase6_planner
-    test/phase6_planner_test.cpp
+  # Planner seam、optimizer、reservation 與 convergence 測試
+  ament_add_gtest(test_optimized_planner
+    test/optimized_planner_test.cpp
     src/ego_swarm/FormationConvergence.cpp
     src/ego_swarm/FormationReservation.cpp
     src/ego_swarm/OptimizedEgoPlanner.cpp
@@ -269,7 +269,7 @@ if(BUILD_TESTING)
     src/perception/RawPointObstacleMap.cpp
   )
 
-  target_include_directories(test_phase6_planner PRIVATE
+  target_include_directories(test_optimized_planner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

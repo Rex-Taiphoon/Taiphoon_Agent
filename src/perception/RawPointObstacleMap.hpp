@@ -4,7 +4,7 @@
  * @author Taiphoon Agent Team
  * @date 2026-08-12
  *
- * 此類別是 Phase 2 的 raw-point backend。planner 只依賴 IObstacleMap，
+ * 此類別是 raw-point backend。planner 只依賴 IObstacleMap，
  * 未來可以在不修改 planner API 的情況下替換為 voxel 或 spatial map。
  */
 

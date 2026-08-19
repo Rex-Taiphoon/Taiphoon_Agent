@@ -320,7 +320,7 @@ private:
     }
 
     /**
-     * @brief 將 Phase 3 舊動力學參數名稱正規化為 Phase 4 契約
+     * @brief 將舊動力學參數名稱正規化為目前契約
      * @param config 待正規化設定
      * @return 同時保留新舊欄位一致性的設定
      */

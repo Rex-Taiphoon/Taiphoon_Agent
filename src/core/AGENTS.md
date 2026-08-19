@@ -20,7 +20,7 @@
 修改 `src/core/` 的任何介面時，必須一次完成以下同步：
 1. 更新所有實作類別（至少 `src/controllers/BasicController.cpp/.hpp`）。
 2. 更新或新增對應單元測試（`test/`）。
-3. 若影響對外行為，同步更新 `docs/taiphoon-agent-interface.md` 與 `docs/spec/`。
+3. 若影響對外行為，同步更新 `docs/taiphoon-agent-interface.md`
 4. 以 `colcon build --packages-select taiphoon_agent` 與 `colcon test --packages-select taiphoon_agent` 驗證。
 
 ## 介面設計規範

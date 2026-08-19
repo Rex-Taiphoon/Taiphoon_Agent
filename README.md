@@ -8,10 +8,6 @@
 > target yaw；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
 > 與 deterministic minimum-cost assignment。
 
-EGO-Swarm 的 Phase 0 基線請參閱 [`docs/codex/README.md`](docs/codex/README.md)；其中
-[`EGO_SWARM_CURRENT_BEHAVIOR.md`](docs/codex/EGO_SWARM_CURRENT_BEHAVIOR.md) 記錄目前
-runtime 行為與已知限制。
-
 ---
 
 ## 快速開始（Docker）
@@ -468,7 +464,7 @@ ego_swarm_planner
   過期時，規劃器 fail-closed 產生 dynamic emergency brake，不把最後 endpoint 當成 ghost UAV。
 - `BasicController` 是唯一發布 PX4 `TrajectorySetpoint` 的節點。
 
-### Phase 4 動態安全與煞車
+### 動態安全與煞車
 
 每個 planner cycle 會以自身 AgentState 的連續 NED 位置樣本建立
 `VehiclePlanningState`（position、velocity、acceleration、timestamp）。Planner result
@@ -667,9 +663,9 @@ Agent 仍把該終點視為佔位障礙。
 | `knot_interval_s` | double | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由 EGO-Swarm 依候選路徑長度與限制計算 |
 | `max_velocity_m_s` | double | `2.5` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
 | `max_acceleration_m_s2` | double | `1.5` | EGO-Swarm 計算軌跡 duration 使用的最大加速度（公尺/秒^2） |
-| `max_velocity_mps` | double | `2.5` | Phase 4 safety validator／煞車使用的最大速度（公尺/秒）；與舊名稱同步時以此名稱為 canonical |
-| `max_acceleration_mps2` | double | `1.5` | Phase 4 safety validator／煞車使用的最大加速度（公尺/秒^2） |
-| `max_jerk_mps3` | double | `3.0` | Phase 4 safety validator／煞車使用的最大 jerk（公尺/秒^3） |
+| `max_velocity_mps` | double | `2.5` | safety validator／煞車使用的最大速度（公尺/秒）；與舊名稱同步時以此名稱為 canonical |
+| `max_acceleration_mps2` | double | `1.5` | safety validator／煞車使用的最大加速度（公尺/秒^2） |
+| `max_jerk_mps3` | double | `3.0` | safety validator／煞車使用的最大 jerk（公尺/秒^3） |
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
 | `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
 | `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |

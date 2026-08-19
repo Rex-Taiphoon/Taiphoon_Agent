@@ -82,7 +82,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 local NED 輸出軌跡。 |
-| **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count`、Phase 6 backend／optimizer／reservation 參數 |
+| **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count`、planner backend／optimizer／reservation 參數 |
 
 **內部組件**：
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
@@ -112,9 +112,9 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
 | `max_velocity_m_s` | `double` | `2.5` | duration 計算使用的最大速度 |
 | `max_acceleration_m_s2` | `double` | `1.5` | duration 計算使用的最大加速度 |
-| `max_velocity_mps` | `double` | `2.5` | Phase 4 safety validator／emergency brake 的最大速度；canonical 名稱 |
-| `max_acceleration_mps2` | `double` | `1.5` | Phase 4 safety validator／emergency brake 的最大加速度 |
-| `max_jerk_mps3` | `double` | `3.0` | Phase 4 safety validator／emergency brake 的最大 jerk |
+| `max_velocity_mps` | `double` | `2.5` | safety validator／emergency brake 的最大速度；canonical 名稱 |
+| `max_acceleration_mps2` | `double` | `1.5` | safety validator／emergency brake 的最大加速度 |
+| `max_jerk_mps3` | `double` | `3.0` | safety validator／emergency brake 的最大 jerk |
 | `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 本機 Home 建立的 global-to-local NED 到達容許誤差 |

@@ -191,7 +191,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>("max_acceleration_mps2",
                              DEFAULT_MAX_ACCELERATION_MPS2);
     declare_parameter<double>("max_jerk_mps3", DEFAULT_MAX_JERK_MPS3);
-    // 保留 Phase 3 參數名稱，既有 compose / launch 不需同步切換。
+    // 保留舊參數名稱，既有 compose / launch 不需同步切換。
     declare_parameter<double>("max_velocity_m_s", DEFAULT_MAX_VELOCITY_MPS);
     declare_parameter<double>("max_acceleration_m_s2",
                              DEFAULT_MAX_ACCELERATION_MPS2);

@@ -188,7 +188,6 @@ test/
 
 修改以下 contract 時同步更新：
 
-- `docs/codex/EGO_SWARM_ARCHITECTURE.md`
 - `docs/taiphoon-agent-interface.md`（若影響對外 interface）
 - `README.md`（若影響操作方式）
 - 對應 message 文件
