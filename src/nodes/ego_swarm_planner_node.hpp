@@ -37,6 +37,7 @@
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
+#include "ego_swarm/PlannerAcceptancePolicy.hpp"
 #include "ego_swarm/PlannerFeatureFlags.hpp"
 #include "ego_swarm/PlanningTargetSelector.hpp"
 #include "ego_swarm/PlannerTargetSemantics.hpp"

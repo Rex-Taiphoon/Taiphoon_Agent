@@ -467,11 +467,11 @@ ego_swarm_planner
 ### 動態安全與煞車
 
 每個 planner cycle 會以自身 AgentState 的連續 NED 位置樣本建立
-`VehiclePlanningState`（position、velocity、acceleration、timestamp）。Planner result
-必須通過獨立的 `ContinuousSafetyValidator`，檢查 finite p/v/a/j、frame/time、map／peer
-freshness、動力學限制、同儕中心距離與障礙物 clearance。驗證失敗、planner failure 或
-關鍵資料過期時，`EmergencyBrakePlanner` 依目前速度／加速度與 jerk limit 產生減速
-B-spline；速度尚未接近零以前不使用 repeated-current-position static hold。
+`VehiclePlanningState`（position、velocity、acceleration、timestamp）。Candidate 必須依序
+通過 `OptimizedEgoPlanner`、reservation（若需要）與獨立的 `ContinuousSafetyValidator`，
+才會更新 active trajectory 並發布。驗證失敗、planner failure 或關鍵資料過期時，
+`EmergencyBrakePlanner` 依目前速度／加速度與 jerk limit 產生減速 B-spline；速度尚未接近零
+以前不使用 repeated-current-position static hold。
 
 ### PointCloud2 障礙物模擬
 

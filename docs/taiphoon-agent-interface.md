@@ -91,6 +91,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
   PathConstraint 與 horizon 產生本輪 Planning Target；功能關閉時直接保留 Final Target
 - `ReplanTrigger`：Local Goal 開啟時依 segment progress、Final Target 變更、
   segment 結束與 active trajectory safety 判斷是否允許重規劃
+- `PlannerAcceptancePolicy`：只有 planner 成功且輸出 finite、reservation（若需要）
+  成功、ContinuousSafetyValidator 通過後，才更新 active trajectory
 - `Planner target semantics`：明確區分任務 `Final Target`、本輪 `Planning Target`、
   目前 active segment 的 `active_plan_target_` 與其所屬任務的
   `active_plan_final_target_`；到達判斷、terminal hold 與 recovery 只使用 `Final Target`
@@ -461,7 +463,8 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   TERMINAL_HOLD 由完成任務的 Agent 持續 heartbeat，保留最終位置供其他 Agent 迴避。
 - `ContinuousSafetyValidator` 獨立於 planner backend，逐段取樣檢查 finite p/v/a/j、
   frame/time、map／peer freshness、動力學限制、同儕 separation 與 obstacle clearance。
-  通過才發布 `AgentTrajectory`；失敗則發布 dynamic braking trajectory。
+  Candidate 必須依序通過 planner、reservation（若需要）與 safety validation 才能更新
+  active state 並發布 `AgentTrajectory`；失敗則保留安全舊路線或發布 dynamic braking trajectory。
 - PointCloud2 應以共同 `swarm_ned` 座標供局部障礙物地圖使用；YAML 障礙物描述
   用於建立 `box`、`cylinder` 與 `wall` 等模擬場景。
 - `mission_planner`、`trajectory_controller` 與第一版觀測式防撞已被 EGO-Swarm

@@ -2229,7 +2229,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         };
 
     ego_swarm::PlannerResult result = selected_planner_->plan(snapshot);
-    if (!result.is_valid || !result.trajectory.is_valid())
+    if (!result.is_valid || !result.trajectory.is_valid() ||
+        !result.has_finite_output())
     {
         if (retain_active_plan_if_safe())
         {
@@ -2261,6 +2262,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
 
     double accepted_start_time_s = plan_start_time_s;
+    bool reservation_accepted = !should_reserve_trajectory;
     if (should_reserve_trajectory)
     {
         const auto reservation = ego_swarm::FormationReservationPlanner::reserve(
@@ -2297,11 +2299,20 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
         accepted_start_time_s = reservation.start_time_s;
         result.trajectory_start_time_s = accepted_start_time_s;
+        reservation_accepted = true;
     }
     const auto safety_result = validate_plan(
         result.trajectory, planning_state, now_s, accepted_start_time_s,
         &snapshot.peers);
-    if (!safety_result.is_safe)
+    const auto acceptance_decision =
+        ego_swarm::evaluate_candidate_acceptance(
+        ego_swarm::CandidateAcceptanceInput{
+            result.is_valid && result.trajectory.is_valid(),
+            result.has_finite_output(),
+            should_reserve_trajectory,
+            reservation_accepted,
+            safety_result.is_safe});
+    if (!acceptance_decision.should_accept)
     {
         if (retain_active_plan_if_safe())
         {
