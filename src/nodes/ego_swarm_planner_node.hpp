@@ -41,6 +41,7 @@
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
+#include "ego_swarm/TrajectoryReservationPolicy.hpp"
 #include "formation/PeerMatcher.hpp"
 #include "perception/RawPointObstacleMap.hpp"
 

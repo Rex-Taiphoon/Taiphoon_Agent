@@ -2110,7 +2110,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
     }
 
-    const double plan_start_delay_s = has_formation_
+    const bool should_reserve_trajectory =
+        ego_swarm::should_reserve_moving_trajectory(
+            has_formation_, planner_feature_flags_);
+    const double plan_start_delay_s = should_reserve_trajectory
         ? reservation_lead_time_s_ : 0.0;
     const rclcpp::Time plan_start_time = now +
         rclcpp::Duration::from_seconds(plan_start_delay_s);
@@ -2157,12 +2160,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
 
     double accepted_start_time_s = plan_start_time_s;
-    if (has_formation_)
+    if (should_reserve_trajectory)
     {
         const auto reservation = ego_swarm::FormationReservationPlanner::reserve(
             result.trajectory, snapshot,
-            std::max(formation_min_distance_m_,
-                     planner_config_.peer_collision_min_distance_m),
+            ego_swarm::required_peer_separation_m(
+                has_formation_, formation_min_distance_m_,
+                planner_config_.peer_collision_min_distance_m),
             reservation_lead_time_s_, reservation_step_s_,
             reservation_horizon_s_);
         if (!reservation.is_reserved)

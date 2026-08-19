@@ -107,7 +107,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `require_obstacle_cloud` | `bool` | `true` | 要求 fresh obstacle map；missing/stale 不得當成空環境 |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `enable_local_goal_planning` | `bool` | `false` | Local Goal segmented planning 功能旗標；預設關閉以維持舊架構行為 |
-| `enable_generic_trajectory_reservation` | `bool` | `false` | 所有 moving trajectory 共用 reservation 功能旗標；預設關閉 |
+| `enable_generic_trajectory_reservation` | `bool` | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
 | `local_goal_horizon_m` | `double` | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
 | `local_goal_replan_ratio` | `double` | `0.70` | 依 segment progress 允許重新規劃的比例；Step3 僅保存設定 |
 | `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 最短間隔（秒）；Step3 僅保存設定 |

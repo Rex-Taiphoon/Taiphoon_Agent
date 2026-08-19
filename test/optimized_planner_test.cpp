@@ -834,6 +834,21 @@ TEST(OptimizedReservationTest, ConflictingPathsAreTimeSeparated)
     EXPECT_GT(decision.start_time_s, snapshot.trajectory_start_time_s);
 }
 
+TEST(OptimizedReservationTest, ReservationDoesNotModifyCandidateGeometry)
+{
+    RawPointObstacleMap map = make_empty_map();
+    PlanningSnapshot snapshot = make_snapshot(map);
+    const BsplineTrajectory candidate = make_peer_path(
+        Vector3{0.0, 0.0, 0.0}, Vector3{8.0, 2.0, 0.0});
+    const auto original_control_points = candidate.control_points();
+
+    const auto decision = FormationReservationPlanner::reserve(
+        candidate, snapshot, 3.0, 0.5, 0.5, 5.0);
+
+    ASSERT_TRUE(decision.is_reserved);
+    EXPECT_EQ(candidate.control_points(), original_control_points);
+}
+
 TEST(OptimizedConvergenceTest, UsesPositionAndDataValidityWithoutVelocityGate)
 {
     std::vector<FormationConvergenceObservation> observations(2U);

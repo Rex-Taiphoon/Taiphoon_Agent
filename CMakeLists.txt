@@ -267,6 +267,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Generic Trajectory Reservation policy 純邏輯測試
+  ament_add_gtest(test_trajectory_reservation_policy
+    test/trajectory_reservation_policy_test.cpp
+  )
+
+  target_include_directories(test_trajectory_reservation_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp
