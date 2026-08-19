@@ -87,6 +87,9 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 **內部組件**：
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
 - `FormationSlotPlanner`：虛擬編隊槽位計算
+- `Planner target semantics`：明確區分任務 `Final Target`、本輪 `Planning Target`、
+  目前 active segment 的 `active_plan_target_` 與其所屬任務的
+  `active_plan_final_target_`；到達判斷、terminal hold 與 recovery 只使用 `Final Target`
 - `LocalObstacleMap`：PointCloud2 局部障礙物資料處理
 - `PeerTrajectoryTable`：同儕未來軌跡保存、timestamp sanity、freshness 與 expiration；ACTIVE 與 TERMINAL_HOLD 軌跡參與 planner，完成任務的終點由 heartbeat 保持佔位
 - `DeterministicPlanner`／`EgoSwarmPlanner`：保留既有純邏輯相容檔案；runtime 不組裝此 backend

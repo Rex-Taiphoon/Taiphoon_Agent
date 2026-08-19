@@ -38,6 +38,7 @@
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PlannerFeatureFlags.hpp"
+#include "ego_swarm/PlannerTargetSemantics.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
@@ -162,9 +163,10 @@ private:
     void clear_terminal_hold();
     ego_swarm::PositionArrivalResult evaluate_target_arrival(
         const ego_swarm::Vector3& current_global_ned,
-        const ego_swarm::Vector3& target) const;
+        const ego_swarm::Vector3& final_target) const;
     void invalidate_active_plan();
-    bool get_current_target(ego_swarm::Vector3& target) const;
+    /** @brief 取得目前任務真正的 Final Target。 */
+    bool get_current_final_target(ego_swarm::Vector3& final_target) const;
     void update_vehicle_motion_state(
         const taiphoon_agent::msg::AgentState& state);
     ego_swarm::VehiclePlanningState make_planning_state(
@@ -275,6 +277,8 @@ private:
     ego_swarm::Vector3 goal_position_{0.0, 0.0, 0.0};
     ego_swarm::PlannerResult active_plan_{};
     ego_swarm::Vector3 active_plan_target_{0.0, 0.0, 0.0};
+    /// 目前 active trajectory 所屬任務的真正 Final Target。
+    ego_swarm::Vector3 active_plan_final_target_{0.0, 0.0, 0.0};
     rclcpp::Time active_plan_start_time_{
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
     uint32_t active_plan_trajectory_id_{0U};

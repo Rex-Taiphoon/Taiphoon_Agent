@@ -1791,11 +1791,11 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
 
-    // 無論目前是否已經進入 safety recovery，target 都必須保留為最後
+    // 無論目前是否已經進入 safety recovery，Final Target 都必須保留為最後
     // 的任務目標。Recovery 只能改變當下執行的安全軌跡，不能把任務
     // 目標悄悄改成目前位置，否則煞停後永遠不會重新規劃原任務。
-    ego_swarm::Vector3 target{};
-    if (!get_current_target(target))
+    ego_swarm::Vector3 final_target{};
+    if (!get_current_final_target(final_target))
     {
         publish_emergency_brake(
             planning_state, current, "target unavailable", now,
@@ -1839,7 +1839,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     if (!std::isfinite(live_peer_distance) ||
         live_peer_distance < collision_distance)
     {
-        // 舊 active route 已經不能再作為安全恢復路徑；保留 target，讓
+        // 舊 active route 已經不能再作為安全恢復路徑；保留 Final Target，讓
         // brake 完成後以最後任務目標重新進入 optimizer。若目前已在
         // collision margin 內，先煞停／固定原高度仍是必要的 fail-closed
         // 動作，不能發布一條從不安全起點穿越 peer 的假安全路徑。
@@ -1850,14 +1850,14 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         if (!is_moving)
         {
             (void)publish_waiting_hold(
-                current, target,
+                current, final_target,
                 "optimized_no_feasible_horizontal_path; replan final target",
                 now, peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, target,
+            planning_state, final_target,
             "optimized_emergency_brake: live peer position inside collision margin", now,
             peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
@@ -1908,7 +1908,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
-    const auto arrival = evaluate_target_arrival(current, target);
+    const auto arrival = evaluate_target_arrival(current, final_target);
     // 編隊的槽位與中心由 FormationEpoch 的 WGS84 snapshot 定義；local
     // NED 只是在本機控制器內的投影，可能因 PX4 Home/odometry 與 GPS
     // frozen transform 的小幅差異而比 global 位置多出誤差。編隊到位
@@ -1924,12 +1924,12 @@ void EgoSwarmPlannerNode::planner_loop_cb()
 
         // 編隊是持續存在的任務，不是單一 Agent 到槽位後就結束的
         // one-shot move。保留 has_formation_，讓後續 Agent 能以此機的
-        // target terminal hold 判斷 transition readiness；同時避免每個
+        // Final Target terminal hold 判斷 transition readiness；同時避免每個
         // planner tick 重建相同的 hold trajectory。
         const bool formation_target_hold_active = has_formation_ &&
             has_terminal_hold_ &&
             ego_swarm::distance_between_centers(
-                terminal_hold_position_, target) <=
+                terminal_hold_position_, final_target) <=
             global_arrival_tolerance_m_;
         if (formation_target_hold_active)
         {
@@ -1958,23 +1958,23 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         if (moving_too_fast_for_move)
         {
             publish_emergency_brake(
-                planning_state, target, "target reached while moving", now,
+                planning_state, final_target, "target reached while moving", now,
                 peer_data_valid);
         }
         else
         {
             // 到達判斷允許位置誤差，因此 hold 必須鎖定目標座標，而不是
             // 使用仍可能漂移的即時位置。
-            terminal_hold_position_ = target;
+            terminal_hold_position_ = final_target;
             terminal_hold_plan_ = ego_swarm::make_exact_hold_result(
-                target, planner_config_);
+                final_target, planner_config_);
             terminal_hold_start_time_ = now;
             terminal_hold_trajectory_id_ = ++trajectory_id_;
             has_terminal_hold_ = terminal_hold_plan_.trajectory.is_valid();
             if (has_terminal_hold_)
             {
                 publish_plan(
-                    terminal_hold_plan_, target, now,
+                    terminal_hold_plan_, final_target, now,
                     terminal_hold_start_time_, terminal_hold_trajectory_id_,
                     true);
             }
@@ -1996,13 +1996,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         if (has_formation_ && formation_initial_plan_pending_)
         {
             (void)publish_waiting_hold(
-                current, target,
+                current, final_target,
                 "Formation sync waiting for peer trajectory", now, false);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, target, "peer trajectory stale or invalid", now,
+            planning_state, final_target, "peer trajectory stale or invalid", now,
             false);
         (void)peer_trajectories_.prune(now_s);
         return;
@@ -2013,7 +2013,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     {
         const std::string reason = obstacle_map_status_reason(now_s);
         publish_emergency_brake(
-            planning_state, target, reason, now, peer_data_valid);
+            planning_state, final_target, reason, now, peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
         return;
     }
@@ -2035,9 +2035,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         // 水平移動只改變 X/Y；使用命令建立時的目標 Z 作為整條
         // trajectory 的固定高度，避免 GPS callback 延遲把水平命令
         // 轉成非預期的垂直修正。
-        current.at(2) = target.at(2);
+        current.at(2) = final_target.at(2);
         planning_state.position = current;
     }
+
+    // Step 5 先明確建立兩種語意；Local Goal 接入前，Planning Target
+    // 與 Final Target 相同。後續 segmented planning 只會替換前者。
+    const ego_swarm::Vector3 planning_target = final_target;
 
     // 等待中的固定位置路線只保留短時間，讓衝突中的 Agent 有機會
     // 發布較早路線或新的水平路線；不把等待轉成永久 hold。
@@ -2058,12 +2062,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         invalidate_active_plan();
     }
 
-    const bool target_unchanged = has_active_plan_ &&
-        ego_swarm::distance_between_centers(
-            active_plan_target_, target) <= 1.0e-3;
+    const bool final_target_unchanged =
+        ego_swarm::active_plan_matches_final_target(
+            has_active_plan_, active_plan_final_target_, final_target);
     const double active_elapsed_s = has_active_plan_
         ? (now - active_plan_start_time_).seconds() : 0.0;
-    const bool active_plan_running = has_active_plan_ && target_unchanged &&
+    const bool active_plan_running = has_active_plan_ &&
+        final_target_unchanged &&
         active_plan_.trajectory.is_valid() &&
         std::isfinite(active_elapsed_s) && active_elapsed_s <=
             active_plan_.trajectory.duration_s();
@@ -2086,7 +2091,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             else
             {
                 publish_emergency_brake(
-                    planning_state, target,
+                    planning_state, final_target,
                     ego_swarm::ContinuousSafetyValidator::reason_string(
                         safety_result.reason),
                     now, peer_data_valid);
@@ -2120,13 +2125,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     const double plan_start_time_s = plan_start_time.seconds();
     ego_swarm::PlanningSnapshot snapshot;
     snapshot.self_state = planning_state;
-    snapshot.local_goal = target;
+    snapshot.local_goal = planning_target;
     snapshot.planning_time_s = now_s;
     snapshot.trajectory_start_time_s = plan_start_time_s;
     snapshot.frame_revision = frame_revision_;
     snapshot.self_agent_id = agent_index_;
     snapshot.path_constraint = path_constraint;
-    snapshot.fixed_z_m = target.at(2);
+    snapshot.fixed_z_m = final_target.at(2);
     snapshot.obstacle_map = &obstacle_map_;
     snapshot.peers_are_fresh = peer_data_valid;
     peer_trajectories_.get_active(now_s, snapshot.peers);
@@ -2145,14 +2150,14 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         if (std::isfinite(speed_mps) && speed_mps <= 0.2)
         {
             (void)publish_waiting_hold(
-                current, target,
+                current, final_target,
                 failure_reason, now,
                 peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, target,
+            planning_state, final_target,
             "optimized_emergency_brake: " + failure_reason,
             now, peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
@@ -2176,14 +2181,14 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             if (std::isfinite(speed_mps) && speed_mps <= 0.2)
             {
                 (void)publish_waiting_hold(
-                    current, target,
+                    current, final_target,
                     "optimized_no_feasible_horizontal_path", now,
                     peer_data_valid);
                 (void)peer_trajectories_.prune(now_s);
                 return;
             }
             publish_emergency_brake(
-                planning_state, target,
+                planning_state, final_target,
                 "optimized_emergency_brake: "
                 "optimized_no_feasible_horizontal_path", now,
                 peer_data_valid);
@@ -2207,14 +2212,14 @@ void EgoSwarmPlannerNode::planner_loop_cb()
              (std::isfinite(speed_mps) && speed_mps <= 0.2)))
         {
             (void)publish_waiting_hold(
-                current, target,
+                current, final_target,
                 "optimized_no_feasible_horizontal_path", now,
                 peer_data_valid);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, target,
+            planning_state, final_target,
             ego_swarm::ContinuousSafetyValidator::reason_string(
                 safety_result.reason),
             now, peer_data_valid);
@@ -2226,7 +2231,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     const rclcpp::Time accepted_start_time = now +
         rclcpp::Duration::from_seconds(accepted_start_time_s - now_s);
     active_plan_ = result;
-    active_plan_target_ = target;
+    active_plan_target_ = planning_target;
+    active_plan_final_target_ = final_target;
     active_plan_start_time_ = accepted_start_time;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
@@ -2496,11 +2502,11 @@ bool EgoSwarmPlannerNode::get_target_in_local_ned(
 
 ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
     const ego_swarm::Vector3& current_global_ned,
-    const ego_swarm::Vector3& target) const
+    const ego_swarm::Vector3& final_target) const
 {
     ego_swarm::PositionArrivalResult result;
     ego_swarm::Vector3 target_local{};
-    if (!get_target_in_local_ned(target, target_local))
+    if (!get_target_in_local_ned(final_target, target_local))
     {
         return result;
     }
@@ -2510,7 +2516,7 @@ ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
         static_cast<double>(own_state_.position_ned[1]),
         static_cast<double>(own_state_.position_ned[2])};
     return ego_swarm::evaluate_position_arrival(
-        current_local, target_local, current_global_ned, target,
+        current_local, target_local, current_global_ned, final_target,
         local_arrival_tolerance_m_, global_arrival_tolerance_m_);
 }
 
@@ -2522,6 +2528,7 @@ void EgoSwarmPlannerNode::invalidate_active_plan()
     waiting_retry_time_s_ = 0.0;
     active_plan_ = ego_swarm::PlannerResult{};
     active_plan_target_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
+    active_plan_final_target_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
     active_plan_start_time_ = rclcpp::Time(
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
     active_plan_trajectory_id_ = 0U;
@@ -2637,18 +2644,19 @@ EgoSwarmPlannerNode::evaluate_formation_convergence(const double now_s) const
         observations, global_arrival_tolerance_m_);
 }
 
-bool EgoSwarmPlannerNode::get_current_target(ego_swarm::Vector3& target) const
+bool EgoSwarmPlannerNode::get_current_final_target(
+    ego_swarm::Vector3& final_target) const
 {
     if (has_formation_)
     {
-        return get_formation_target_for_agent(agent_index_, target);
+        return get_formation_target_for_agent(agent_index_, final_target);
     }
 
     if (!has_goal_ || !ego_swarm::is_finite_vector(goal_position_))
     {
         return false;
     }
-    target = goal_position_;
+    final_target = goal_position_;
     return true;
 }
 
@@ -2790,6 +2798,7 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     active_plan_ = brake_result;
     active_plan_target_ = ego_swarm::is_finite_vector(active_target)
         ? active_target : state.position;
+    active_plan_final_target_ = active_plan_target_;
     active_plan_start_time_ = now;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
@@ -2831,6 +2840,7 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
     clear_terminal_hold();
     active_plan_ = hold_result;
     active_plan_target_ = target;
+    active_plan_final_target_ = target;
     active_plan_start_time_ = now;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;

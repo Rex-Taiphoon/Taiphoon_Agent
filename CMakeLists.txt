@@ -276,6 +276,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Final／Planning／Active Plan target 語意測試
+  ament_add_gtest(test_planner_target_semantics
+    test/planner_target_semantics_test.cpp
+  )
+
+  target_include_directories(test_planner_target_semantics PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp
