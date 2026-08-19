@@ -254,12 +254,12 @@ bool BasicControllerNode::initialize_ned_target_subscriber()
 
 bool BasicControllerNode::initialize_agent_trajectory_subscriber()
 {
-    constexpr char AGENT_TRAJECTORY_TOPIC[] =
-        "/fmu_all_agent/swarm/agent_trajectories";
+    const std::string agent_trajectory_topic =
+        "/" + agent_namespace_ + "/planning/trajectory";
 
     agent_trajectory_sub_ =
         this->create_subscription<taiphoon_agent::msg::AgentTrajectory>(
-            AGENT_TRAJECTORY_TOPIC,
+            agent_trajectory_topic,
             rclcpp::QoS(10).best_effort(),
             std::bind(&BasicControllerNode::agent_trajectory_cb, this,
                       std::placeholders::_1));
@@ -268,13 +268,13 @@ bool BasicControllerNode::initialize_agent_trajectory_subscriber()
     {
         RCLCPP_ERROR(this->get_logger(),
                      "Failed to create AgentTrajectory subscriber on '%s'",
-                     AGENT_TRAJECTORY_TOPIC);
+                     agent_trajectory_topic.c_str());
         return false;
     }
 
     RCLCPP_INFO(this->get_logger(),
                 "Subscribed to EGO-Swarm trajectory topic: %s",
-                AGENT_TRAJECTORY_TOPIC);
+                agent_trajectory_topic.c_str());
     return true;
 }
 

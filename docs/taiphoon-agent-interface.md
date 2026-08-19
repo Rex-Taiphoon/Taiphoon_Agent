@@ -27,11 +27,11 @@
 ## 1. 系統架構總覽
 
 ```
-GCS 命令 ──▶ EgoSwarmPlanner ──▶ AgentTrajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
-                  ▲       ▲              │
-                  │       │              └──▶ /fmu_all_agent/swarm/agent_trajectories
+GCS 命令 ──▶ EgoSwarmPlanner ──▶ /{agent_namespace}/planning/trajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
+                  │       ▲
                   │       └── PointCloud2（局部障礙物）
-                  └── WGS84 → receiver-local NED／編隊槽位／同儕未來軌跡
+                  └── /fmu_all_agent/swarm/agent_trajectories（同儕 future occupancy）
+                      WGS84 → receiver-local NED／編隊槽位／同儕未來軌跡
 
 ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 ```
@@ -395,11 +395,11 @@ EGO-Swarm Planner 狀態與安全指標。
 
 | Topic 模板 | 說明 | 型別 | QoS |
 |------------|------|------|-----|
-| `/fmu_all_agent/swarm/agent_trajectories` | 各 Agent 發布的 EGO-Swarm 未來軌跡，供同儕規劃與 BasicController 取樣使用 | `taiphoon_agent/AgentTrajectory` | reliable (pub) / best_effort (sub), depth 10 |
+| `/fmu_all_agent/swarm/agent_trajectories` | 各 Agent 發布的 EGO-Swarm 未來軌跡，供同儕規劃建立 occupancy 與避碰使用；不作為本機 BasicController 控制輸入 | `taiphoon_agent/AgentTrajectory` | reliable (pub) / best_effort (sub), depth 10 |
 | `/{agent_namespace}/perception/obstacles` | 本機局部障礙物 PointCloud2 | `sensor_msgs/msg/PointCloud2` | best_effort (pub/sub), depth 10 |
 | `/{agent_namespace}/planning/mission_intent` | 本機任務意圖文字命令，供 EGO-Swarm Planner 設定目標 | `std_msgs/msg/String` | reliable (10) |
 | `/{agent_namespace}/planning/status` | 本機 EGO-Swarm 規劃狀態與診斷 | `taiphoon_agent/PlannerStatus` | reliable (10) |
-| `/{agent_namespace}/planning/trajectory` | 本機 EGO-Swarm 規劃結果 | `taiphoon_agent/AgentTrajectory` | reliable (10) |
+| `/{agent_namespace}/planning/trajectory` | 本機 EGO-Swarm 規劃結果，供本機 BasicController 取樣並發布 PX4 setpoint | `taiphoon_agent/AgentTrajectory` | reliable (10) |
 | `/fmu_all_agent/swarm/formation_epochs` | Leaderless 編隊 epoch、WGS84 snapshot 與 ADOPTED heartbeat | `taiphoon_agent/FormationEpoch` | reliable + transient_local (10) |
 | `/{agent_namespace}/ned_target` | 舊 NED 目標介面；EGO-Swarm 取代後僅作相容或純邏輯測試用途 | `taiphoon_agent/NedTarget` | 既有介面 |
 | `/{agent_namespace}/waypoints` | 舊 waypoint 介面；EGO-Swarm 取代後僅作純邏輯測試用途，不能視為 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | 既有介面 |
@@ -422,11 +422,16 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 | `ego_swarm_planner`（發布） | `/fmu_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
 | `ego_swarm_planner`（發布） | `/{agent_namespace}/planning/status`、`/{agent_namespace}/planning/trajectory` | 發布本機規劃狀態與軌跡 |
 | `obstacle_cloud_simulator`（發布） | `/{agent_namespace}/perception/obstacles` | 發布 PointCloud2 障礙物資料 |
-| `basic_controller_node`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取樣目前 Agent 的軌跡並發布 PX4 setpoint |
+| `basic_controller_node`（訂閱） | `/{agent_namespace}/planning/trajectory` | 取樣本機 EGO-Swarm 軌跡並發布 PX4 setpoint |
 
 > **同儕資料來源**：AgentState 維持 GCS 與 Agent 的目前狀態介面；EGO-Swarm 的
 > 未來軌跡透過 `/fmu_all_agent/swarm/agent_trajectories` 交換。EGO planner 每 3 秒
 > 掃描同儕 Agent，並以各 Agent 的 state Topic 建立同儕訂閱。
+>
+> 待命或沒有任務時，planner 仍會在 global topic 發布 `terminal_hold=true` heartbeat
+> 供同儕保留 occupancy，但不會同步發布到本機 `planning/trajectory`；因此不會改寫
+> BasicController 在 HOVER／TAKEOFF 後鎖定的本機 setpoint。移動中、煞車中及任務終點
+> 的本機執行軌跡才會同時進入 local topic。
 >
 > 機群之間一律只訂閱 `/fmu<N>_agent/state` 等 Agent 對外 topic，
 > 不直接訂閱其他無人機的 PX4 原生 topic（`/fmu<N>/fmu/out/*`）。

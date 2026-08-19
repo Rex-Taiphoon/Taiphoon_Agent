@@ -625,7 +625,10 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 接收端會以自己的固定 Home 將控制點轉成公尺制 local NED，再執行 B-spline
 取樣、動力學限制與同儕避碰。完成任務的 Agent 會持續發布
 `terminal_hold=true` 的固定終點軌跡 heartbeat，直到超過 peer timeout，讓其他
-Agent 仍把該終點視為佔位障礙。
+Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 global
+`/fmu_all_agent/swarm/agent_trajectories`，不會送入本機
+`/{agent_namespace}/planning/trajectory`；只有本機需要執行的移動、煞車與任務終點 hold
+才會交給 BasicController 取樣成 PX4 `TrajectorySetpoint`。
 
 ---
 
@@ -702,7 +705,8 @@ ContinuousSafetyValidator。
 planning cycle 重置進度。Planner 以自己的固定 Home 將 WGS84 與 PX4 local NED
 轉換到同一個公尺制 local frame；兩者都在容許誤差內才視為到達。到達後持續發布
 `terminal_hold=true` 的目標位置 hold trajectory，清除任務但保留 peer occupancy
-heartbeat；沒有移動或編隊目標時，BasicController 維持 finite hold setpoint。
+heartbeat；沒有移動或編隊目標時，BasicController 維持原本鎖定的 finite hold setpoint，
+不會被 global occupancy heartbeat 改寫。
 同儕 `AgentTrajectory` 另受 `peer_trajectory_timeout_s`、`max_peer_time_skew_s`、
 控制點／duration 合理性與 `frame_revision` 約束；ACTIVE 與 TERMINAL_HOLD 資料都
 參與 peer collision 評估。ContinuousSafetyValidator 會再檢查整條候選軌跡的 p/v/a/j、

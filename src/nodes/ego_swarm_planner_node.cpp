@@ -1723,8 +1723,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         // mission goal callback。若待命時先建立了 terminal hold，飛機
         // 之後起飛便不能繼續廣播起飛前的位置，否則其他 Agent 會把
         // 舊高度當成真實 occupancy，planner 可能錯誤放行同高度直線。
-        // 只在沒有 active brake 的待命路徑更新 heartbeat，保留單一
-        // trajectory publisher 與原本的 BasicController 指令邊界。
+        // 只在沒有 active brake 的待命路徑更新 peer heartbeat；這些
+        // occupancy 資料不應取得本機 BasicController 的控制權。
         ego_swarm::Vector3 current{};
         const bool current_position_available =
             get_position_in_swarm_frame(own_state_, current);
@@ -1745,7 +1745,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         {
             publish_plan(
                 terminal_hold_plan_, terminal_hold_position_, now,
-                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true,
+                TrajectoryPublishRoute::PEER_ONLY);
             publish_status(
                 PLANNER_STATE_HOLD,
                 "Terminal hold; peer occupancy heartbeat active",
@@ -1770,7 +1771,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         {
             publish_plan(
                 terminal_hold_plan_, terminal_hold_position_, now,
-                terminal_hold_start_time_, terminal_hold_trajectory_id_, true);
+                terminal_hold_start_time_, terminal_hold_trajectory_id_, true,
+                TrajectoryPublishRoute::PEER_ONLY);
             publish_status(
                 PLANNER_STATE_HOLD,
                 "Terminal hold; peer occupancy heartbeat active",
@@ -3189,7 +3191,8 @@ void EgoSwarmPlannerNode::publish_plan(
     const rclcpp::Time& now,
     const rclcpp::Time& start_time,
     const uint32_t trajectory_id,
-    const bool terminal_hold)
+    const bool terminal_hold,
+    const TrajectoryPublishRoute route)
 {
     if (trajectory_id == 0U || trajectory_id < last_published_trajectory_id_)
     {
@@ -3242,7 +3245,10 @@ void EgoSwarmPlannerNode::publish_plan(
     }
     (void)origin_position;
     trajectory_pub_->publish(message);
-    local_trajectory_pub_->publish(message);
+    if (route == TrajectoryPublishRoute::PEER_AND_LOCAL)
+    {
+        local_trajectory_pub_->publish(message);
+    }
     last_published_trajectory_id_ = trajectory_id;
 }
 

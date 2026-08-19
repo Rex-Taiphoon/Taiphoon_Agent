@@ -195,13 +195,19 @@ private:
         const rclcpp::Time& now,
         bool peer_data_valid);
     void set_goal_from_command(const std::string& command);
+    enum class TrajectoryPublishRoute : uint8_t
+    {
+        PEER_ONLY,
+        PEER_AND_LOCAL
+    };
     void publish_plan(
         const ego_swarm::PlannerResult& result,
         const ego_swarm::Vector3& origin_position,
         const rclcpp::Time& now,
         const rclcpp::Time& start_time,
         uint32_t trajectory_id,
-        bool terminal_hold = false);
+        bool terminal_hold = false,
+        TrajectoryPublishRoute route = TrajectoryPublishRoute::PEER_AND_LOCAL);
     void publish_status(
         uint8_t state,
         const std::string& reason,

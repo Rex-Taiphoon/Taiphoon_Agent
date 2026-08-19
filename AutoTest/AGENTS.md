@@ -9,6 +9,7 @@
 | 路徑 | 用途 |
 |------|------|
 | `scripts/quick_takeoff.sh` | 一鍵起飛：OFFBOARD → ARM → TAKEOFF 8m |
+| `scripts/setpoint_stability_monitor.py` | 觀察單機 Takeoff／MOVE 後 PX4 Setpoint 穩定性 |
 | `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器 |
 | `scripts/px4-sitl-launcher/start_single_instance.sh` | 啟動單一 PX4 SITL 實例 |
 | `scripts/px4-sitl-launcher/stop_all.sh` | 停止所有 PX4 SITL 容器 |
