@@ -173,7 +173,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("planning_rate_hz", DEFAULT_EGO_PLANNER_RATE_HZ);
-    declare_parameter<bool>("enable_local_goal_planning", false);
+    declare_parameter<bool>("enable_local_goal_planning", true);
     declare_parameter<bool>("enable_generic_trajectory_reservation", false);
     declare_parameter<double>(
         "local_goal_horizon_m",
