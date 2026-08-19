@@ -249,6 +249,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Local Goal Selector 純邏輯測試
+  ament_add_gtest(test_local_goal_selector
+    test/local_goal_selector_test.cpp
+  )
+
+  target_include_directories(test_local_goal_selector PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp
