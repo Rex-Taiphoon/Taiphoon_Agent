@@ -41,6 +41,7 @@
 #include "ego_swarm/PlanningTargetSelector.hpp"
 #include "ego_swarm/PlannerTargetSemantics.hpp"
 #include "ego_swarm/PositionArrival.hpp"
+#include "ego_swarm/ReplanTrigger.hpp"
 #include "ego_swarm/SwarmFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
 #include "ego_swarm/TrajectoryReservationPolicy.hpp"
@@ -282,6 +283,10 @@ private:
     ego_swarm::Vector3 active_plan_final_target_{0.0, 0.0, 0.0};
     rclcpp::Time active_plan_start_time_{
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME};
+    /// 最近一次接受正常 planner candidate 的時間，用於
+    /// progress replan interval。
+    bool has_last_replan_time_{false};
+    double last_replan_time_s_{0.0};
     uint32_t active_plan_trajectory_id_{0U};
     ego_swarm::PlannerResult terminal_hold_plan_{};
     ego_swarm::Vector3 terminal_hold_position_{0.0, 0.0, 0.0};

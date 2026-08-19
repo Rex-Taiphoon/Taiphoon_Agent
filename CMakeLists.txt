@@ -294,6 +294,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # Local Goal segment 重規劃 trigger 純邏輯測試
+  ament_add_gtest(test_replan_trigger
+    test/replan_trigger_test.cpp
+  )
+
+  target_include_directories(test_replan_trigger PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp

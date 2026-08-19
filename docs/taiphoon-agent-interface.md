@@ -89,6 +89,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalGoalSelector`／`PlanningTargetSelector`：Local Goal 開啟時依 Final Target、
   PathConstraint 與 horizon 產生本輪 Planning Target；功能關閉時直接保留 Final Target
+- `ReplanTrigger`：Local Goal 開啟時依 segment progress、Final Target 變更、
+  segment 結束與 active trajectory safety 判斷是否允許重規劃
 - `Planner target semantics`：明確區分任務 `Final Target`、本輪 `Planning Target`、
   目前 active segment 的 `active_plan_target_` 與其所屬任務的
   `active_plan_final_target_`；到達判斷、terminal hold 與 recovery 只使用 `Final Target`
@@ -114,8 +116,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `enable_local_goal_planning` | `bool` | `false` | Local Goal segmented planning 功能旗標；預設關閉以維持舊架構行為 |
 | `enable_generic_trajectory_reservation` | `bool` | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
 | `local_goal_horizon_m` | `double` | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
-| `local_goal_replan_ratio` | `double` | `0.70` | 依 segment progress 允許重新規劃的比例；Step3 僅保存設定 |
-| `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 最短間隔（秒）；Step3 僅保存設定 |
+| `local_goal_replan_ratio` | `double` | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
+| `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
 | `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |

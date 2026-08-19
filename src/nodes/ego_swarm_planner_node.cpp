@@ -2100,6 +2100,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         active_plan_.trajectory.is_valid() &&
         std::isfinite(active_elapsed_s) && active_elapsed_s <=
             active_plan_.trajectory.duration_s();
+    bool preserve_active_plan_on_candidate_failure = false;
     if (active_plan_running)
     {
         const auto safety_result = validate_plan(
@@ -2129,17 +2130,42 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
         else
         {
-            // 重新發布同一條軌跡時保留原始 start_time 與 trajectory_id，讓
-            // BasicController 依原本的時間軸持續取樣，不會每 100 ms 重置進度。
-            publish_plan(
-                active_plan_, current, now, active_plan_start_time_,
-                active_plan_trajectory_id_);
-            publish_status(
-                active_plan_.is_hold ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-                active_plan_.is_hold ? "Holding until replanning is safe" : "ok",
-                &active_plan_, true, peer_data_valid, now);
-            (void)peer_trajectories_.prune(now_s);
-            return;
+            const ego_swarm::ReplanTriggerInput replan_input{
+                planner_feature_flags_.enable_local_goal_planning &&
+                !emergency_brake_active_,
+                true,
+                final_target_unchanged,
+                true,
+                active_elapsed_s,
+                active_plan_.trajectory.duration_s(),
+                now_s,
+                has_last_replan_time_,
+                last_replan_time_s_,
+                planner_feature_flags_.local_goal_replan_ratio,
+                planner_feature_flags_.minimum_replan_interval_s};
+            const auto replan_decision =
+                ego_swarm::evaluate_replan_trigger(replan_input);
+            if (!replan_decision.should_replan)
+            {
+                // 重新發布同一條軌跡時保留原始 start_time 與
+                // trajectory_id，
+                // 讓 BasicController 依原本的時間軸持續取樣，
+                // 不會每 100 ms 重置進度。
+                publish_plan(
+                    active_plan_, current, now, active_plan_start_time_,
+                    active_plan_trajectory_id_);
+                publish_status(
+                    active_plan_.is_hold
+                        ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
+                    active_plan_.is_hold
+                        ? "Holding until replanning is safe" : "ok",
+                    &active_plan_, true, peer_data_valid, now);
+                (void)peer_trajectories_.prune(now_s);
+                return;
+            }
+            preserve_active_plan_on_candidate_failure =
+                replan_decision.reason ==
+                ego_swarm::ReplanTriggerReason::SEGMENT_PROGRESS;
         }
     }
 
@@ -2164,9 +2190,51 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     snapshot.peers_are_fresh = peer_data_valid;
     peer_trajectories_.get_active(now_s, snapshot.peers);
 
+    // Progress-based replan 的 candidate 若失敗，先保留仍在
+    // duration 內且通過最新 safety validation 的舊 trajectory；
+    // Final Target 改變、unsafe
+    // 或 segment 結束則不適用此 fallback。
+    const auto retain_active_plan_if_safe = [&]() -> bool
+        {
+            if (!preserve_active_plan_on_candidate_failure ||
+                !has_active_plan_ || emergency_brake_active_ ||
+                waiting_for_replan_ || !active_plan_.trajectory.is_valid())
+            {
+                return false;
+            }
+            const double elapsed_s =
+                (now - active_plan_start_time_).seconds();
+            if (!std::isfinite(elapsed_s) || elapsed_s < 0.0 ||
+                elapsed_s > active_plan_.trajectory.duration_s())
+            {
+                return false;
+            }
+            const auto active_safety = validate_plan(
+                active_plan_.trajectory, planning_state, now_s,
+                active_plan_start_time_.seconds());
+            if (!active_safety.is_safe)
+            {
+                return false;
+            }
+            publish_plan(
+                active_plan_, current, now, active_plan_start_time_,
+                active_plan_trajectory_id_);
+            publish_status(
+                active_plan_.is_hold
+                    ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
+                "Candidate replan failed; retaining safe active trajectory",
+                &active_plan_, true, peer_data_valid, now);
+            (void)peer_trajectories_.prune(now_s);
+            return true;
+        };
+
     ego_swarm::PlannerResult result = selected_planner_->plan(snapshot);
     if (!result.is_valid || !result.trajectory.is_valid())
     {
+        if (retain_active_plan_if_safe())
+        {
+            return;
+        }
         const std::string failure_reason = optimized_failure_reason(
             result.termination);
         RCLCPP_WARN_THROTTLE(
@@ -2204,6 +2272,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             reservation_horizon_s_);
         if (!reservation.is_reserved)
         {
+            if (retain_active_plan_if_safe())
+            {
+                return;
+            }
             const double speed_mps = std::sqrt(
                 ego_swarm::squared_norm(planning_state.velocity));
             if (std::isfinite(speed_mps) && speed_mps <= 0.2)
@@ -2231,6 +2303,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         &snapshot.peers);
     if (!safety_result.is_safe)
     {
+        if (retain_active_plan_if_safe())
+        {
+            return;
+        }
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
         if (safety_result.reason ==
@@ -2262,6 +2338,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     active_plan_target_ = planning_target;
     active_plan_final_target_ = final_target;
     active_plan_start_time_ = accepted_start_time;
+    has_last_replan_time_ = true;
+    last_replan_time_s_ = now_s;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
     emergency_brake_active_ = false;
@@ -2559,6 +2637,8 @@ void EgoSwarmPlannerNode::invalidate_active_plan()
     active_plan_final_target_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
     active_plan_start_time_ = rclcpp::Time(
         static_cast<int32_t>(0), static_cast<uint32_t>(0), RCL_ROS_TIME);
+    has_last_replan_time_ = false;
+    last_replan_time_s_ = 0.0;
     active_plan_trajectory_id_ = 0U;
     clear_terminal_hold();
 }
@@ -2828,6 +2908,8 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
         ? active_target : state.position;
     active_plan_final_target_ = active_plan_target_;
     active_plan_start_time_ = now;
+    has_last_replan_time_ = false;
+    last_replan_time_s_ = 0.0;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
     emergency_brake_active_ = true;
@@ -2870,6 +2952,8 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
     active_plan_target_ = target;
     active_plan_final_target_ = target;
     active_plan_start_time_ = now;
+    has_last_replan_time_ = false;
+    last_replan_time_s_ = 0.0;
     active_plan_trajectory_id_ = ++trajectory_id_;
     has_active_plan_ = true;
     emergency_brake_active_ = false;
