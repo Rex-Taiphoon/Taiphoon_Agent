@@ -86,18 +86,18 @@ public:
         // 全域 GPS 座標
         if (gps != nullptr)
         {
-            state.position_global[0] = static_cast<float>(gps->lat);
-            state.position_global[1] = static_cast<float>(gps->lon);
-            state.position_global[2] = gps->alt;
+            state.position_global[0] = gps->lat;
+            state.position_global[1] = gps->lon;
+            state.position_global[2] = static_cast<double>(gps->alt);
         }
         else
         {
             state.position_global[0] =
-                std::numeric_limits<float>::quiet_NaN();
+                std::numeric_limits<double>::quiet_NaN();
             state.position_global[1] =
-                std::numeric_limits<float>::quiet_NaN();
+                std::numeric_limits<double>::quiet_NaN();
             state.position_global[2] =
-                std::numeric_limits<float>::quiet_NaN();
+                std::numeric_limits<double>::quiet_NaN();
         }
 
         // PX4 飛行狀態與校正後的任務階段

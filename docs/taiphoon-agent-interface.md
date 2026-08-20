@@ -205,7 +205,7 @@ Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 P
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 訊息時間戳 |
 | `position_ned` | `float32[3]` | NED 座標位置（前向/右向/向下，公尺） |
-| `position_global` | `float32[3]` | 全域 GPS 座標 [lat(deg), lon(deg), alt(m AMSL)]，來自 PX4 VehicleGlobalPosition |
+| `position_global` | `float64[3]` | 全域 GPS 座標 [lat(deg), lon(deg), alt(m AMSL)]，來自 PX4 VehicleGlobalPosition；保留 GPS double 精度 |
 | `flight_mode` | `uint8` | 經 PX4 觀測校正後的任務階段（對應 FlightState 枚舉，見下表），不是命令意圖 |
 | `battery_remaining` | `float32` | 剩餘電量比例（0.0 ~ 1.0），來自 PX4 BatteryStatus |
 | `battery_voltage_v` | `float32` | 電池電壓（V），來自 PX4 BatteryStatus |
@@ -448,9 +448,14 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
   local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
-- `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的 mission goal position 累加；
-  水平位移使用保存的 target yaw。只有尚未建立 target yaw 的第一個水平命令需要新鮮
-  AgentAttitude；後續命令不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
+- 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的 mission goal position
+  累加，水平位移使用保存的 target yaw。全體 `/fmu_all_agent/command` 的同名命令只在
+  FormationEpoch 啟用時有效，改為以共同 `swarm_ned` 位移平移 Formation center，保留
+  編隊形狀與 slot assignment；未在編隊時拒絕。
+- 全體 `MOVE_POINT x y z yaw` 的 `x/y/z` 是共同 `swarm_ned` 中 Formation center 的
+  絕對目標，`yaw` 仍由 BasicController 以絕對航向語意套用至每台 Agent。
+- 單機命令只有尚未建立 target yaw 的第一個水平命令需要新鮮 AgentAttitude；後續命令
+  不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
 - `YAW` 的相對角度累加到保存的 target yaw；`MOVE_POINT` 的絕對 yaw 會重設 target yaw。
 - 編隊 assignment 使用 FormationEpoch center 建立的 canonical NED、距離加換槽 penalty
   的 deterministic Hungarian；成員 discovery 連續兩次穩定後自動重編隊。
@@ -549,7 +554,7 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `MOVE_UP <x>` | 距離 (公尺) | 向上移動 |
 | `MOVE_DOWN <x>` | 距離 (公尺) | 向下移動 |
 | `YAW <angle>` | 相對角度 (度) | 以目前航向為基準順時針旋轉，由 BasicController 直接發布 |
-| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 位置由 Planner 規劃，yaw 由 BasicController 直接設定 |
+| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 單機時為 Agent 目標；全體編隊時為共同 swarm_ned 的 Formation center 目標，yaw 由 BasicController 直接設定 |
 
 #### 基礎控制命令
 
@@ -567,6 +572,11 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `FORMATION_HORI_LINEAR <spacing> <altitude>` | 間距 (公尺), 高度 (公尺) | 水平一字編隊 |
 | `FORMATION_VERT_LINEAR <spacing>` | 間距 (公尺) | 垂直一字編隊 |
 | `FORMATION_CANCEL` | 無 | 取消編隊 |
+
+> 全體 `MOVE_*`／`MOVE_POINT` 必須在已啟用 FormationEpoch 時使用；全體相對命令的方向
+> 固定為 `FORWARD=+North`、`BACKWARD=-North`、`RIGHT=+East`、`LEFT=-East`、
+> `UP=-Down`、`DOWN=+Down`。取消編隊或單機移動後，重新發送相同 Formation command
+> 會重新啟用既有 Epoch，不重建 assignment 或 center。
 
 > **EGO-Swarm 編隊基準點**：收到 `FORMATION_*` 指令後，由 `ego_swarm_planner`
 > 使用 WGS84 位置交換與各自固定 Home 的 local NED 計算共同參考點與虛擬編隊槽位；每台 Agent 自行規劃前往

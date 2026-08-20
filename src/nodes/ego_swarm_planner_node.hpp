@@ -29,6 +29,7 @@
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
 #include "ego_swarm/FormationConvergence.hpp"
+#include "ego_swarm/FormationReentryPolicy.hpp"
 #include "ego_swarm/FormationReservation.hpp"
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
@@ -49,6 +50,7 @@
 #include "ego_swarm/TrajectoryReservationPolicy.hpp"
 #include "formation/PeerMatcher.hpp"
 #include "perception/RawPointObstacleMap.hpp"
+#include "utils/CommandTypes.hpp"
 
 namespace taiphoon
 {
@@ -129,7 +131,10 @@ private:
     bool initialize_subscribers();
     bool initialize_publishers();
     bool attitude_is_fresh() const;
-    bool make_formation_proposal(const std::vector<int>& member_ids);
+    bool make_formation_proposal(
+        const std::vector<int>& member_ids,
+        const ego_swarm::Vector3* requested_center = nullptr);
+    bool handle_group_move_command(const utils::ParsedCommand& parsed);
     bool update_formation_assignment();
     bool get_formation_target_for_agent(
         int agent_id, ego_swarm::Vector3& target) const;

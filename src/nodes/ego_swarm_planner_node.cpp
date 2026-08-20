@@ -768,16 +768,27 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
             has_position_target_ = true;
         }
         has_formation_ = false;
-        has_accepted_formation_epoch_ = false;
-        has_candidate_formation_epoch_ = false;
         formation_command_pending_ = false;
         formation_membership_change_pending_ = false;
         formation_initial_plan_pending_ = false;
-        candidate_adopted_agents_.clear();
-        formation_assignment_.clear();
         preserve_altitude_ = false;
         invalidate_active_plan();
         return;
+    }
+
+    switch (parsed.command)
+    {
+        case utils::AgentCommand::MOVE_FORWARD:
+        case utils::AgentCommand::MOVE_BACKWARD:
+        case utils::AgentCommand::MOVE_LEFT:
+        case utils::AgentCommand::MOVE_RIGHT:
+        case utils::AgentCommand::MOVE_UP:
+        case utils::AgentCommand::MOVE_DOWN:
+        case utils::AgentCommand::MOVE_POINT:
+            (void)handle_group_move_command(parsed);
+            return;
+        default:
+            break;
     }
 
     if (parsed.command != utils::AgentCommand::FORMATION_CIRCLE &&
@@ -826,7 +837,46 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     }
 
     preserve_altitude_ = false;
-    const std::vector<int> members = stable_member_ids();
+    std::vector<int> members = stable_member_ids();
+    std::sort(members.begin(), members.end());
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    const bool accepted_epoch_matches = has_accepted_formation_epoch_ &&
+        formation_config_matches(requested_config, previous_config) &&
+        accepted_formation_epoch_.member_agent_ids == members;
+    const bool candidate_epoch_matches = has_candidate_formation_epoch_ &&
+        formation_config_matches(requested_config, previous_config) &&
+        candidate_formation_epoch_.member_agent_ids == members;
+
+    // 單機 MOVE 或 FORMATION_CANCEL 只暫停目前編隊，不摧毀既有 Epoch。
+    // 相同編隊命令應重新啟用原 assignment／center，而不是被冪等檢查丟棄。
+    ego_swarm::FormationReentryState reentry_state{
+        has_formation_, has_goal_, has_position_target_, preserve_altitude_,
+        formation_command_pending_, formation_membership_change_pending_,
+        formation_initial_plan_pending_};
+    if (ego_swarm::reactivate_existing_formation(
+            reentry_state, accepted_epoch_matches, candidate_epoch_matches))
+    {
+        has_formation_ = reentry_state.has_formation;
+        has_goal_ = reentry_state.has_goal;
+        has_position_target_ = reentry_state.has_position_target;
+        preserve_altitude_ = reentry_state.preserve_altitude;
+        formation_command_pending_ = reentry_state.formation_command_pending;
+        formation_membership_change_pending_ =
+            reentry_state.formation_membership_change_pending;
+        formation_initial_plan_pending_ =
+            reentry_state.formation_initial_plan_pending;
+        invalidate_active_plan();
+        RCLCPP_INFO(
+            get_logger(),
+            "Reactivated existing FormationEpoch seq=%u hash=%u",
+            has_accepted_formation_epoch_
+                ? accepted_formation_epoch_.sequence
+                : candidate_formation_epoch_.sequence,
+            has_accepted_formation_epoch_
+                ? accepted_formation_epoch_.snapshot_hash
+                : candidate_formation_epoch_.snapshot_hash);
+        return;
+    }
     if (has_candidate_formation_epoch_ &&
         formation_config_matches(requested_config, previous_config) &&
         candidate_formation_epoch_.member_agent_ids == members)
@@ -849,6 +899,149 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     {
         formation_command_pending_ = false;
     }
+}
+
+bool EgoSwarmPlannerNode::handle_group_move_command(
+    const utils::ParsedCommand& parsed)
+{
+    if (!has_formation_ || !has_accepted_formation_epoch_)
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting group MOVE: no active FormationEpoch is available");
+        return false;
+    }
+
+    std::vector<int> members = stable_member_ids();
+    std::sort(members.begin(), members.end());
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    if (members.empty() ||
+        !std::binary_search(members.begin(), members.end(), agent_index_))
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting group MOVE: stable formation membership is unavailable");
+        return false;
+    }
+
+    // 全體命令只由穩定成員中 ID 最小者建立下一個 Epoch，避免各 Agent
+    // 以自己的 local Home 轉換中心後提出略有差異的 proposal。
+    if (agent_index_ != members.front())
+    {
+        RCLCPP_DEBUG(
+            get_logger(),
+            "Ignoring group MOVE proposal: Agent %d is waiting for proposer %d",
+            agent_index_, members.front());
+        return true;
+    }
+
+    if (has_candidate_formation_epoch_ &&
+        !epoch_is_same_snapshot(
+            candidate_formation_epoch_, accepted_formation_epoch_))
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting group MOVE while a FormationEpoch proposal is pending");
+        return false;
+    }
+
+    if (!has_own_state_ || !update_swarm_frame() ||
+        !ego_swarm::is_finite_vector(formation_center_))
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting group MOVE: Formation center frame is unavailable");
+        return false;
+    }
+
+    ego_swarm::Vector3 requested_center{};
+    if (parsed.command == utils::AgentCommand::MOVE_POINT)
+    {
+        if (!parsed.has_multi_params || !std::isfinite(parsed.param_value) ||
+            !std::isfinite(parsed.param2) || !std::isfinite(parsed.param3) ||
+            !std::isfinite(parsed.param4))
+        {
+            RCLCPP_WARN(get_logger(), "Rejecting invalid group MOVE_POINT");
+            return false;
+        }
+        // 全體 MOVE_POINT 的 x/y/z 是共同 swarm_ned 中 Formation center
+        // 的絕對目標；各 Agent 不會把它解讀成自己的 slot 目標。
+        requested_center = ego_swarm::Vector3{
+            static_cast<double>(parsed.param_value),
+            static_cast<double>(parsed.param2),
+            static_cast<double>(parsed.param3)};
+    }
+    else
+    {
+        if (!parsed.has_param || !std::isfinite(parsed.param_value))
+        {
+            RCLCPP_WARN(get_logger(), "Rejecting invalid group MOVE distance");
+            return false;
+        }
+
+        ego_swarm::SwarmMoveDirection direction{};
+        switch (parsed.command)
+        {
+            case utils::AgentCommand::MOVE_FORWARD:
+                direction = ego_swarm::SwarmMoveDirection::FORWARD;
+                break;
+            case utils::AgentCommand::MOVE_BACKWARD:
+                direction = ego_swarm::SwarmMoveDirection::BACKWARD;
+                break;
+            case utils::AgentCommand::MOVE_LEFT:
+                direction = ego_swarm::SwarmMoveDirection::LEFT;
+                break;
+            case utils::AgentCommand::MOVE_RIGHT:
+                direction = ego_swarm::SwarmMoveDirection::RIGHT;
+                break;
+            case utils::AgentCommand::MOVE_UP:
+                direction = ego_swarm::SwarmMoveDirection::UP;
+                break;
+            case utils::AgentCommand::MOVE_DOWN:
+                direction = ego_swarm::SwarmMoveDirection::DOWN;
+                break;
+            default:
+                RCLCPP_WARN(get_logger(), "Unsupported group MOVE command");
+                return false;
+        }
+
+        ego_swarm::Vector3 delta{};
+        if (!ego_swarm::common_swarm_ned_offset(
+                direction, static_cast<double>(parsed.param_value), delta))
+        {
+            RCLCPP_WARN(get_logger(), "Rejecting non-finite group MOVE delta");
+            return false;
+        }
+        requested_center = ego_swarm::add_vectors(formation_center_, delta);
+    }
+
+    if (!ego_swarm::is_finite_vector(requested_center))
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting non-finite Formation center target");
+        return false;
+    }
+
+    // 驗證目標可以轉回 WGS84，避免產生無法被其他 Agent 驗證的 Epoch。
+    ego_swarm::GeoCoordinate target_geo{};
+    if (!swarm_frame_.from_swarm_ned(requested_center, target_geo) ||
+        !ego_swarm::SwarmFrame::is_valid_geodetic(target_geo))
+    {
+        RCLCPP_WARN(get_logger(), "Rejecting group MOVE outside valid WGS84 range");
+        return false;
+    }
+
+    formation_command_pending_ = true;
+    formation_membership_change_pending_ =
+        members != accepted_formation_epoch_.member_agent_ids;
+    formation_initial_plan_pending_ = true;
+    preserve_altitude_ = false;
+    invalidate_active_plan();
+    if (make_formation_proposal(members, &requested_center))
+    {
+        formation_command_pending_ = false;
+        return true;
+    }
+    return false;
 }
 
 bool EgoSwarmPlannerNode::formation_config_matches(
@@ -1030,7 +1223,8 @@ bool EgoSwarmPlannerNode::epoch_parent_matches_current(
 }
 
 bool EgoSwarmPlannerNode::make_formation_proposal(
-    const std::vector<int>& member_ids)
+    const std::vector<int>& member_ids,
+    const ego_swarm::Vector3* requested_center)
 {
     if (!has_own_state_ || !update_swarm_frame())
     {
@@ -1068,12 +1262,26 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
 
     if (has_accepted_formation_epoch_)
     {
-        // Membership 變更只換槽位與 ownership，中心沿用 parent center。
-        proposal.center_latitude_deg =
-            accepted_formation_epoch_.center_latitude_deg;
-        proposal.center_longitude_deg =
-            accepted_formation_epoch_.center_longitude_deg;
-        proposal.center_altitude_m = accepted_formation_epoch_.center_altitude_m;
+        // 一般 membership 變更沿用 parent center；群組 MOVE 則以共同
+        // swarm_ned 計算出的新 center 建立下一個 Epoch。
+        ego_swarm::GeoCoordinate proposal_center{
+            accepted_formation_epoch_.center_latitude_deg,
+            accepted_formation_epoch_.center_longitude_deg,
+            accepted_formation_epoch_.center_altitude_m};
+        if (requested_center != nullptr)
+        {
+            if (!ego_swarm::is_finite_vector(*requested_center) ||
+                !swarm_frame_.from_swarm_ned(*requested_center, proposal_center))
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Rejecting Formation proposal: requested center is invalid");
+                return false;
+            }
+        }
+        proposal.center_latitude_deg = proposal_center.latitude_deg;
+        proposal.center_longitude_deg = proposal_center.longitude_deg;
+        proposal.center_altitude_m = proposal_center.altitude_m;
         for (const auto& entry : formation_assignment_)
         {
             proposal.parent_assignment_agent_ids.push_back(entry.first);

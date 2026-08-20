@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <array>
+#include <utility>
 #include <vector>
 
 #include "ego_swarm/BsplineTrajectory.hpp"
@@ -20,6 +22,7 @@
 #include "ego_swarm/EgoSwarmTypes.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
+#include "ego_swarm/FormationReentryPolicy.hpp"
 #include "ego_swarm/FormationTransition.hpp"
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
@@ -249,6 +252,74 @@ TEST(MovementFrameTest, ConvertsBodyForwardAndRightUsingCommandYaw)
         taiphoon::ego_swarm::EGO_SWARM_PI / 2.0, 5.0, 0.0, offset));
     EXPECT_NEAR(offset.at(0), 0.0, 1.0e-9);
     EXPECT_NEAR(offset.at(1), 5.0, 1.0e-9);
+}
+
+TEST(MovementFrameTest, ConvertsCommonSwarmDirections)
+{
+    using taiphoon::ego_swarm::SwarmMoveDirection;
+    using taiphoon::ego_swarm::common_swarm_ned_offset;
+
+    const std::array<std::pair<SwarmMoveDirection, Vector3>, 6> expected = {{
+        {SwarmMoveDirection::FORWARD, {2.0, 0.0, 0.0}},
+        {SwarmMoveDirection::BACKWARD, {-2.0, 0.0, 0.0}},
+        {SwarmMoveDirection::LEFT, {0.0, -2.0, 0.0}},
+        {SwarmMoveDirection::RIGHT, {0.0, 2.0, 0.0}},
+        {SwarmMoveDirection::UP, {0.0, 0.0, -2.0}},
+        {SwarmMoveDirection::DOWN, {0.0, 0.0, 2.0}},
+    }};
+
+    for (const auto& item : expected)
+    {
+        Vector3 offset{};
+        ASSERT_TRUE(common_swarm_ned_offset(item.first, 2.0, offset));
+        EXPECT_DOUBLE_EQ(offset.at(0), item.second.at(0));
+        EXPECT_DOUBLE_EQ(offset.at(1), item.second.at(1));
+        EXPECT_DOUBLE_EQ(offset.at(2), item.second.at(2));
+    }
+}
+
+TEST(MovementFrameTest, RejectsNonFiniteCommonSwarmDistance)
+{
+    Vector3 offset{1.0, 2.0, 3.0};
+    EXPECT_FALSE(taiphoon::ego_swarm::common_swarm_ned_offset(
+        taiphoon::ego_swarm::SwarmMoveDirection::FORWARD,
+        std::numeric_limits<double>::quiet_NaN(), offset));
+    EXPECT_FALSE(taiphoon::ego_swarm::common_swarm_ned_offset(
+        taiphoon::ego_swarm::SwarmMoveDirection::RIGHT,
+        std::numeric_limits<double>::infinity(), offset));
+}
+
+TEST(FormationReentryPolicyTest, ReactivatesExistingEpochAndClearsSoloGoal)
+{
+    taiphoon::ego_swarm::FormationReentryState state;
+    state.has_goal = true;
+    state.has_position_target = true;
+    state.preserve_altitude = true;
+    state.formation_command_pending = true;
+    state.formation_membership_change_pending = true;
+
+    ASSERT_TRUE(taiphoon::ego_swarm::reactivate_existing_formation(
+        state, true, true));
+    EXPECT_TRUE(state.has_formation);
+    EXPECT_FALSE(state.has_goal);
+    EXPECT_FALSE(state.has_position_target);
+    EXPECT_FALSE(state.preserve_altitude);
+    EXPECT_FALSE(state.formation_command_pending);
+    EXPECT_FALSE(state.formation_membership_change_pending);
+    EXPECT_TRUE(state.formation_initial_plan_pending);
+}
+
+TEST(FormationReentryPolicyTest, DoesNotReactivateActiveOrUnmatchedEpoch)
+{
+    taiphoon::ego_swarm::FormationReentryState active;
+    active.has_formation = true;
+    EXPECT_FALSE(taiphoon::ego_swarm::reactivate_existing_formation(
+        active, true, true));
+
+    taiphoon::ego_swarm::FormationReentryState unmatched;
+    EXPECT_FALSE(taiphoon::ego_swarm::reactivate_existing_formation(
+        unmatched, false, false));
+    EXPECT_FALSE(unmatched.has_formation);
 }
 
 TEST(MovementFrameTest, RejectsNonFiniteAttitude)

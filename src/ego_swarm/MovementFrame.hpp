@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 
 #include "ego_swarm/EgoSwarmTypes.hpp"
 
@@ -14,6 +15,58 @@ namespace taiphoon
 {
 namespace ego_swarm
 {
+
+/** @brief 全體編隊命令使用的共同 swarm_ned 移動方向。 */
+enum class SwarmMoveDirection : uint8_t
+{
+    FORWARD,
+    BACKWARD,
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN
+};
+
+/**
+ * @brief 將全體命令距離轉為共同 swarm_ned 位移。
+ *
+ * 全體編隊命令不使用各機 target yaw；所有 Agent 使用相同的 North/East/Down
+ * 基準，才能讓 Formation center 以同一方向平移。
+ */
+inline bool common_swarm_ned_offset(
+    const SwarmMoveDirection direction,
+    const double distance_m,
+    Vector3& offset_ned)
+{
+    offset_ned = Vector3{0.0, 0.0, 0.0};
+    if (!is_finite(distance_m))
+    {
+        return false;
+    }
+
+    switch (direction)
+    {
+        case SwarmMoveDirection::FORWARD:
+            offset_ned.at(0) = distance_m;
+            break;
+        case SwarmMoveDirection::BACKWARD:
+            offset_ned.at(0) = -distance_m;
+            break;
+        case SwarmMoveDirection::LEFT:
+            offset_ned.at(1) = -distance_m;
+            break;
+        case SwarmMoveDirection::RIGHT:
+            offset_ned.at(1) = distance_m;
+            break;
+        case SwarmMoveDirection::UP:
+            offset_ned.at(2) = -distance_m;
+            break;
+        case SwarmMoveDirection::DOWN:
+            offset_ned.at(2) = distance_m;
+            break;
+    }
+    return is_finite_vector(offset_ned);
+}
 
 /**
  * @brief 將 quaternion（w,x,y,z）轉成 NED yaw。

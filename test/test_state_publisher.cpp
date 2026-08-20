@@ -193,9 +193,15 @@ TEST(StatePublisherTest, FillAgentState_GpsFromGlobalPosition)
         taiphoon::controllers::FlightState::HOVER,
         true, &gps, nullptr);
 
-    EXPECT_FLOAT_EQ(state.position_global[0], static_cast<float>(gps.lat));
-    EXPECT_FLOAT_EQ(state.position_global[1], static_cast<float>(gps.lon));
-    EXPECT_FLOAT_EQ(state.position_global[2], gps.alt);
+    EXPECT_DOUBLE_EQ(state.position_global[0], gps.lat);
+    EXPECT_DOUBLE_EQ(state.position_global[1], gps.lon);
+    EXPECT_DOUBLE_EQ(state.position_global[2], static_cast<double>(gps.alt));
+
+    // 全球座標必須保留 GPS double 精度，不能退化為 float32 格點。
+    EXPECT_NE(state.position_global[0],
+              static_cast<double>(static_cast<float>(gps.lat)));
+    EXPECT_NE(state.position_global[1],
+              static_cast<double>(static_cast<float>(gps.lon)));
 }
 
 TEST(StatePublisherTest, FillAgentState_GpsNullptr)
@@ -282,9 +288,9 @@ TEST(StatePublisherTest, FillAgentState_AllPresent)
     EXPECT_FLOAT_EQ(state.position_ned[2], 3.0F);
 
     // GPS
-    EXPECT_FLOAT_EQ(state.position_global[0], static_cast<float>(gps.lat));
-    EXPECT_FLOAT_EQ(state.position_global[1], static_cast<float>(gps.lon));
-    EXPECT_FLOAT_EQ(state.position_global[2], gps.alt);
+    EXPECT_DOUBLE_EQ(state.position_global[0], gps.lat);
+    EXPECT_DOUBLE_EQ(state.position_global[1], gps.lon);
+    EXPECT_DOUBLE_EQ(state.position_global[2], static_cast<double>(gps.alt));
 
     // Battery
     EXPECT_FLOAT_EQ(state.battery_voltage_v, 12.3F);

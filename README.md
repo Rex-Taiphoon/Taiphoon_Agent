@@ -4,8 +4,9 @@
 以 EGO-Swarm 實作多機編隊、局部障礙物避讓與同儕未來軌跡避碰，並支援邊緣運算與即時影像處理。
 
 > 本 README 已反映目前 EGO-Swarm runtime。移動命令由 Planner 單一路徑處理，
-> `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的目標位置累加；水平位移使用保存的
-> target yaw；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
+> 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的目標位置累加；水平位移使用保存的
+> target yaw。全體命令在啟用編隊時以共同 `swarm_ned` 平移 Formation center，保留 slot
+> assignment；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
 > 與 deterministic minimum-cost assignment。
 
 ---
@@ -551,6 +552,10 @@ EGO planner Subscriber 均使用 best_effort QoS depth 10。
 | `FORMATION_VERT_LINEAR <間距>` | `param_value`: 間距 (m) | 垂直直列，沿 NED Z 軸排列 |
 | `FORMATION_CANCEL` | 無參數 | 取消編隊，停止發布 NED 目標 |
 
+全體 `/fmu_all_agent/command` 的 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 只在編隊
+啟用時有效，方向固定為共同 `swarm_ned` 的 `+North/-North/+East/-East/-Down/+Down`；
+全體 `MOVE_POINT` 的 x/y/z 是共同 Formation center 絕對目標。單機 MOVE 語意維持不變。
+
 **使用範例**：
 
 ```bash
@@ -561,7 +566,8 @@ docker compose exec fmu1_agent bash -c \
 ```
 
 > 編隊命令必須透過 **`/fmu_all_agent/command`** 廣播；Planner 會以 Epoch 去重，
-> 相同 config 與成員 snapshot 的重複命令不會建立新 epoch。
+> 相同 config 與成員 snapshot 的重複命令不會建立新 epoch；單機 MOVE 或取消編隊後重送
+> 相同編隊命令會重新啟用既有 Epoch，保留 center 與 slot assignment。
 
 
 ### 簡寫命令
