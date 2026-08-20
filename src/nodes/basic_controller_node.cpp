@@ -623,7 +623,6 @@ void BasicControllerNode::agent_trajectory_cb(
     trajectory.order = msg->order;
     trajectory.knot_interval_s = msg->knot_interval_s;
     trajectory.duration_s = msg->duration_s;
-    trajectory.terminal_hold = msg->terminal_hold;
     trajectory.valid = msg->valid;
     if (msg->control_points.empty() ||
         msg->control_points.size() % 3U != 0U)

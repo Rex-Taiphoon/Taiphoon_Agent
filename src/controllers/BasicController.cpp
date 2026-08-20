@@ -123,6 +123,23 @@ void BasicController::clear_timed_trajectory()
     trajectory_setpoint_active_.store(false);
 }
 
+bool BasicController::complete_timed_trajectory(const uint32_t trajectory_id)
+{
+    std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+    if (!has_timed_trajectory_ ||
+        timed_trajectory_.trajectory_id != trajectory_id)
+    {
+        return false;
+    }
+
+    last_completed_trajectory_id_ = trajectory_id;
+    has_completed_trajectory_ = true;
+    timed_trajectory_ = TimedTrajectory{};
+    has_timed_trajectory_ = false;
+    trajectory_setpoint_active_.store(false);
+    return true;
+}
+
 void BasicController::stop_offboard_session()
 {
     offboard_prestream_count_.store(0U);
@@ -948,9 +965,18 @@ void BasicController::publish_control_commands()
             break;
     }
 
-    bool terminal_hold_completed = false;
+    bool trajectory_completed = false;
+    uint32_t sampled_trajectory_id = 0U;
     if (trajectory_setpoint_active_.load())
     {
+        {
+            std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+            if (has_timed_trajectory_)
+            {
+                sampled_trajectory_id = timed_trajectory_.trajectory_id;
+            }
+        }
+
         std::array<float, 3> sampled_position = get_safe_hold_position();
         std::array<float, 3> sampled_velocity{0.0F, 0.0F, 0.0F};
         std::array<float, 3> sampled_acceleration{0.0F, 0.0F, 0.0F};
@@ -958,27 +984,8 @@ void BasicController::publish_control_commands()
             node_->now(), sampled_position, sampled_velocity,
             sampled_acceleration);
 
-        bool terminal_hold = false;
-        bool trajectory_has_reached_endpoint = false;
-        {
-            std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
-            if (has_timed_trajectory_)
-            {
-                terminal_hold = timed_trajectory_.terminal_hold;
-                if (node_->now().get_clock_type() ==
-                    timed_trajectory_.start_time.get_clock_type())
-                {
-                    const double elapsed_s =
-                        (node_->now() - timed_trajectory_.start_time).seconds();
-                    trajectory_has_reached_endpoint =
-                        std::isfinite(elapsed_s) &&
-                        elapsed_s >= static_cast<double>(
-                            timed_trajectory_.duration_s);
-                }
-            }
-        }
-
-        if (sample_result != TimedTrajectorySampleResult::VALID)
+        if (sample_result != TimedTrajectorySampleResult::VALID &&
+            sample_result != TimedTrajectorySampleResult::COMPLETED)
         {
             RCLCPP_WARN_THROTTLE(
                 rclcpp::get_logger("BasicController"), *node_->get_clock(),
@@ -996,9 +1003,8 @@ void BasicController::publish_control_commands()
             msg.velocity[index] = sampled_velocity[index];
             msg.acceleration[index] = sampled_acceleration[index];
         }
-        terminal_hold_completed = terminal_hold &&
-            trajectory_has_reached_endpoint &&
-            sample_result == TimedTrajectorySampleResult::VALID;
+        trajectory_completed =
+            sample_result == TimedTrajectorySampleResult::COMPLETED;
     }
 
     if (utils::is_valid_float(target_yaw_rad_))
@@ -1037,12 +1043,12 @@ void BasicController::publish_control_commands()
     trajectory_setpoint_pub_->publish(msg);
     trajectory_setpoint_pending_.store(false);
 
-    if (terminal_hold_completed)
+    if (trajectory_completed &&
+        complete_timed_trajectory(sampled_trajectory_id))
     {
-        clear_timed_trajectory();
         flight_state_.store(FlightState::HOVER);
         RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                    "Timed trajectory terminal hold published; entering HOVER");
+                    "Timed trajectory completed at endpoint; entering HOVER");
     }
 }
 
@@ -1095,14 +1101,6 @@ bool BasicController::validate_timed_trajectory(
 bool BasicController::is_timed_trajectory_allowed_in_current_epoch(
     const TimedTrajectory& trajectory) const
 {
-    // TAKEOFF 期間仍可接收 peer trajectory 供其他模組避碰，但 terminal
-    // hold 不得改寫本機起飛 setpoint。
-    if (flight_state_.load() == FlightState::TAKEOFF &&
-        trajectory.terminal_hold)
-    {
-        return false;
-    }
-
     if (!has_timed_trajectory_epoch_ ||
         trajectory.start_time.get_clock_type() !=
             timed_trajectory_epoch_start_.get_clock_type())
@@ -1135,6 +1133,17 @@ bool BasicController::update_timed_trajectory(
             "Ignoring timed trajectory %u: TAKEOFF owns local control or "
             "trajectory predates the current TAKEOFF epoch",
             trajectory.trajectory_id);
+        return false;
+    }
+
+    if (has_completed_trajectory_ &&
+        trajectory.trajectory_id <= last_completed_trajectory_id_)
+    {
+        RCLCPP_DEBUG(
+            rclcpp::get_logger("BasicController"),
+            "Ignoring completed or stale timed trajectory %u; "
+            "last completed trajectory is %u",
+            trajectory.trajectory_id, last_completed_trajectory_id_);
         return false;
     }
 
@@ -1227,14 +1236,12 @@ TimedTrajectorySampleResult BasicController::sample_timed_trajectory(
     {
         return TimedTrajectorySampleResult::NOT_STARTED;
     }
-    if (elapsed_s > static_cast<double>(trajectory.duration_s))
+    if (elapsed_s >= static_cast<double>(trajectory.duration_s))
     {
-        // 逾時後不可回退到 current_position_ned_，否則到達目標後的
-        // setpoint 會追著 odometry 漂移。以最後控制點作為永久 hold。
+        // 完成後不可回退到 current_position_ned_，否則到達目標後的
+        // setpoint 會追著 odometry 漂移。以最後控制點作為完成 endpoint。
         position = trajectory.control_points.back();
-        return trajectory.terminal_hold
-            ? TimedTrajectorySampleResult::VALID
-            : TimedTrajectorySampleResult::EXPIRED;
+        return TimedTrajectorySampleResult::COMPLETED;
     }
 
     const std::size_t degree = static_cast<std::size_t>(trajectory.order);

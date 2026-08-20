@@ -388,7 +388,7 @@ TEST_F(BasicControllerTrajectoryTest,
 }
 
 TEST_F(BasicControllerTrajectoryTest,
-       ExpiredTrajectoryPublishesTrajectoryEndpointHold)
+       CompletedTrajectoryPublishesEndpointOnce)
 {
     controller_->update_odometry(make_odometry(4.0F, -2.0F, -3.0F));
     ASSERT_TRUE(controller_->set_ned_target(100.0F, 100.0F, -3.0F, 0.0F));
@@ -399,6 +399,12 @@ TEST_F(BasicControllerTrajectoryTest,
     trajectory.trajectory_id = 6U;
     trajectory.duration_s = 1.0F;
     ASSERT_TRUE(controller_->update_timed_trajectory(trajectory));
+
+    std::array<float, 3> sampled_position{};
+    EXPECT_EQ(
+        controller_->sample_timed_trajectory(
+            node_->now(), sampled_position),
+        TimedTrajectorySampleResult::COMPLETED);
 
     publish_until_setpoint_received();
 
@@ -419,17 +425,22 @@ TEST_F(BasicControllerTrajectoryTest,
     {
         EXPECT_FLOAT_EQ(value, 0.0F);
     }
+
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_FALSE(controller_->has_timed_trajectory());
 }
 
 TEST_F(BasicControllerTrajectoryTest,
-       TerminalHoldRemainsValidAfterTrajectoryDuration)
+       CompletedTrajectoryReturnsEndpointWithZeroFeedForward)
 {
     const auto start_time = node_->now() -
         rclcpp::Duration::from_seconds(2.0);
     auto trajectory = make_linear_trajectory(start_time);
     trajectory.trajectory_id = 8U;
     trajectory.duration_s = 1.0F;
-    trajectory.terminal_hold = true;
     ASSERT_TRUE(controller_->update_timed_trajectory(trajectory));
 
     std::array<float, 3> position{};
@@ -438,7 +449,7 @@ TEST_F(BasicControllerTrajectoryTest,
     EXPECT_EQ(
         controller_->sample_timed_trajectory(
             node_->now(), position, velocity, acceleration),
-        TimedTrajectorySampleResult::VALID);
+        TimedTrajectorySampleResult::COMPLETED);
     EXPECT_NEAR(position[0], 10.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(position[1], 20.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(position[2], -3.0F, POSITION_EPSILON_M);
@@ -453,7 +464,7 @@ TEST_F(BasicControllerTrajectoryTest,
 }
 
 TEST_F(BasicControllerTrajectoryTest,
-       StreamsActiveTrajectoryAndStopsAfterTerminalHold)
+       StreamsActiveTrajectoryAndStopsAfterCompletion)
 {
     ASSERT_TRUE(controller_->set_ned_target(2.0F, 0.0F, -2.0F, 0.0F));
 
@@ -462,7 +473,6 @@ TEST_F(BasicControllerTrajectoryTest,
     auto active_trajectory = make_linear_trajectory(active_start);
     active_trajectory.trajectory_id = 10U;
     active_trajectory.duration_s = 1.0F;
-    active_trajectory.terminal_hold = false;
     ASSERT_TRUE(controller_->update_timed_trajectory(active_trajectory));
 
     publish_until_setpoint_received();
@@ -477,7 +487,6 @@ TEST_F(BasicControllerTrajectoryTest,
     terminal_trajectory.start_time = node_->now() -
         rclcpp::Duration::from_seconds(2.0);
     terminal_trajectory.stamp = terminal_trajectory.start_time;
-    terminal_trajectory.terminal_hold = true;
     ASSERT_TRUE(controller_->update_timed_trajectory(terminal_trajectory));
 
     publish_until_setpoint_received();
@@ -495,7 +504,30 @@ TEST_F(BasicControllerTrajectoryTest,
 }
 
 TEST_F(BasicControllerTrajectoryTest,
-       PreTakeoffTerminalHoldCannotOverrideTakeoffSetpoint)
+       CompletedTrajectoryRejectsStaleIdAndAcceptsNewId)
+{
+    ASSERT_TRUE(controller_->set_ned_target(2.0F, 0.0F, -2.0F, 0.0F));
+
+    auto completed_trajectory = make_linear_trajectory(
+        node_->now() - rclcpp::Duration::from_seconds(2.0));
+    completed_trajectory.trajectory_id = 20U;
+    completed_trajectory.duration_s = 1.0F;
+    ASSERT_TRUE(controller_->update_timed_trajectory(completed_trajectory));
+
+    publish_until_setpoint_received();
+    EXPECT_FALSE(controller_->has_timed_trajectory());
+
+    EXPECT_FALSE(controller_->update_timed_trajectory(completed_trajectory));
+    EXPECT_FALSE(controller_->has_timed_trajectory());
+
+    auto new_trajectory = make_linear_trajectory(node_->now());
+    new_trajectory.trajectory_id = 21U;
+    ASSERT_TRUE(controller_->update_timed_trajectory(new_trajectory));
+    EXPECT_TRUE(controller_->has_timed_trajectory());
+}
+
+TEST_F(BasicControllerTrajectoryTest,
+       PreTakeoffTrajectoryCannotOverrideTakeoffSetpoint)
 {
     controller_->update_odometry(make_odometry(0.0F, 0.0F, 0.0F));
 
@@ -506,15 +538,13 @@ TEST_F(BasicControllerTrajectoryTest,
         {0.0F, 0.0F, 0.0F},
         {0.0F, 0.0F, 0.0F}};
     pre_takeoff_hold.duration_s = 1.0F;
-    pre_takeoff_hold.terminal_hold = true;
     ASSERT_TRUE(controller_->update_timed_trajectory(pre_takeoff_hold));
 
     ASSERT_TRUE(controller_->takeoff(8.0F));
     EXPECT_FALSE(controller_->has_timed_trajectory());
     EXPECT_FALSE(controller_->update_timed_trajectory(pre_takeoff_hold));
 
-    // TAKEOFF 狀態即使收到 peer occupancy heartbeat，也必須維持
-    // BasicController 的起飛目標；terminal hold 只供 peer 避碰使用。
+    // TAKEOFF 狀態必須維持 BasicController 的本機起飛目標。
     publish_until_setpoint_received();
     EXPECT_NEAR(latest_setpoint_.position[2], -8.0F, POSITION_EPSILON_M);
 }

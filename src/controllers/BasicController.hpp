@@ -79,8 +79,6 @@ struct TimedTrajectory
     float knot_interval_s{0.0F};
     std::vector<std::array<float, 3>> control_points;
     float duration_s{0.0F};
-    /// 完成任務後的固定終點佔位；duration 後仍保持 endpoint。
-    bool terminal_hold{false};
     bool valid{false};
 };
 
@@ -92,7 +90,7 @@ enum class TimedTrajectorySampleResult : uint8_t
     VALID = 0U,
     NO_TRAJECTORY = 1U,
     NOT_STARTED = 2U,
-    EXPIRED = 3U,
+    COMPLETED = 3U,
     INVALID = 4U
 };
 
@@ -307,8 +305,8 @@ public:
      *
      * @param sample_time 取樣時間
      * @param position 輸出的 NED 位置
-     * @return 取樣結果；VALID 時 position 是軌跡取樣結果，EXPIRED 時
-     *         position 是最後控制點，供到達目標後固定 hold 使用
+     * @return 取樣結果；VALID 時 position 是軌跡取樣結果，COMPLETED 時
+     *         position 是最後控制點，供完成後發布一次 endpoint 使用
      */
     TimedTrajectorySampleResult sample_timed_trajectory(
         const rclcpp::Time& sample_time,
@@ -601,6 +599,13 @@ private:
     void clear_timed_trajectory();
 
     /**
+     * @brief 完成指定識別碼的定時軌跡，避免清除較新的軌跡。
+     * @param trajectory_id 已完成的軌跡識別碼
+     * @return true 表示目前仍是同一條軌跡並已完成清除
+     */
+    bool complete_timed_trajectory(uint32_t trajectory_id);
+
+    /**
      * @brief 取得有限的目前／目標位置，供無有效控制時產生 hold setpoint。
      * @return 優先目前位置，其次目標位置；兩者異常時回傳有限原點
      */
@@ -712,6 +717,8 @@ private:
     bool has_timed_trajectory_{false};
     bool has_frame_revision_{false};
     uint32_t timed_trajectory_frame_revision_{0U};
+    bool has_completed_trajectory_{false};
+    uint32_t last_completed_trajectory_id_{0U};
 
     /// TAKEOFF 取得本機控制權的時間；更早建立的軌跡不可重新接管 PX4。
     rclcpp::Time timed_trajectory_epoch_start_{

@@ -95,7 +95,11 @@ protected:
                 rclcpp::QoS(10).best_effort(),
                 [this](const px4_msgs::msg::VehicleCommand::SharedPtr msg)
                 {
-                    if (msg != nullptr) ++vehicle_command_count_;
+                    if (msg != nullptr)
+                    {
+                        latest_vehicle_command_ = *msg;
+                        ++vehicle_command_count_;
+                    }
                 });
         vehicle_status_pub_ =
             node_->create_publisher<px4_msgs::msg::VehicleStatus>(
@@ -252,6 +256,7 @@ protected:
     rclcpp::Publisher<px4_msgs::msg::VehicleLandDetected>::SharedPtr
         vehicle_land_detected_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
+    px4_msgs::msg::VehicleCommand latest_vehicle_command_;
     bool has_setpoint_{false};
     std::size_t offboard_control_mode_count_{0U};
     std::size_t vehicle_command_count_{0U};
@@ -273,6 +278,60 @@ TEST_F(BasicControllerSetpointTest,
     EXPECT_FALSE(has_setpoint_);
     EXPECT_EQ(controller_->get_flight_state(),
               taiphoon::controllers::FlightState::ARMED);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       DisarmStopsOffboardOutputAndPublishesDisarmCommand)
+{
+    ASSERT_TRUE(controller_->disarm());
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_GE(vehicle_command_count_, 1U);
+    EXPECT_EQ(latest_vehicle_command_.command, 400U);
+    EXPECT_FLOAT_EQ(latest_vehicle_command_.param1, 0.0F);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::IDLE);
+
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       DirectLandPublishesLandCommandAndLeavesOffboard)
+{
+    ASSERT_TRUE(controller_->land());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_EQ(latest_vehicle_command_.command, 21U);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::LAND);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       SwitchToHoldPublishesPositionHoldCommandAndLeavesOffboard)
+{
+    ASSERT_TRUE(controller_->switch_to_hold_mode());
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_EQ(latest_vehicle_command_.command, 176U);
+    EXPECT_FLOAT_EQ(latest_vehicle_command_.param2, 8.0F);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::IDLE);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       TakeoffLandSequenceStartsNewOffboardSession)
+{
+    ASSERT_TRUE(controller_->execute_takeoff_land_sequence(6.0F, 2.0F));
+
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_INIT);
 }
 
 TEST_F(BasicControllerSetpointTest,
@@ -334,6 +393,56 @@ TEST_F(BasicControllerSetpointTest, HoldPositionLocksAllAxesAgainstOdometryDrift
     EXPECT_NEAR(latest_setpoint_.position[0], 3.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       HoldCurrentPositionLocksAllAxesAgainstOdometryDrift)
+{
+    controller_->update_odometry(make_odometry(3.0F, 4.0F, -5.0F));
+    ASSERT_TRUE(controller_->hold_current_position());
+
+    controller_->update_odometry(make_odometry(-7.0F, 11.0F, -4.0F));
+    publish_until_setpoint_received();
+
+    EXPECT_NEAR(latest_setpoint_.position[0], 3.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       DirectMovementCommandsPublishExpectedNedTargets)
+{
+    controller_->update_odometry(make_odometry_with_yaw(
+        1.0F, 2.0F, -4.0F, 0.0F));
+
+    ASSERT_TRUE(controller_->move_forward(3.0F));
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[0], 4.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 2.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -4.0F, POSITION_EPSILON_M);
+
+    has_setpoint_ = false;
+    ASSERT_TRUE(controller_->move_right(2.0F));
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[0], 1.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -4.0F, POSITION_EPSILON_M);
+
+    has_setpoint_ = false;
+    ASSERT_TRUE(controller_->move_vertical(1.0F));
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[0], 1.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+
+    has_setpoint_ = false;
+    ASSERT_TRUE(controller_->set_ned_target(8.0F, 9.0F, -6.0F, 45.0F));
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[0], 8.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 9.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -6.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.yaw, 45.0F * 3.14159265358979323846F / 180.0F,
+                POSITION_EPSILON_M);
 }
 
 TEST_F(BasicControllerSetpointTest,
@@ -403,6 +512,7 @@ TEST_F(BasicControllerSetpointTest,
     EXPECT_FALSE(has_setpoint_);
     EXPECT_EQ(offboard_control_mode_count_, 0U);
     EXPECT_GE(vehicle_command_count_, 1U);
+    EXPECT_EQ(latest_vehicle_command_.command, 20U);
 
     const auto command_count_after_rtl = vehicle_command_count_;
     ASSERT_TRUE(controller_->switch_to_land_mode());
@@ -411,6 +521,7 @@ TEST_F(BasicControllerSetpointTest,
     EXPECT_FALSE(has_setpoint_);
     EXPECT_EQ(offboard_control_mode_count_, 0U);
     EXPECT_GT(vehicle_command_count_, command_count_after_rtl);
+    EXPECT_EQ(latest_vehicle_command_.command, 21U);
 }
 
 TEST_F(BasicControllerSetpointTest,
