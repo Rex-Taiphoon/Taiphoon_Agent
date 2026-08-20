@@ -120,17 +120,19 @@ void BasicController::clear_timed_trajectory()
     std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
     timed_trajectory_ = TimedTrajectory{};
     has_timed_trajectory_ = false;
+    trajectory_setpoint_active_.store(false);
 }
 
 void BasicController::stop_offboard_session()
 {
-    offboard_prestream_pair_count_.store(0U);
+    offboard_prestream_count_.store(0U);
     offboard_mode_request_sent_.store(false);
     offboard_session_active_.store(false);
     offboard_cmd_echo_received_.store(false);
     offboard_cmd_rejected_.store(false);
     offboard_mode_request_time_ = rclcpp::Time(
         static_cast<int64_t>(0), RCL_ROS_TIME);
+    trajectory_setpoint_pending_.store(false);
     clear_timed_trajectory();
 }
 
@@ -231,9 +233,11 @@ bool BasicController::takeoff(float altitude_m)
         // trajectory 帶進 HOVER 後重新接管本機控制。
         timed_trajectory_ = TimedTrajectory{};
         has_timed_trajectory_ = false;
+        trajectory_setpoint_active_.store(false);
         timed_trajectory_epoch_start_ = takeoff_epoch_start;
         has_timed_trajectory_epoch_ = true;
     }
+    trajectory_setpoint_pending_.store(true);
     altitude_log_counter_ = 0;
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Takeoff to %.2f meters (target_system=%d)",
@@ -263,7 +267,9 @@ bool BasicController::hold_position(float duration_s)
     }
     hover_duration_s_.store(duration_s);
     target_position_ned_ = current_position_ned_;
+    clear_timed_trajectory();
     flight_state_.store(FlightState::HOVER);
+    trajectory_setpoint_pending_.store(true);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Hovering for %.2f seconds", duration_s);
     return true;
@@ -475,6 +481,7 @@ bool BasicController::move_forward(float distance_m)
     target_position_ned_[1] = current_position_ned_[1] + distance_m * sin_yaw;
     target_position_ned_[2] = current_position_ned_[2];
     flight_state_.store(FlightState::MOVING);
+    trajectory_setpoint_pending_.store(true);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving forward %.2f m (target_system=%d)", distance_m, target_system_);
     return true;
@@ -502,6 +509,7 @@ bool BasicController::move_right(float distance_m)
     target_position_ned_[1] = current_position_ned_[1] + distance_m * cos_yaw;
     target_position_ned_[2] = current_position_ned_[2];
     flight_state_.store(FlightState::MOVING);
+    trajectory_setpoint_pending_.store(true);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Moving right %.2f m (target_system=%d)", distance_m, target_system_);
     return true;
@@ -551,6 +559,7 @@ bool BasicController::move_vertical(float delta_m)
     }
 
     target_position_ned_[2] = new_z;
+    trajectory_setpoint_pending_.store(true);
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Vertical move %.2f m, new target NED Z: %.2f (target_system=%d)",
                 static_cast<double>(delta_m), static_cast<double>(new_z), target_system_);
@@ -606,6 +615,7 @@ bool BasicController::rotate_yaw(float degrees)
         target_yaw_rad_ += TWO_PI;
     }
     target_yaw_rad_ -= PI;
+    trajectory_setpoint_pending_.store(true);
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
@@ -670,6 +680,7 @@ bool BasicController::set_ned_target(float x, float y, float z, float yaw_deg)
     }
 
     flight_state_.store(FlightState::MOVING);
+    trajectory_setpoint_pending_.store(true);
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "NED target set: (%.2f, %.2f, %.2f) yaw=%.1f deg (target_system=%d)",
@@ -812,7 +823,10 @@ bool BasicController::create_vehicle_land_detected_subscriber()
 
 void BasicController::publish_control_commands()
 {
-    if (!is_initialized_.load()) return;
+    if (!is_initialized_.load())
+    {
+        return;
+    }
 
     // Offboard session 成功後，任何外部模式切換都必須先關閉兩個 PX4
     // setpoint publisher。OFFBOARD_INIT 期間的非 Offboard nav_state 是
@@ -851,20 +865,53 @@ void BasicController::publish_control_commands()
     }
 
     current_state = flight_state_.load();
-    if (!should_publish_offboard_pair()) return;
-    if (offboard_control_mode_pub_ == nullptr ||
+    if (!should_publish_offboard_control_mode() ||
+        offboard_control_mode_pub_ == nullptr)
+    {
+        return;
+    }
+
+    const auto timestamp = node_->now().nanoseconds() / 1000ULL;
+    auto mode_msg = px4_msgs::msg::OffboardControlMode();
+    mode_msg.timestamp = timestamp;
+    mode_msg.position = true;
+
+    // OffboardControlMode 是獨立的 proof-of-life 心跳；TAKEOFF 前、ARM 後
+    // 以及 HOVER 狀態都只發布這一筆訊息。
+    offboard_control_mode_pub_->publish(mode_msg);
+
+    if (current_state == FlightState::OFFBOARD_INIT)
+    {
+        const uint32_t completed_heartbeats =
+            offboard_prestream_count_.fetch_add(1U) + 1U;
+        if (completed_heartbeats >= OFFBOARD_PRESTREAM_COUNT &&
+            !offboard_mode_request_sent_.load())
+        {
+            // 先建立 request 狀態再發布 command，避免多執行緒 executor 在
+            // publish 期間收到 ACK 時被誤判為非本次 Offboard request。
+            offboard_mode_request_sent_.store(true);
+            offboard_mode_request_time_ = node_->now();
+            if (!send_offboard_mode_command())
+            {
+                offboard_mode_request_sent_.store(false);
+                fail_offboard_entry("unable to publish DO_SET_MODE");
+                return;
+            }
+            RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                        "Published %u Offboard prestream heartbeats; "
+                        "sent one mode request",
+                        completed_heartbeats);
+        }
+    }
+
+    if (!should_publish_trajectory_setpoint() ||
         trajectory_setpoint_pub_ == nullptr)
     {
         return;
     }
 
-    const auto pair_timestamp = node_->now().nanoseconds() / 1000ULL;
-    auto mode_msg = px4_msgs::msg::OffboardControlMode();
-    mode_msg.timestamp = pair_timestamp;
-    mode_msg.position = true;
-
     auto msg = px4_msgs::msg::TrajectorySetpoint();
-    msg.timestamp = pair_timestamp;
+    msg.timestamp = timestamp;
     const auto hold_position = get_safe_hold_position();
     msg.position[0] = hold_position[0];
     msg.position[1] = hold_position[1];
@@ -880,65 +927,85 @@ void BasicController::publish_control_commands()
 
     switch (current_state)
     {
-        case FlightState::OFFBOARD_ACTIVE: handle_offboard_active_state(); break;
-        case FlightState::ARMED:          handle_armed_state(mode_msg); break;
-        case FlightState::TAKEOFF:        handle_takeoff_state(msg); break;
-        case FlightState::HOVER:          handle_hover_state(msg); break;
-        case FlightState::MOVING:         handle_moving_state(msg); break;
+        case FlightState::TAKEOFF:
+            handle_takeoff_state(msg);
+            break;
+        case FlightState::HOVER:
+            handle_hover_state(msg);
+            break;
+        case FlightState::MOVING:
+            handle_moving_state(msg);
+            break;
         case FlightState::IDLE:
         case FlightState::OFFBOARD_INIT:
+        case FlightState::OFFBOARD_ACTIVE:
+        case FlightState::ARMED:
         case FlightState::RTL:
         case FlightState::LAND:
         case FlightState::POST_RTL:
         case FlightState::ERROR:
-        default: break;
+        default:
+            break;
     }
 
-    // 只有收到定時軌跡時才覆寫 MOVING/HOVER 的狀態機目標；沒有軌跡時
-    // 保留原有狀態機語意。軌跡尚未開始、取樣失敗、座標版本切換或超出
-    // duration 尚未開始或取樣失敗時，送出有限 hold setpoint；軌跡
-    // 已逾時時則由 sample_timed_trajectory 提供其固定端點。
-    if (current_state == FlightState::MOVING ||
-        current_state == FlightState::HOVER)
+    bool terminal_hold_completed = false;
+    if (trajectory_setpoint_active_.load())
     {
-        if (has_timed_trajectory())
-        {
-            std::array<float, 3> sampled_position = get_safe_hold_position();
-            std::array<float, 3> sampled_velocity{0.0F, 0.0F, 0.0F};
-            std::array<float, 3> sampled_acceleration{0.0F, 0.0F, 0.0F};
-            const auto sample_result = sample_timed_trajectory(
-                node_->now(), sampled_position, sampled_velocity,
-                sampled_acceleration);
-            if (sample_result != TimedTrajectorySampleResult::VALID)
-            {
-                RCLCPP_WARN_THROTTLE(
-                    rclcpp::get_logger("BasicController"), *node_->get_clock(),
-                    2000,
-                    "Timed trajectory unavailable (result=%d); "
-                    "holding the safe trajectory fallback",
-                    static_cast<int>(sample_result));
-            }
+        std::array<float, 3> sampled_position = get_safe_hold_position();
+        std::array<float, 3> sampled_velocity{0.0F, 0.0F, 0.0F};
+        std::array<float, 3> sampled_acceleration{0.0F, 0.0F, 0.0F};
+        const auto sample_result = sample_timed_trajectory(
+            node_->now(), sampled_position, sampled_velocity,
+            sampled_acceleration);
 
-            msg.position[0] = sampled_position[0];
-            msg.position[1] = sampled_position[1];
-            msg.position[2] = sampled_position[2];
-            for (std::size_t index = 0U; index < 3U; ++index)
+        bool terminal_hold = false;
+        bool trajectory_has_reached_endpoint = false;
+        {
+            std::lock_guard<std::mutex> lock(timed_trajectory_mutex_);
+            if (has_timed_trajectory_)
             {
-                msg.velocity[index] = sampled_velocity[index];
-                msg.acceleration[index] = sampled_acceleration[index];
+                terminal_hold = timed_trajectory_.terminal_hold;
+                if (node_->now().get_clock_type() ==
+                    timed_trajectory_.start_time.get_clock_type())
+                {
+                    const double elapsed_s =
+                        (node_->now() - timed_trajectory_.start_time).seconds();
+                    trajectory_has_reached_endpoint =
+                        std::isfinite(elapsed_s) &&
+                        elapsed_s >= static_cast<double>(
+                            timed_trajectory_.duration_s);
+                }
             }
         }
+
+        if (sample_result != TimedTrajectorySampleResult::VALID)
+        {
+            RCLCPP_WARN_THROTTLE(
+                rclcpp::get_logger("BasicController"), *node_->get_clock(),
+                2000,
+                "Timed trajectory unavailable (result=%d); "
+                "holding the safe trajectory fallback",
+                static_cast<int>(sample_result));
+        }
+
+        msg.position[0] = sampled_position[0];
+        msg.position[1] = sampled_position[1];
+        msg.position[2] = sampled_position[2];
+        for (std::size_t index = 0U; index < 3U; ++index)
+        {
+            msg.velocity[index] = sampled_velocity[index];
+            msg.acceleration[index] = sampled_acceleration[index];
+        }
+        terminal_hold_completed = terminal_hold &&
+            trajectory_has_reached_endpoint &&
+            sample_result == TimedTrajectorySampleResult::VALID;
     }
 
-    // 若已設定目標偏航角，則控制偏航
-    // 位置控制模式下，PX4 要求 yaw 必須有效（非 NaN），否則 setpoint 可能被忽略
     if (utils::is_valid_float(target_yaw_rad_))
     {
         msg.yaw = target_yaw_rad_;
     }
 
-    // 最後一道輸出邊界：即使狀態處理器或軌跡取樣產生非法值，仍以
-    // 目前位置（失效時使用有限目標／原點）發布有限的 position/yaw。
     for (std::size_t index = 0U; index < 3U; ++index)
     {
         if (!utils::is_valid_float(msg.position[index]))
@@ -967,33 +1034,15 @@ void BasicController::publish_control_commands()
         msg.yawspeed = 0.0F;
     }
 
-    // 兩筆訊息使用同一 timestamp，並在兩筆都送出後才計入一組，避免
-    // 尚未完成配對就提前切換 Offboard。
-    offboard_control_mode_pub_->publish(mode_msg);
     trajectory_setpoint_pub_->publish(msg);
+    trajectory_setpoint_pending_.store(false);
 
-    if (current_state == FlightState::OFFBOARD_INIT)
+    if (terminal_hold_completed)
     {
-        const uint32_t completed_pairs =
-            offboard_prestream_pair_count_.fetch_add(1U) + 1U;
-        if (completed_pairs >= OFFBOARD_PRESTREAM_PAIR_COUNT &&
-            !offboard_mode_request_sent_.load())
-        {
-            // 先建立 request 狀態再發布 command，避免多執行緒 executor 在
-            // publish 期間收到 ACK 時被誤判為非本次 Offboard request。
-            offboard_mode_request_sent_.store(true);
-            offboard_mode_request_time_ = node_->now();
-            if (!send_offboard_mode_command())
-            {
-                offboard_mode_request_sent_.store(false);
-                fail_offboard_entry("unable to publish DO_SET_MODE");
-                return;
-            }
-            RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                        "Published %u Offboard prestream pairs; "
-                        "sent one mode request",
-                        completed_pairs);
-        }
+        clear_timed_trajectory();
+        flight_state_.store(FlightState::HOVER);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "Timed trajectory terminal hold published; entering HOVER");
     }
 }
 
@@ -1111,6 +1160,7 @@ bool BasicController::update_timed_trajectory(
             timed_trajectory_frame_revision_ = trajectory.frame_revision;
         }
         has_timed_trajectory_ = false;
+        trajectory_setpoint_active_.store(false);
         RCLCPP_WARN(rclcpp::get_logger("BasicController"),
                     "Timed trajectory frame revision changed from %u to %u; "
                     "holding until the next trajectory in the new frame",
@@ -1127,6 +1177,7 @@ bool BasicController::update_timed_trajectory(
 
     timed_trajectory_ = trajectory;
     has_timed_trajectory_ = true;
+    trajectory_setpoint_active_.store(true);
     return true;
 }
 
@@ -1278,7 +1329,9 @@ bool BasicController::hold_current_position()
     }
 
     target_position_ned_ = current_position_ned_;
+    clear_timed_trajectory();
     flight_state_.store(FlightState::HOVER);
+    trajectory_setpoint_pending_.store(true);
     RCLCPP_WARN(rclcpp::get_logger("BasicController"),
                 "Collision safety hold at current NED position "
                 "(%.2f, %.2f, %.2f)",
@@ -1336,22 +1389,8 @@ void BasicController::handle_offboard_init_state()
 
 void BasicController::handle_offboard_active_state()
 {
-    // Offboard 已啟用；配對訊息由 publish_control_commands() 統一發布。
+    // Offboard 已啟用；心跳由 publish_control_commands() 統一發布。
     return;
-}
-
-void BasicController::handle_armed_state(px4_msgs::msg::OffboardControlMode& /*mode_msg*/)
-{
-    bool echoed = arm_cmd_echo_received_.load();
-    auto elapsed = node_->now() - offboard_start_time_;
-    double elapsed_ms = elapsed.seconds() * 1000.0;
-    bool timeout = (!echoed && elapsed_ms >= static_cast<double>(
-        VEHICLE_CMD_ECHO_TIMEOUT_MS + 5000.0));
-    if (echoed || timeout)
-    {
-        float alt = target_altitude_m_.load();
-        if (alt > 0.0F) takeoff(alt);
-    }
 }
 
 void BasicController::handle_takeoff_state(px4_msgs::msg::TrajectorySetpoint& msg)
@@ -1703,7 +1742,12 @@ void BasicController::vehicle_land_detected_cb(
 
 void BasicController::update_command_state_from_observation()
 {
-    FlightState command_intent = flight_state_.load();
+    const FlightState command_intent = flight_state_.load();
+    if (command_intent != FlightState::TAKEOFF)
+    {
+        return;
+    }
+
     auto resolution = FlightStateResolver::resolve(
         get_flight_state_observation(), command_intent);
 
@@ -1744,7 +1788,7 @@ bool BasicController::is_px4_offboard_confirmed() const
         px4_nav_state_.load() == FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
 }
 
-bool BasicController::should_publish_offboard_pair() const
+bool BasicController::should_publish_offboard_control_mode() const
 {
     if (!is_vehicle_status_fresh() || offboard_entry_failed_.load())
     {
@@ -1774,6 +1818,20 @@ bool BasicController::should_publish_offboard_pair() const
         default:
             return false;
     }
+}
+
+bool BasicController::should_publish_trajectory_setpoint() const
+{
+    const FlightState state = flight_state_.load();
+    if (state != FlightState::TAKEOFF &&
+        state != FlightState::HOVER &&
+        state != FlightState::MOVING)
+    {
+        return false;
+    }
+
+    return trajectory_setpoint_pending_.load() ||
+        trajectory_setpoint_active_.load();
 }
 
 }  // namespace controllers

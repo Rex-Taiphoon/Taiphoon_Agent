@@ -35,20 +35,16 @@ BasicControllerNode::BasicControllerNode()
     // L2-19：宣告 ROS2 參數並指定預設值
     this->declare_parameter<double>("target_altitude_m", DEFAULT_TARGET_ALTITUDE_M);
     this->declare_parameter<double>("hover_duration_s", DEFAULT_HOVER_DURATION_S);
-    this->declare_parameter<double>("startup_delay_s", 0.0);
     this->declare_parameter<int>("target_system", 1);
     this->declare_parameter<std::string>("agent_namespace", "fmu1");
-    this->declare_parameter<bool>("auto_start_sequence", true);
     this->declare_parameter<double>("state_publish_rate_hz", DEFAULT_STATE_PUBLISH_RATE_HZ);
     this->declare_parameter<double>("position_deviation_threshold_m",
                                     DEFAULT_POSITION_DEVIATION_THRESHOLD_M);
 
     target_altitude_m_ = this->get_parameter("target_altitude_m").as_double();
     hover_duration_s_ = this->get_parameter("hover_duration_s").as_double();
-    startup_delay_s_ = this->get_parameter("startup_delay_s").as_double();
     target_system_ = this->get_parameter("target_system").as_int();
     agent_namespace_ = this->get_parameter("agent_namespace").as_string();
-    auto_start_sequence_ = this->get_parameter("auto_start_sequence").as_bool();
     const double requested_state_publish_rate_hz =
         this->get_parameter("state_publish_rate_hz").as_double();
     state_publish_rate_hz_ = safety::StatePublisher::normalize_publish_rate_hz(
@@ -66,10 +62,10 @@ BasicControllerNode::BasicControllerNode()
         this->get_parameter("position_deviation_threshold_m").as_double();
     RCLCPP_INFO(this->get_logger(),
                 "Parameters: target_altitude=%.2f m, hover_duration=%.2f s, "
-                "startup_delay=%.1f s, target_system=%d, agent_namespace=%s, "
+                "target_system=%d, agent_namespace=%s, "
                 "state_publish_rate=%.1f Hz, deviation_threshold=%.2f m",
                 target_altitude_m_, hover_duration_s_,
-                startup_delay_s_, target_system_,
+                target_system_,
                 agent_namespace_.c_str(),
                 state_publish_rate_hz_, position_deviation_threshold_m_);
 
@@ -163,8 +159,6 @@ BasicControllerNode::BasicControllerNode()
     state_publish_timer_ = this->create_wall_timer(
         state_period_ms,
         std::bind(&BasicControllerNode::state_publish_cb, this));
-
-    start_time_ = this->now();
 
     RCLCPP_INFO(this->get_logger(),
                 "BasicControllerNode initialized, control rate %.0f Hz, "
@@ -454,19 +448,6 @@ void BasicControllerNode::control_loop_cb()
     // 驅動控制命令發布
     controller_->publish_control_commands();
 
-    // Auto-start Offboard mode after connection + startup_delay (if enabled)
-    if (auto_start_sequence_ && !sequence_started_)
-    {
-        auto elapsed = this->now() - start_time_;
-        if (elapsed.seconds() >= startup_delay_s_)
-        {
-            sequence_started_ = true;
-            RCLCPP_INFO(this->get_logger(),
-                        "Auto-starting Offboard mode after %.1f s delay",
-                        startup_delay_s_);
-            controller_->switch_to_offboard_mode();
-        }
-    }
 }
 
 void BasicControllerNode::state_publish_cb()
@@ -815,6 +796,10 @@ void BasicControllerNode::on_agent_command(
                     : static_cast<float>(target_altitude_m_);
                 result = controller_->takeoff(alt);
             }
+            break;
+
+        case utils::AgentCommand::HOLD:
+            result = controller_->hold_current_position();
             break;
 
         case utils::AgentCommand::MOVE_UP:

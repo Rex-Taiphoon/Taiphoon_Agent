@@ -77,13 +77,6 @@ def launch_nodes(context, *args, **kwargs):
             LaunchConfiguration("enable_obstacle_cloud_simulator")))
     obstacle_config = context.perform_substitution(
         LaunchConfiguration("obstacle_config"))
-    startup_delay_base_str = context.perform_substitution(
-        LaunchConfiguration("startup_delay_s"))
-    try:
-        startup_delay_base = float(startup_delay_base_str)
-    except (ValueError, TypeError):
-        startup_delay_base = 0.0
-
     single_agent_mode = _as_bool(
         context.perform_substitution(
             LaunchConfiguration("single_agent_mode")))
@@ -125,11 +118,7 @@ def launch_nodes(context, *args, **kwargs):
                     "target_altitude_m")},
                 {"hover_duration_s": LaunchConfiguration(
                     "hover_duration_s")},
-                {"startup_delay_s": startup_delay_base + (i - 1) * 2.0},
                 {"target_system": i},
-                {"auto_start_sequence": ParameterValue(
-                    LaunchConfiguration("auto_start_sequence"),
-                    value_type=bool)},
                 {"agent_namespace": agent_ns},
             ],
             output="screen",
@@ -281,14 +270,12 @@ def generate_launch_description():
             "hover_duration_s",
             default_value="3.0",
             description="BasicController 預設懸停時間（秒）"),
-        DeclareLaunchArgument(
-            "startup_delay_s",
-            default_value="0.0",
-            description="每台 BasicController 啟動延遲（秒）"),
+        # 舊版 entrypoint 仍會傳入此參數；保留 launch 介面相容性，但
+        # 不讀取、不傳給 BasicController，也不再提供自動啟動流程。
         DeclareLaunchArgument(
             "auto_start_sequence",
-            default_value="true",
-            description="是否自動啟動 Offboard sequence"),
+            default_value="false",
+            description="相容參數；已停用且不再觸發任何自動流程"),
         DeclareLaunchArgument(
             "planning_rate_hz",
             default_value="10.0",

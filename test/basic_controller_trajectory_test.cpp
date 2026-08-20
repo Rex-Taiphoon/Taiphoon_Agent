@@ -177,9 +177,9 @@ protected:
     {
         publish_status(PX4_NAV_STATE_POSCTL);
         ASSERT_TRUE(controller_->switch_to_offboard_mode());
-        for (uint32_t pair = 0U;
-             pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
-             ++pair)
+        for (uint32_t heartbeat = 0U;
+             heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+             ++heartbeat)
         {
             controller_->publish_control_commands();
             executor_.spin_some(DISCOVERY_WAIT);
@@ -450,6 +450,48 @@ TEST_F(BasicControllerTrajectoryTest,
     {
         EXPECT_FLOAT_EQ(value, 0.0F);
     }
+}
+
+TEST_F(BasicControllerTrajectoryTest,
+       StreamsActiveTrajectoryAndStopsAfterTerminalHold)
+{
+    ASSERT_TRUE(controller_->set_ned_target(2.0F, 0.0F, -2.0F, 0.0F));
+
+    const auto active_start = node_->now() -
+        rclcpp::Duration::from_seconds(0.25);
+    auto active_trajectory = make_linear_trajectory(active_start);
+    active_trajectory.trajectory_id = 10U;
+    active_trajectory.duration_s = 1.0F;
+    active_trajectory.terminal_hold = false;
+    ASSERT_TRUE(controller_->update_timed_trajectory(active_trajectory));
+
+    publish_until_setpoint_received();
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_TRUE(has_setpoint_);
+
+    has_setpoint_ = false;
+    auto terminal_trajectory = active_trajectory;
+    terminal_trajectory.trajectory_id = 11U;
+    terminal_trajectory.start_time = node_->now() -
+        rclcpp::Duration::from_seconds(2.0);
+    terminal_trajectory.stamp = terminal_trajectory.start_time;
+    terminal_trajectory.terminal_hold = true;
+    ASSERT_TRUE(controller_->update_timed_trajectory(terminal_trajectory));
+
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[0], 10.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[1], 20.0F, POSITION_EPSILON_M);
+    EXPECT_NEAR(latest_setpoint_.position[2], -3.0F, POSITION_EPSILON_M);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::HOVER);
+
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_FALSE(controller_->has_timed_trajectory());
 }
 
 TEST_F(BasicControllerTrajectoryTest,

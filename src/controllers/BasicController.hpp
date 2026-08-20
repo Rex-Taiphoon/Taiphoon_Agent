@@ -34,8 +34,8 @@ namespace taiphoon
 namespace controllers
 {
 
-/// 進入 Offboard 前必須完成的配對訊息組數。
-constexpr uint32_t OFFBOARD_PRESTREAM_PAIR_COUNT = 10U;
+/// 進入 Offboard 前必須完成的 OffboardControlMode 心跳數。
+constexpr uint32_t OFFBOARD_PRESTREAM_COUNT = 10U;
 
 /// 模式切換後 VehicleCommand 回應超時 (毫秒)
 constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
@@ -245,8 +245,8 @@ public:
     /**
      * @brief 設定 NED 絕對座標目標位置與航向
      *
-     * 直接寫入目標 NED 位置，控制器持續發布 TrajectorySetpoint
-     * 直到收到新命令。不進行內部達成判斷。
+     * 直接寫入目標 NED 位置，要求控制器發布一次位置設定點。
+     * 不進行內部達成判斷。
      *
      * @param x NED X (前向，公尺)
      * @param y NED Y (右向，公尺)
@@ -266,7 +266,7 @@ public:
     void update_odometry(const px4_msgs::msg::VehicleOdometry& msg);
 
     /**
-     * @brief 發布 Offboard 控制模式與軌跡設定點 (計時器回呼)
+     * @brief 發布 Offboard 心跳，以及必要時發布軌跡設定點 (計時器回呼)
      */
     void publish_control_commands();
 
@@ -410,17 +410,9 @@ private:
     /**
      * @brief 處理 OFFBOARD_INIT 狀態
      *
-     * 檢查配對訊息送出後的 ACK、VehicleStatus 與確認逾時。
+     * 檢查 OffboardControlMode 心跳送出後的 ACK、VehicleStatus 與確認逾時。
      */
     void handle_offboard_init_state();
-
-    /**
-     * @brief 處理 ARMED 狀態
-     *
-     * 等待 Arm 命令確認後觸發起飛
-     */
-    void handle_armed_state(
-        px4_msgs::msg::OffboardControlMode& /*msg*/);
 
     /**
      * @brief 處理 TAKEOFF 狀態
@@ -578,9 +570,14 @@ private:
     bool is_px4_offboard_confirmed() const;
 
     /**
-     * @brief 判斷目前控制週期是否允許發布 Offboard 配對訊息。
+     * @brief 判斷目前控制週期是否允許發布 OffboardControlMode 心跳。
      */
-    bool should_publish_offboard_pair() const;
+    bool should_publish_offboard_control_mode() const;
+
+    /**
+     * @brief 判斷目前控制週期是否需要發布 TrajectorySetpoint。
+     */
+    bool should_publish_trajectory_setpoint() const;
 
     /**
      * @brief 開始一次新的 Offboard 進入流程。
@@ -675,7 +672,7 @@ private:
     std::atomic<bool> arm_cmd_echo_received_{false};
 
     /// Offboard 進入流程內部狀態
-    std::atomic<uint32_t> offboard_prestream_pair_count_{0U};
+    std::atomic<uint32_t> offboard_prestream_count_{0U};
     std::atomic<bool> offboard_mode_request_sent_{false};
     std::atomic<bool> offboard_session_active_{false};
     std::atomic<bool> offboard_entry_failed_{false};
@@ -720,6 +717,12 @@ private:
     rclcpp::Time timed_trajectory_epoch_start_{
         static_cast<int64_t>(0), RCL_ROS_TIME};
     bool has_timed_trajectory_epoch_{false};
+
+    /// 一次性 TrajectorySetpoint 待發布旗標（TAKEOFF/HOLD/直接目標）。
+    std::atomic<bool> trajectory_setpoint_pending_{false};
+
+    /// 定時軌跡執行中的 TrajectorySetpoint 發布旗標。
+    std::atomic<bool> trajectory_setpoint_active_{false};
 
     /// Offboard 控制已停止旗標 (RTL 落地後)
     bool has_offboard_stopped_{false};

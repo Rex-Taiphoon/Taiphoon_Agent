@@ -185,7 +185,6 @@ private:
 
     double target_altitude_m_{DEFAULT_TARGET_ALTITUDE_M};
     double hover_duration_s_{DEFAULT_HOVER_DURATION_S};
-    double startup_delay_s_{0.0};
     int target_system_{1};
     std::string agent_namespace_{"fmu1_agent"};
     double state_publish_rate_hz_{DEFAULT_STATE_PUBLISH_RATE_HZ};
@@ -193,7 +192,6 @@ private:
 
     // ==================== 時間 ====================
 
-    rclcpp::Time start_time_;
 
     // ==================== 訂閱者 ====================
 
@@ -279,8 +277,6 @@ private:
 
     // ==================== 狀態旗標 ====================
 
-    bool sequence_started_{false};
-    bool auto_start_sequence_{true};
 };
 
 }  // namespace nodes

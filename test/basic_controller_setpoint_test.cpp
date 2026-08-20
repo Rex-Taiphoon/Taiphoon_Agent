@@ -21,6 +21,7 @@
 #include "px4_msgs/msg/trajectory_setpoint.hpp"
 #include "px4_msgs/msg/vehicle_command.hpp"
 #include "px4_msgs/msg/vehicle_command_ack.hpp"
+#include "px4_msgs/msg/vehicle_land_detected.hpp"
 #include "px4_msgs/msg/vehicle_odometry.hpp"
 #include "px4_msgs/msg/vehicle_status.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -102,10 +103,14 @@ protected:
         vehicle_command_ack_pub_ =
             node_->create_publisher<px4_msgs::msg::VehicleCommandAck>(
                 "fmu/out/vehicle_command_ack_v1", rclcpp::QoS(10).best_effort());
+        vehicle_land_detected_pub_ =
+            node_->create_publisher<px4_msgs::msg::VehicleLandDetected>(
+                "fmu/out/vehicle_land_detected", rclcpp::QoS(10).best_effort());
         executor_.add_node(node_);
 
         // 既有位置鎖定測試需要在有效 Offboard session 中執行；先完成
-        // 真實控制器要求的 10 組配對訊息，再由 VehicleStatus 確認模式。
+        // 真實控制器要求的 10 次 OffboardControlMode 心跳，再由
+        // VehicleStatus 確認模式；此流程不應產生 TrajectorySetpoint。
         enter_offboard_session_for_test();
         offboard_control_mode_count_ = 0;
         vehicle_command_count_ = 0;
@@ -122,6 +127,7 @@ protected:
         vehicle_command_sub_.reset();
         vehicle_status_pub_.reset();
         vehicle_command_ack_pub_.reset();
+        vehicle_land_detected_pub_.reset();
         controller_.reset();
         node_.reset();
     }
@@ -189,14 +195,26 @@ protected:
         }
     }
 
+    /** @brief 發布最新落地偵測狀態。 */
+    void publish_land_detected(bool landed)
+    {
+        px4_msgs::msg::VehicleLandDetected message;
+        message.landed = landed;
+        for (int attempt = 0; attempt < 5; ++attempt)
+        {
+            vehicle_land_detected_pub_->publish(message);
+            executor_.spin_some(DISCOVERY_WAIT);
+        }
+    }
+
     /** @brief 以測試用 VehicleStatus 完成一次 Offboard 進入流程。 */
     void enter_offboard_session_for_test()
     {
         publish_status(PX4_NAV_STATE_POSCTL);
         ASSERT_TRUE(controller_->switch_to_offboard_mode());
-        for (uint32_t pair = 0U;
-             pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
-             ++pair)
+        for (uint32_t heartbeat = 0U;
+             heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+             ++heartbeat)
         {
             controller_->publish_control_commands();
             executor_.spin_some(DISCOVERY_WAIT);
@@ -231,11 +249,66 @@ protected:
         vehicle_status_pub_;
     rclcpp::Publisher<px4_msgs::msg::VehicleCommandAck>::SharedPtr
         vehicle_command_ack_pub_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleLandDetected>::SharedPtr
+        vehicle_land_detected_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
     bool has_setpoint_{false};
     std::size_t offboard_control_mode_count_{0U};
     std::size_t vehicle_command_count_{0U};
 };
+
+TEST_F(BasicControllerSetpointTest,
+       OffboardAndArmBeforeTakeoffPublishHeartbeatWithoutTrajectory)
+{
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    offboard_control_mode_count_ = 0U;
+    has_setpoint_ = false;
+
+    ASSERT_TRUE(controller_->arm());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_GT(offboard_control_mode_count_, 0U);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       TakeoffPublishesOneSetpointAndStopsUntilCompletion)
+{
+    controller_->update_odometry(make_odometry(1.25F, -2.5F, -0.2F));
+    ASSERT_TRUE(controller_->takeoff(6.0F));
+
+    publish_until_setpoint_received();
+    EXPECT_NEAR(latest_setpoint_.position[2], -6.0F, POSITION_EPSILON_M);
+
+    has_setpoint_ = false;
+    const auto heartbeat_count_before_idle = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_GT(offboard_control_mode_count_, heartbeat_count_before_idle);
+
+    controller_->update_odometry(make_odometry(1.25F, -2.5F, -6.0F));
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    publish_land_detected(false);
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::HOVER);
+    EXPECT_FALSE(has_setpoint_);
+
+    const auto heartbeat_count_after_completion = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_GT(offboard_control_mode_count_, heartbeat_count_after_completion);
+}
 
 TEST_F(BasicControllerSetpointTest, TakeoffLocksCommandPositionAgainstOdometryDrift)
 {
@@ -261,6 +334,22 @@ TEST_F(BasicControllerSetpointTest, HoldPositionLocksAllAxesAgainstOdometryDrift
     EXPECT_NEAR(latest_setpoint_.position[0], 3.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[1], 4.0F, POSITION_EPSILON_M);
     EXPECT_NEAR(latest_setpoint_.position[2], -5.0F, POSITION_EPSILON_M);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       HoldPublishesOneSetpointThenMaintainsHeartbeatOnly)
+{
+    controller_->update_odometry(make_odometry(3.0F, 4.0F, -5.0F));
+    ASSERT_TRUE(controller_->hold_position(2.0F));
+
+    publish_until_setpoint_received();
+    has_setpoint_ = false;
+    const auto heartbeat_count_before_repeat = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_FALSE(has_setpoint_);
+    EXPECT_GT(offboard_control_mode_count_, heartbeat_count_before_repeat);
 }
 
 TEST_F(BasicControllerSetpointTest,
@@ -325,26 +414,28 @@ TEST_F(BasicControllerSetpointTest,
 }
 
 TEST_F(BasicControllerSetpointTest,
-       OffboardRequiresTenPairsBeforeModeRequestAndStatusConfirmation)
+       OffboardRequiresTenHeartbeatsBeforeModeRequestAndStatusConfirmation)
 {
     publish_status(PX4_NAV_STATE_POSCTL);
     offboard_control_mode_count_ = 0U;
     vehicle_command_count_ = 0U;
     ASSERT_TRUE(controller_->switch_to_offboard_mode());
 
-    for (uint32_t pair = 0U;
-         pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT - 1U;
-         ++pair)
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT - 1U;
+         ++heartbeat)
     {
         controller_->publish_control_commands();
         executor_.spin_some(DISCOVERY_WAIT);
     }
     EXPECT_EQ(offboard_control_mode_count_, 9U);
+    EXPECT_FALSE(has_setpoint_);
     EXPECT_EQ(vehicle_command_count_, 0U);
 
     controller_->publish_control_commands();
     executor_.spin_some(DISCOVERY_WAIT);
     EXPECT_EQ(offboard_control_mode_count_, 10U);
+    EXPECT_FALSE(has_setpoint_);
     EXPECT_EQ(vehicle_command_count_, 1U);
     EXPECT_EQ(controller_->get_flight_state(),
               taiphoon::controllers::FlightState::OFFBOARD_INIT);
@@ -375,9 +466,9 @@ TEST_F(BasicControllerSetpointTest,
     offboard_control_mode_count_ = 0U;
     vehicle_command_count_ = 0U;
     ASSERT_TRUE(controller_->switch_to_offboard_mode());
-    for (uint32_t pair = 0U;
-         pair < taiphoon::controllers::OFFBOARD_PRESTREAM_PAIR_COUNT;
-         ++pair)
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+         ++heartbeat)
     {
         controller_->publish_control_commands();
         executor_.spin_some(DISCOVERY_WAIT);
@@ -390,14 +481,14 @@ TEST_F(BasicControllerSetpointTest,
     vehicle_command_ack_pub_->publish(ack);
     executor_.spin_some(DISCOVERY_WAIT);
 
-    const auto pairs_before_failure = offboard_control_mode_count_;
+    const auto heartbeats_before_failure = offboard_control_mode_count_;
     controller_->publish_control_commands();
     executor_.spin_some(DISCOVERY_WAIT);
     EXPECT_EQ(controller_->get_flight_state(),
               taiphoon::controllers::FlightState::ERROR);
     controller_->publish_control_commands();
     executor_.spin_some(DISCOVERY_WAIT);
-    EXPECT_EQ(offboard_control_mode_count_, pairs_before_failure);
+    EXPECT_EQ(offboard_control_mode_count_, heartbeats_before_failure);
     EXPECT_EQ(vehicle_command_count_, 1U);
 }
 
