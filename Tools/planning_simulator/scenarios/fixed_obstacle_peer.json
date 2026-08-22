@@ -1,0 +1,44 @@
+{
+  "path_constraint": "fixed_z",
+  "sample_spacing_m": 0.5,
+  "self": {
+    "position_ned": [0.0, 0.0, -5.0],
+    "velocity_ned": [0.0, 0.0, 0.0],
+    "acceleration_ned": [0.0, 0.0, 0.0],
+    "goal_ned": [30.0, 0.0, -5.0]
+  },
+  "planner": {
+    "control_point_count": 6,
+    "knot_interval_s": 1.0,
+    "sample_interval_s": 0.1,
+    "obstacle_clearance_m": 1.0,
+    "peer_collision_min_distance_m": 3.0,
+    "max_velocity_mps": 2.5,
+    "max_acceleration_mps2": 1.5,
+    "max_jerk_mps3": 3.0,
+    "optimizer_max_iterations": 40,
+    "optimizer_time_budget_ms": 50,
+    "candidate_offset_m": 3.0
+  },
+  "obstacles": [
+    {
+      "type": "box",
+      "center_ned": [12.0, 4.0, -3.0],
+      "size_m": [4.0, 4.0, 6.0]
+    },
+    {
+      "type": "cylinder",
+      "center_ned": [22.0, -5.0, -3.0],
+      "radius_m": 2.0,
+      "height_m": 6.0
+    }
+  ],
+  "peers": [
+    {
+      "agent_id": 2,
+      "mode": "hold",
+      "start_ned": [10.0, 7.0, -5.0],
+      "goal_ned": [10.0, 7.0, -5.0]
+    }
+  ]
+}

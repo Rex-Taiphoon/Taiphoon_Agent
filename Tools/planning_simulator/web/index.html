@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Taiphoon Planning Simulator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">TAIPHOON AGENT / OFFLINE TOOL</p>
+        <h1>路徑規劃實驗器</h1>
+        <p class="subtitle">使用目前純 C++ EGO-Swarm planner，在沒有 ROS2、PX4 或 SITL 的情況下調整情境並檢視結果。</p>
+      </div>
+      <div class="toolbar">
+        <button id="plan-button" class="primary" type="button">重新規劃</button>
+        <button id="reset-button" type="button">重設情境</button>
+        <button id="export-button" type="button">匯出 JSON</button>
+        <label class="file-button">載入 JSON<input id="import-input" type="file" accept="application/json"></label>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="control-panel">
+        <section class="panel-section">
+          <h2>自身飛機與目標</h2>
+          <div class="field-grid">
+            <label>位置 North<input data-self="position_ned" data-index="0" type="number" step="0.1"></label>
+            <label>位置 East<input data-self="position_ned" data-index="1" type="number" step="0.1"></label>
+            <label>位置 Down<input data-self="position_ned" data-index="2" type="number" step="0.1"></label>
+            <label>目標 North<input data-self="goal_ned" data-index="0" type="number" step="0.1"></label>
+            <label>目標 East<input data-self="goal_ned" data-index="1" type="number" step="0.1"></label>
+            <label>目標 Down<input data-self="goal_ned" data-index="2" type="number" step="0.1"></label>
+          </div>
+          <label class="wide-label">高度路徑約束
+            <select id="path-constraint">
+              <option value="free_3d">FREE_3D</option>
+              <option value="fixed_z">FIXED_Z</option>
+              <option value="linear_z">LINEAR_Z</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <h2>Planner 參數</h2>
+          <div class="field-grid">
+            <label>控制點數<input data-planner="control_point_count" type="number" min="4" max="40" step="1"></label>
+            <label>Knot interval (s)<input data-planner="knot_interval_s" type="number" min="0.05" step="0.05"></label>
+            <label>取樣間隔 (s)<input data-planner="sample_interval_s" type="number" min="0.01" step="0.01"></label>
+            <label>障礙 clearance (m)<input data-planner="obstacle_clearance_m" type="number" min="0" step="0.1"></label>
+            <label>Peer 距離 (m)<input data-planner="peer_collision_min_distance_m" type="number" min="0" step="0.1"></label>
+            <label>最大速度 (m/s)<input data-planner="max_velocity_mps" type="number" min="0.1" step="0.1"></label>
+            <label>最大加速度<input data-planner="max_acceleration_mps2" type="number" min="0.1" step="0.1"></label>
+            <label>最大 jerk<input data-planner="max_jerk_mps3" type="number" min="0.1" step="0.1"></label>
+            <label>候選偏移 (m)<input data-planner="candidate_offset_m" type="number" min="0" step="0.1"></label>
+            <label>Optimizer iterations<input data-planner="optimizer_max_iterations" type="number" min="1" max="500" step="1"></label>
+            <label>Optimizer budget (ms)<input data-planner="optimizer_time_budget_ms" type="number" min="1" step="1"></label>
+            <label>障礙採樣間距 (m)<input id="sample-spacing" type="number" min="0.05" step="0.05"></label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2>固定障礙物</h2><div class="button-row"><button data-add-obstacle="box" type="button">+ Box</button><button data-add-obstacle="cylinder" type="button">+ Cylinder</button><button data-add-obstacle="wall" type="button">+ Wall</button></div></div>
+          <div id="obstacles-list" class="dynamic-list"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2>其他無人機</h2><div class="button-row"><button id="add-hold-peer" type="button">+ 懸停 Peer</button><button id="add-moving-peer" type="button">+ 移動 Peer</button></div></div>
+          <div id="peers-list" class="dynamic-list"></div>
+        </section>
+      </aside>
+
+      <section class="visual-panel">
+        <div id="message" class="message" role="status">尚未執行規劃。</div>
+        <div class="plot-grid">
+          <section class="plot-card">
+            <div class="plot-title"><h2>Top-down / North-East</h2><span>North → East</span></div>
+            <svg id="top-plot" viewBox="0 0 800 520" role="img" aria-label="North-East 路徑圖"></svg>
+          </section>
+          <section class="plot-card">
+            <div class="plot-title"><h2>Side view / North-Down</h2><span>North → Down</span></div>
+            <svg id="side-plot" viewBox="0 0 800 360" role="img" aria-label="North-Down 高度圖"></svg>
+          </section>
+        </div>
+        <div class="time-controls">
+          <label>時間 <input id="time-slider" type="range" min="0" max="1" step="0.01" value="0"></label>
+          <output id="time-value">t = 0.00 s</output>
+          <button id="animate-button" type="button">播放</button>
+        </div>
+        <section class="metrics-section">
+          <h2>規劃與安全指標</h2>
+          <div id="metrics" class="metrics-grid"><p class="muted">執行規劃後顯示。</p></div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
