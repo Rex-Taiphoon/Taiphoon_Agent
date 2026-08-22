@@ -76,6 +76,9 @@ enum class PathConstraint
 /// EGO-Swarm planner 與 safety validator 共用設定。
 struct PlannerConfig
 {
+    // Local Goal feature gate 也控制 FIXED_Z route initializer；由 Node
+    // 在新路徑流程驗收後啟用。
+    bool enable_spatiotemporal_route_planning{false};
     double knot_interval_s{1.0};
     std::size_t control_point_count{6U};
     double sample_interval_s{0.1};

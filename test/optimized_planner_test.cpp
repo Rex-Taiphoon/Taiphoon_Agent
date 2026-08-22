@@ -666,6 +666,92 @@ TEST(OptimizedPlannerTest, DenseWallUsesExpandedHorizontalSearchEnvelope)
     EXPECT_TRUE(has_wall_clearance_offset);
 }
 
+TEST(OptimizedPlannerTest, SpatiotemporalRouteSeedGuidesFixedZPlanner)
+{
+    RawPointObstacleMap map;
+    std::vector<Vector3> wall_points;
+    for (int index = -6; index <= 6; ++index)
+    {
+        wall_points.push_back(
+            Vector3{4.0, static_cast<double>(index) * 0.25, 0.0});
+    }
+    ASSERT_TRUE(map.update(wall_points, 0.0));
+    PlanningSnapshot snapshot = make_snapshot(map);
+    snapshot.local_goal = Vector3{8.0, 0.0, 0.0};
+    snapshot.path_constraint = PathConstraint::FIXED_Z;
+    snapshot.fixed_z_m = 0.0;
+    PlannerConfig config;
+    config.enable_spatiotemporal_route_planning = true;
+    config.optimizer_time_budget_ms = 1000.0;
+    config.optimizer_max_iterations = 200;
+    config.smoothness_weight = 0.0;
+    config.obstacle_weight = 1000.0;
+    config.dynamic_weight = 0.0;
+    config.max_velocity_mps = 100.0;
+    config.max_acceleration_mps2 = 100.0;
+    config.max_jerk_mps3 = 100.0;
+    OptimizedEgoPlanner planner(config);
+
+    const auto result = planner.plan(snapshot);
+
+    ASSERT_TRUE(result.is_valid)
+        << taiphoon::ego_swarm::planner_termination_reason_string(
+            result.termination);
+    EXPECT_GE(result.minimum_obstacle_distance_m,
+              config.obstacle_clearance_m);
+    bool has_lateral_offset = false;
+    for (const auto& point : result.trajectory.control_points())
+    {
+        EXPECT_NEAR(point.at(2), snapshot.fixed_z_m, 1.0e-9);
+        has_lateral_offset |= std::abs(point.at(1)) > 1.0;
+    }
+    EXPECT_TRUE(has_lateral_offset);
+}
+
+TEST(OptimizedPlannerTest, CloudWallAtTakeoffHeightRemainsFeasibleWithDefaultBudget)
+{
+    RawPointObstacleMap map;
+    std::vector<Vector3> wall_points;
+    for (const double x : {7.75, 8.25})
+    {
+        for (const double y : {-2.0, 0.0, 2.0})
+        {
+            for (const double z : {-8.25, -7.75})
+            {
+                wall_points.push_back(Vector3{x, y, z});
+            }
+        }
+    }
+    ASSERT_TRUE(map.update(wall_points, 0.0));
+
+    PlanningSnapshot snapshot = make_snapshot(map);
+    snapshot.self_state.position = Vector3{1.75, 2.35, -8.0};
+    snapshot.local_goal = Vector3{11.75, 2.35, -8.0};
+    snapshot.path_constraint = PathConstraint::FIXED_Z;
+    snapshot.fixed_z_m = -8.0;
+
+    PlannerConfig config;
+    config.enable_spatiotemporal_route_planning = true;
+    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_max_iterations = 200;
+    OptimizedEgoPlanner planner(config);
+
+    const auto result = planner.plan(snapshot);
+
+    ASSERT_TRUE(result.is_valid)
+        << taiphoon::ego_swarm::planner_termination_reason_string(
+            result.termination)
+        << " planning_ms=" << result.planning_time_ms
+        << " iterations=" << result.iteration_count
+        << " min_obstacle=" << result.minimum_obstacle_distance_m;
+    EXPECT_GE(result.minimum_obstacle_distance_m,
+              config.obstacle_clearance_m);
+    for (const auto& point : result.trajectory.control_points())
+    {
+        EXPECT_NEAR(point.at(2), snapshot.fixed_z_m, 1.0e-9);
+    }
+}
+
 TEST(OptimizedPlannerTest, TerminalHoldIsNeverIgnoredByPriority)
 {
     RawPointObstacleMap map = make_empty_map();

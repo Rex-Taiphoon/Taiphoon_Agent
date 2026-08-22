@@ -85,6 +85,7 @@ add_executable(ego_swarm_planner
   src/ego_swarm/FormationReservation.cpp
   src/ego_swarm/OptimizedEgoPlanner.cpp
   src/ego_swarm/ProjectedGradientSolver.cpp
+  src/ego_swarm/SpatiotemporalRouteInitializer.cpp
   src/perception/RawPointObstacleMap.cpp
 )
 
@@ -338,10 +339,22 @@ if(BUILD_TESTING)
     src/ego_swarm/FormationReservation.cpp
     src/ego_swarm/OptimizedEgoPlanner.cpp
     src/ego_swarm/ProjectedGradientSolver.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
     src/perception/RawPointObstacleMap.cpp
   )
 
   target_include_directories(test_optimized_planner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # FIXED_Z 時空 route initializer 純邏輯測試
+  ament_add_gtest(test_spatiotemporal_route_initializer
+    test/spatiotemporal_route_initializer_test.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_spatiotemporal_route_initializer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

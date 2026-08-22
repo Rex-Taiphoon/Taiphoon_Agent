@@ -73,6 +73,7 @@ services:
       - EGO_SWARM_RESERVATION_HORIZON_S=${FMU1_RESERVATION_HORIZON_S:-5.0}
       - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
       - OBSTACLE_CLOUD_MODE=${FMU1_OBSTACLE_CLOUD_MODE:-explicit_empty}
+      - OBSTACLE_CLOUD_CONFIG=${FMU1_OBSTACLE_CLOUD_CONFIG:-/home/taiphoon/Taiphoon_Agent/config/obstacles/default.yaml}
 
   fmu2_agent:
     <<: *agent-defaults
@@ -98,6 +99,7 @@ services:
       - EGO_SWARM_RESERVATION_HORIZON_S=${FMU2_RESERVATION_HORIZON_S:-5.0}
       - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
       - OBSTACLE_CLOUD_MODE=${FMU2_OBSTACLE_CLOUD_MODE:-explicit_empty}
+      - OBSTACLE_CLOUD_CONFIG=${FMU2_OBSTACLE_CLOUD_CONFIG:-/home/taiphoon/Taiphoon_Agent/config/obstacles/default.yaml}
 
   fmu3_agent:
     <<: *agent-defaults
@@ -123,6 +125,7 @@ services:
       - EGO_SWARM_RESERVATION_HORIZON_S=${FMU3_RESERVATION_HORIZON_S:-5.0}
       - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU3_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
       - OBSTACLE_CLOUD_MODE=${FMU3_OBSTACLE_CLOUD_MODE:-explicit_empty}
+      - OBSTACLE_CLOUD_CONFIG=${FMU3_OBSTACLE_CLOUD_CONFIG:-/home/taiphoon/Taiphoon_Agent/config/obstacles/default.yaml}
   fmu4_agent:
     <<: *agent-defaults
     container_name: fmu4_agent
@@ -147,3 +150,4 @@ services:
       - EGO_SWARM_RESERVATION_HORIZON_S=${FMU4_RESERVATION_HORIZON_S:-5.0}
       - ENABLE_OBSTACLE_CLOUD_SIMULATOR=${FMU4_ENABLE_OBSTACLE_CLOUD_SIMULATOR:-true}
       - OBSTACLE_CLOUD_MODE=${FMU4_OBSTACLE_CLOUD_MODE:-explicit_empty}
+      - OBSTACLE_CLOUD_CONFIG=${FMU4_OBSTACLE_CLOUD_CONFIG:-/home/taiphoon/Taiphoon_Agent/config/obstacles/default.yaml}

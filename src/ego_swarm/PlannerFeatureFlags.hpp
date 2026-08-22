@@ -24,13 +24,13 @@ constexpr double DEFAULT_MINIMUM_REPLAN_INTERVAL_S = 0.5;
 /**
  * @brief planner 新功能的設定邊界
  *
- * 兩個功能旗標預設關閉，確保尚未接入新 planning pipeline 前仍維持
- * 舊架構行為。數值參數先在此 seam 完成有限值與範圍 normalization。
+ * Local Goal segmented planning 預設開啟；generic reservation 仍預設關閉。
+ * 數值參數先在此 seam 完成有限值與範圍 normalization。
  */
 struct PlannerFeatureFlags
 {
     /// 是否啟用 Local Goal segmented planning。
-    bool enable_local_goal_planning{false};
+    bool enable_local_goal_planning{true};
     /// 是否啟用所有 moving trajectory 共用的 reservation。
     bool enable_generic_trajectory_reservation{false};
     /// 單一 Local Goal segment 的距離 horizon，單位為公尺。

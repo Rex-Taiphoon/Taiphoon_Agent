@@ -7,7 +7,9 @@
 > 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的目標位置累加；水平位移使用保存的
 > target yaw。全體命令在啟用編隊時以共同 `swarm_ned` 平移 Formation center，保留 slot
 > assignment；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
-> 與 deterministic minimum-cost assignment。
+> 與 deterministic minimum-cost assignment。水平 `FIXED_Z` MOVE 會先以 Local Goal
+> 分段；直線 seed 受阻時使用 bounded 時空 A* 產生側繞 seed，再交給既有 optimizer
+> 與 safety validator，整條軌跡維持原高度。
 
 ---
 
@@ -88,6 +90,27 @@ bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_N
 # 關閉所有模擬器
 bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 ```
+
+EGO 路徑規劃 SITL 驗證（需要已準備 `taiphoon-agent:dev` 與
+`px4io/px4-sitl:latest`，腳本會自行清理 Agent 與 PX4）：
+
+```bash
+# 單機：BasicController 回歸、直線、固定障礙繞行、封閉範圍 HOLD／Brake
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario single
+
+# 雙機：moving peer 交叉路徑與 3 m 中心距離
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario dual
+
+# 四機：FORMATION_CIRCLE 10 10 固定高度與既有 Formation 回歸
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario swarm
+```
+
+單機與雙機路徑測試會先對所有測試中的 Agent 發送既有 `TAKEOFF 8.0`；四機 Formation
+測試則發送既有 `TAKEOFF 10.0`，再使用 `FORMATION_CIRCLE 10 10`，讓編隊高度與起飛
+高度一致。
+先啟動高度監測器取得地面基準，再發送對應的既有 TAKEOFF；單機／雙機至少達 `7.5 m`，
+四機 Formation 至少達 `9.5 m`，並穩定 1 秒後才發布 MOVE 或 Formation（容許 0.5 m
+SITL 誤差）。不以固定 sleep 代替起飛完成判斷。
 
 | 參數 | 說明 | 預設值 |
 |------|------|--------|
@@ -666,7 +689,7 @@ Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 gl
 | `obstacle_cloud_timeout_s` | double | `1.0` | 局部障礙物地圖 freshness timeout；逾時後 planner 進入 HOLD |
 | `require_obstacle_cloud` | bool | `true` | 是否要求 fresh obstacle map；missing/stale 不會被當成 explicit empty |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
-| `enable_local_goal_planning` | bool | `false` | Local Goal segmented planning 功能旗標；預設關閉以維持舊架構行為 |
+| `enable_local_goal_planning` | bool | `true` | Local Goal segmented planning；水平 FIXED_Z 受阻時啟用 bounded 時空 A*，FREE_3D／LINEAR_Z 維持既有 planner |
 | `enable_generic_trajectory_reservation` | bool | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
 | `local_goal_horizon_m` | double | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
 | `local_goal_replan_ratio` | double | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |

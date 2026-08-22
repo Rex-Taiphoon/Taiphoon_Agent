@@ -27,7 +27,8 @@
 ## 1. 系統架構總覽
 
 ```
-GCS 命令 ──▶ EgoSwarmPlanner ──▶ /{agent_namespace}/planning/trajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
+GCS 命令 ──▶ EgoSwarmPlanner（Local Goal／FIXED_Z 時空路徑引導／optimizer）
+          ──▶ /{agent_namespace}/planning/trajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
                   │       ▲
                   │       └── PointCloud2（局部障礙物）
                   └── /fmu_all_agent/swarm/agent_trajectories（同儕 future occupancy）
@@ -100,6 +101,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 - `PeerTrajectoryTable`：同儕未來軌跡保存、timestamp sanity、freshness 與 expiration；ACTIVE 與 TERMINAL_HOLD 軌跡參與 planner，完成任務的終點由 heartbeat 保持佔位
 - `DeterministicPlanner`／`EgoSwarmPlanner`：保留既有純邏輯相容檔案；runtime 不組裝此 backend
 - `OptimizedEgoPlanner`：runtime 唯一使用的 pure C++ continuous control-point optimizer；失敗時 fail-closed HOLD／EmergencyBrake
+- `SpatiotemporalRouteInitializer`：只在 Local Goal + `FIXED_Z` 且直線 seed 受阻時執行 bounded `(North, East, time)` A*；結果只作 B-spline seed，不新增 ROS2 介面
 - `FormationReservationPlanner`：以 future `AgentTrajectory.start_time` 表示 reservation，不新增 ROS2 message
 - `FormationConvergenceEvaluator`：由 fresh state、槽位誤差、epoch 與 terminal occupancy 推導 convergence；槽位到達不使用速度門檻
 
@@ -115,7 +117,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `obstacle_cloud_timeout_s` | `double` | `1.0` | 局部障礙物地圖 freshness timeout；逾時後不再規劃 |
 | `require_obstacle_cloud` | `bool` | `true` | 要求 fresh obstacle map；missing/stale 不得當成空環境 |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
-| `enable_local_goal_planning` | `bool` | `false` | Local Goal segmented planning 功能旗標；預設關閉以維持舊架構行為 |
+| `enable_local_goal_planning` | `bool` | `true` | Local Goal segmented planning；水平 FIXED_Z 受阻時使用 bounded 時空 A*，FREE_3D／LINEAR_Z 沿用既有 planner |
 | `enable_generic_trajectory_reservation` | `bool` | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
 | `local_goal_horizon_m` | `double` | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
 | `local_goal_replan_ratio` | `double` | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
@@ -442,9 +444,10 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   `basic_controller_node` 只負責 ARM、TAKEOFF、LAND、RTL、HOLD、YAW 與軌跡取樣。
   規劃器輸出未來軌跡後，再由 BasicController 以 analytic B-spline derivative
   取樣 p/v/a 成 PX4 `TrajectorySetpoint`。
-- 目前 EGO-Swarm runtime 是內建 pure C++ optimized continuous B-spline planner：只以
-  單一直線 seed 最佳化中間控制點，依目標、平滑、障礙物與同儕距離成本搜尋安全路徑；
-  deterministic candidate 類別不再由 runtime 組裝或作 fallback。
+- 目前 EGO-Swarm runtime 是內建 pure C++ optimized continuous B-spline planner。水平
+  `FIXED_Z` 先經 Local Goal；直線 seed 受阻時由 pure C++ bounded 時空 A* 提供側繞／讓路 seed，
+  再進行 control-point optimization。`FREE_3D`、`LINEAR_Z` 與垂直 MOVE 不經此 A*。
+  deterministic candidate 類別僅保留相容與回歸用途。
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
   local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
@@ -640,6 +643,30 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 | `/{agent_namespace}/planning/status`、`/planning/trajectory` | reliable | volatile | 10 |
 
 > 上述 QoS 與目前 `ego_swarm_planner`、`obstacle_cloud_simulator` 實作一致。
+
+---
+
+## 9. EGO 路徑規劃 SITL 驗證
+
+測試腳本不新增控制介面；它只使用既有 PX4 launcher、Agent command topic、
+`PlannerStatus` 與 `AgentTrajectory`：
+
+```bash
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario single
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario dual
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario swarm
+```
+
+水平 MOVE 的 `FIXED_Z` 軌跡會維持起點高度；直線 seed 受阻時才使用 bounded 時空 A*
+引導 B-spline。`FREE_3D`、`LINEAR_Z`、垂直 MOVE、FormationEpoch、reservation、
+priority 與既有 HOLD／Brake 行為不因這個 initializer 改變。
+
+SITL 單機／雙機路徑驗收會先啟動高度監測器取得地面基準，再使用既有 `TAKEOFF 8.0`；
+四機 Formation 驗收則使用既有 `TAKEOFF 10.0`，再發送 `FORMATION_CIRCLE 10 10`，讓
+編隊高度與起飛高度一致。讀取
+既有 `AgentState.position_global`，確認每台 Agent 相對起飛基準至少上升 `7.5 m`
+（單機／雙機）或 `9.5 m`（四機 Formation），並穩定 1 秒後才發布 MOVE 或 Formation；
+兩者皆允許 0.5 m SITL 誤差。這是測試前置條件，不新增 runtime topic 或命令。
 
 ---
 

@@ -1,0 +1,12 @@
+# EGO 時空路徑規劃 SITL 封閉搜尋範圍場景。
+# 座標使用 swarm_ned：x=North、y=East、z=Down。
+frame_id: swarm_ned
+mode: ground_truth
+sample_spacing_m: 0.5
+publish_rate_hz: 15.0
+random_seed: 20260822
+
+obstacles:
+  - type: wall
+    center_ned: [10.0, 0.0, -8.0]
+    size_m: [0.5, 40.0, 8.0]

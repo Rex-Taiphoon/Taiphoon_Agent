@@ -13,6 +13,7 @@
 #include <limits>
 
 #include "ego_swarm/BsplineTrajectory.hpp"
+#include "ego_swarm/SpatiotemporalRouteInitializer.hpp"
 #include "ego_swarm/TrajectoryPriority.hpp"
 
 namespace taiphoon
@@ -336,6 +337,97 @@ PlannerTerminationReason convert_solver_reason(
     return PlannerTerminationReason::INFEASIBLE;
 }
 
+PlannerTerminationReason convert_route_reason(
+    const RouteInitializerTerminationReason reason)
+{
+    switch (reason)
+    {
+        case RouteInitializerTerminationReason::SUCCESS:
+            return PlannerTerminationReason::SUCCESS;
+        case RouteInitializerTerminationReason::INVALID_INPUT:
+            return PlannerTerminationReason::INVALID_INPUT;
+        case RouteInitializerTerminationReason::NO_FEASIBLE_PATH:
+            return PlannerTerminationReason::NO_FEASIBLE_PATH;
+        case RouteInitializerTerminationReason::TIMEOUT:
+            return PlannerTerminationReason::TIMEOUT;
+    }
+    return PlannerTerminationReason::INFEASIBLE;
+}
+
+bool build_control_points_from_timed_route(
+    const std::vector<TimedRoutePoint>& route,
+    const std::size_t control_point_count,
+    const double fixed_z,
+    std::vector<Vector3>& control_points,
+    double& duration_s)
+{
+    if (route.size() < 2U || control_point_count <= BSPLINE_DEGREE ||
+        !is_finite(fixed_z))
+    {
+        return false;
+    }
+    duration_s = route.back().time_s;
+    if (!is_finite(duration_s) || duration_s <= EGO_SWARM_EPSILON_M)
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < route.size(); ++index)
+    {
+        if (!is_finite_vector(route.at(index).position) ||
+            !is_finite(route.at(index).time_s) ||
+            (index > 0U && route.at(index).time_s <=
+                route.at(index - 1U).time_s))
+        {
+            return false;
+        }
+    }
+
+    control_points.clear();
+    control_points.reserve(control_point_count);
+    std::size_t segment_index = 0U;
+    for (std::size_t index = 0U; index < control_point_count; ++index)
+    {
+        const double target_time = duration_s * static_cast<double>(index) /
+            static_cast<double>(control_point_count - 1U);
+        while (segment_index + 1U < route.size() &&
+               route.at(segment_index + 1U).time_s < target_time)
+        {
+            ++segment_index;
+        }
+        Vector3 point = route.back().position;
+        if (target_time <= route.front().time_s)
+        {
+            point = route.front().position;
+        }
+        else if (segment_index + 1U < route.size())
+        {
+            const TimedRoutePoint& first = route.at(segment_index);
+            const TimedRoutePoint& second = route.at(segment_index + 1U);
+            const double span = second.time_s - first.time_s;
+            const double ratio = span <= EGO_SWARM_EPSILON_M
+                ? 0.0 : (target_time - first.time_s) / span;
+            point = Vector3{
+                first.position.at(0) +
+                    (second.position.at(0) - first.position.at(0)) * ratio,
+                first.position.at(1) +
+                    (second.position.at(1) - first.position.at(1)) * ratio,
+                fixed_z};
+        }
+        point.at(2) = fixed_z;
+        if (!is_finite_vector(point))
+        {
+            control_points.clear();
+            return false;
+        }
+        control_points.push_back(point);
+    }
+    control_points.front() = route.front().position;
+    control_points.back() = route.back().position;
+    control_points.front().at(2) = fixed_z;
+    control_points.back().at(2) = fixed_z;
+    return true;
+}
+
 }  // namespace
 
 OptimizedEgoPlanner::OptimizedEgoPlanner(const PlannerConfig& config)
@@ -402,16 +494,8 @@ PlannerResult OptimizedEgoPlanner::plan(
 
     const std::size_t count = config_.control_point_count;
     const double denominator = static_cast<double>(count - 1U);
-    const double duration_s = compute_seed_duration_s(
+    double duration_s = compute_seed_duration_s(
         config_, snapshot.self_state.position, snapshot.local_goal);
-    const double span_count = static_cast<double>(count - BSPLINE_DEGREE);
-    const double knot_interval_s = duration_s / span_count;
-    if (!is_finite(knot_interval_s) ||
-        knot_interval_s <= EGO_SWARM_EPSILON_M)
-    {
-        result.termination = PlannerTerminationReason::INVALID_INPUT;
-        return finish(result);
-    }
 
     std::vector<Vector3> seed;
     seed.reserve(count);
@@ -431,6 +515,43 @@ PlannerResult OptimizedEgoPlanner::plan(
         }
         seed.push_back(interpolate_vectors(
             snapshot.self_state.position, snapshot.local_goal, ratio));
+    }
+
+    PlanningSnapshot planning_snapshot = snapshot;
+    if (config_.enable_spatiotemporal_route_planning &&
+        snapshot.path_constraint == PathConstraint::FIXED_Z)
+    {
+        PlannerConfig route_config = config_;
+        SpatiotemporalRouteInitializer route_initializer;
+        const SpatiotemporalRouteResult route_result =
+            route_initializer.initialize(snapshot, route_config, seed);
+        if (!route_result.is_valid)
+        {
+            result.termination = convert_route_reason(
+                route_result.termination);
+            return finish(result);
+        }
+        result.trajectory_start_time_s =
+            route_result.trajectory_start_time_s;
+        if (route_result.used_search &&
+            !build_control_points_from_timed_route(
+                route_result.route, count, snapshot.fixed_z_m, seed,
+                duration_s))
+        {
+            result.termination = PlannerTerminationReason::INFEASIBLE;
+            return finish(result);
+        }
+        planning_snapshot.trajectory_start_time_s =
+            route_result.trajectory_start_time_s;
+    }
+
+    const double span_count = static_cast<double>(count - BSPLINE_DEGREE);
+    const double knot_interval_s = duration_s / span_count;
+    if (!is_finite(knot_interval_s) ||
+        knot_interval_s <= EGO_SWARM_EPSILON_M)
+    {
+        result.termination = PlannerTerminationReason::INVALID_INPUT;
+        return finish(result);
     }
 
     const double search_radius = config_.optimizer_search_radius_m;
@@ -477,7 +598,8 @@ PlannerResult OptimizedEgoPlanner::plan(
         ? 1.0
         : 0.0;
     TrajectoryObjective objective(
-        snapshot, config_, knot_interval_s, optimizer_objective_interval_s);
+        planning_snapshot, config_, knot_interval_s,
+        optimizer_objective_interval_s);
     const BsplineTrajectory seed_trajectory(seed, knot_interval_s);
     const OptimizationEvaluation seed_evaluation = objective.evaluate(seed);
     // Objective 的稀疏 sampling 只用來做 gradient 引導；fast path 不能
@@ -485,10 +607,11 @@ PlannerResult OptimizedEgoPlanner::plan(
     // 再用 safety sampling interval 做一次 hard peer pre-check，真正需要
     // 繞行時才交給 solver。
     const OptimizationEvaluation seed_peer_safety_evaluation =
-        snapshot.peers.empty()
+        planning_snapshot.peers.empty()
         ? seed_evaluation
         : TrajectoryObjective(
-              snapshot, config_, knot_interval_s, config_.sample_interval_s)
+              planning_snapshot, config_, knot_interval_s,
+              config_.sample_interval_s)
               .evaluate(seed);
     const bool seed_has_hard_clearance =
         (snapshot.obstacle_map->point_count() == 0U ||
@@ -538,9 +661,20 @@ PlannerResult OptimizedEgoPlanner::plan(
         (long_route_needs_tracking_margin
             ? config_.optimizer_peer_soft_margin_m
             : 0.0);
+    const double elapsed_before_solver_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+    const double remaining_solver_budget_ms =
+        config_.optimizer_time_budget_ms - elapsed_before_solver_ms;
+    if (!is_finite(remaining_solver_budget_ms) ||
+        remaining_solver_budget_ms <= EGO_SWARM_EPSILON_M)
+    {
+        result.termination = PlannerTerminationReason::TIMEOUT;
+        return finish(result);
+    }
     const ProjectedGradientSolverConfig solver_config{
         config_.optimizer_max_iterations,
-        config_.optimizer_time_budget_ms,
+        remaining_solver_budget_ms,
         config_.optimizer_gradient_epsilon_m,
         config_.optimizer_initial_step_m,
         config_.optimizer_minimum_step_m,
@@ -561,8 +695,21 @@ PlannerResult OptimizedEgoPlanner::plan(
         solver_result.evaluation.minimum_obstacle_distance_m;
     result.minimum_peer_distance_m =
         solver_result.evaluation.minimum_peer_distance_m;
+    const bool solver_has_hard_clearance =
+        (snapshot.obstacle_map->point_count() == 0U ||
+         solver_result.evaluation.minimum_obstacle_distance_m +
+             EGO_SWARM_EPSILON_M >= config_.obstacle_clearance_m) &&
+        (solver_result.evaluation.minimum_peer_distance_m <= 0.0 ||
+         solver_result.evaluation.minimum_peer_distance_m +
+             EGO_SWARM_EPSILON_M >= optimizer_peer_acceptance_distance);
+    // A route seed can already be hard-safe while the bounded numerical
+    // solver is unable to reduce the remaining soft smoothness/clearance
+    // cost.  Do not discard that geometrically safe candidate solely because
+    // the solver reports DIVERGED; the hard dynamics check below and the
+    // Node's existing ContinuousSafetyValidator remain mandatory gates.
     if (!solver_result.is_valid ||
-        solver_result.termination != SolverTerminationReason::CONVERGED)
+        (solver_result.termination != SolverTerminationReason::CONVERGED &&
+         !solver_has_hard_clearance))
     {
         return finish(result);
     }

@@ -17,11 +17,11 @@ namespace
 using taiphoon::ego_swarm::PlannerFeatureFlags;
 using taiphoon::ego_swarm::normalize_planner_feature_flags;
 
-TEST(PlannerFeatureFlagsTest, ProvidesBackwardCompatibleDefaults)
+TEST(PlannerFeatureFlagsTest, EnablesLocalGoalByDefaultAndKeepsReservationOff)
 {
     const PlannerFeatureFlags flags{};
 
-    EXPECT_FALSE(flags.enable_local_goal_planning);
+    EXPECT_TRUE(flags.enable_local_goal_planning);
     EXPECT_FALSE(flags.enable_generic_trajectory_reservation);
     EXPECT_DOUBLE_EQ(flags.local_goal_horizon_m, 10.0);
     EXPECT_DOUBLE_EQ(flags.local_goal_replan_ratio, 0.70);

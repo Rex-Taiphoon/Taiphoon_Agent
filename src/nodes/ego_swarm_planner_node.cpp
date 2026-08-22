@@ -408,6 +408,8 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     planner_config_.reservation_lead_time_s = reservation_lead_time_s_;
     planner_config_.reservation_step_s = reservation_step_s_;
     planner_config_.reservation_horizon_s = reservation_horizon_s_;
+    planner_config_.enable_spatiotemporal_route_planning =
+        planner_feature_flags_.enable_local_goal_planning;
     auto optimized_planner = std::make_unique<ego_swarm::OptimizedEgoPlanner>();
     if (!optimized_planner->set_config(planner_config_))
     {
@@ -2481,12 +2483,15 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         return;
     }
 
-    double accepted_start_time_s = plan_start_time_s;
+    double accepted_start_time_s = result.trajectory_start_time_s;
     bool reservation_accepted = !should_reserve_trajectory;
     if (should_reserve_trajectory)
     {
+        ego_swarm::PlanningSnapshot reservation_snapshot = snapshot;
+        reservation_snapshot.trajectory_start_time_s =
+            result.trajectory_start_time_s;
         const auto reservation = ego_swarm::FormationReservationPlanner::reserve(
-            result.trajectory, snapshot,
+            result.trajectory, reservation_snapshot,
             ego_swarm::required_peer_separation_m(
                 has_formation_, formation_min_distance_m_,
                 planner_config_.peer_collision_min_distance_m),

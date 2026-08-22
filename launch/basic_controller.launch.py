@@ -286,8 +286,10 @@ def generate_launch_description():
             description="已保留的相容參數；全球 WGS84 軌跡改用各 Agent 自身 Home"),
         DeclareLaunchArgument(
             "enable_local_goal_planning",
-            default_value="false",
-            description="是否啟用 Local Goal segmented planning"),
+            default_value="true",
+            description=(
+                "是否啟用 Local Goal 與 FIXED_Z 時空路徑引導；"
+                "FREE_3D／LINEAR_Z 沿用既有 planner")),
         DeclareLaunchArgument(
             "enable_generic_trajectory_reservation",
             default_value="false",
