@@ -19,6 +19,7 @@ add_executable(planning_simulator
   src/planning_simulator.cpp
   "${TAIPHOON_AGENT_SOURCE_DIR}/src/ego_swarm/OptimizedEgoPlanner.cpp"
   "${TAIPHOON_AGENT_SOURCE_DIR}/src/ego_swarm/ProjectedGradientSolver.cpp"
+  "${TAIPHOON_AGENT_SOURCE_DIR}/src/ego_swarm/SpatiotemporalRouteInitializer.cpp"
   "${TAIPHOON_AGENT_SOURCE_DIR}/src/perception/RawPointObstacleMap.cpp"
   "${TAIPHOON_AGENT_SOURCE_DIR}/src/perception/ObstacleCloudGenerator.cpp"
 )

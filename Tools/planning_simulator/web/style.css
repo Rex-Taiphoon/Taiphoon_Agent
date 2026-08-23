@@ -83,7 +83,8 @@ svg { display: block; width: 100%; height: auto; min-height: 250px; }
 .control-line { fill: none; stroke: var(--planned); stroke-width: 1.5; stroke-dasharray: 5 4; opacity: .65; }
 .peer-line { fill: none; stroke: var(--peer); stroke-width: 2.4; stroke-dasharray: 7 4; }
 .actual-dot { fill: var(--primary); stroke: var(--surface); stroke-width: 2; }
-.goal-dot { fill: var(--planned); stroke: var(--surface); stroke-width: 2; }
+.goal-dot { fill: var(--surface); stroke: var(--planned); stroke-width: 2; stroke-dasharray: 4 3; }
+.local-goal-dot { fill: var(--planned); stroke: var(--surface); stroke-width: 2; }
 .peer-dot { fill: var(--peer); stroke: var(--surface); stroke-width: 2; }
 .obstacle-shape { fill: var(--obstacle); fill-opacity: .20; stroke: var(--obstacle); stroke-width: 1.5; }
 .control-dot { fill: var(--planned); stroke: var(--surface); stroke-width: 1.5; }

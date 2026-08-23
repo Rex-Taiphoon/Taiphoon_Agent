@@ -23,6 +23,11 @@ cmake --build /tmp/taiphoon_planning_build --parallel
 
 這個 build tree 在 `/tmp`，不會寫入 ROS2 的 `build/`、`install/` 或 `log/`。
 
+模擬器會直接編譯目前 runtime 使用的 `OptimizedEgoPlanner`、
+`SpatiotemporalRouteInitializer` 與 `ProjectedGradientSolver`；FIXED_Z 情境會
+啟用與 runtime 相同的時空 route seed 流程。這是工具層的組裝設定，不會改變
+planner 的核心預設值或演算法。
+
 ## 啟動瀏覽器工具
 
 最方便的方式是在專案根目錄執行：
@@ -66,6 +71,17 @@ python3 Tools/planning_simulator/tests/smoke_test.py \
 結果會顯示規劃 B-spline、控制點、peer trajectory、固定障礙物、側視高度、
 最小障礙距離、最小 peer 距離、最大動力學量、規劃耗時與 safety reason。
 
+網頁輸入的目標是 Final Target。模擬器會重用既有 `LocalGoalSelector`，以預設
+10 m horizon 產生目前這一段的 Local Goal，再交給 `OptimizedEgoPlanner`；圖上以
+實心標記顯示 Local Goal，以空心標記顯示尚未到達的 Final Target。這個離線工具
+目前只模擬單一 planning segment，不會模擬正式 ROS2 Node 的進度觸發與下一段
+replan。
+
+固定障礙物會先用 `ObstacleCloudGenerator` 產生點雲，再交給目前的
+`RawPointObstacleMap`、planner 與 `ContinuousSafetyValidator`；網頁顯示的障礙物
+幾何則來自同一份 JSON 情境。因此這裡不是只把障礙物畫在圖上，規劃與安全檢查
+也會實際使用它們。
+
 ## 情境檔
 
 目前提供：
@@ -89,6 +105,12 @@ python3 Tools/planning_simulator/tests/smoke_test.py \
 - peer 以時間化 B-spline 表示，不會被錯誤地當成靜態 PointCloud 障礙物。
 - 目前工具驗證單次 optimized planning 與共同 ContinuousSafetyValidator。
   ROS2 Node 內的完整 callback lifecycle 仍由正式 runtime 負責。
+- 時空 route initializer 目前只適用於 `FIXED_Z`；`FREE_3D` 與 `LINEAR_Z` 仍使用
+  既有 optimizer 與共同 safety validator。若搜尋超過現有 planner time budget，
+  網頁會如實顯示 timeout／安全失敗，不會改用不安全的直線結果。
+- 這是離線模擬器，不會訂閱正在執行中的 ROS2 topic；它使用相同的 pure C++ planner
+  與 safety 元件重建一次規劃結果。正式 runtime 的 callback、reservation lifecycle
+  與 PX4 tracking 仍需用 Docker／SITL 驗證。
 
 ## 直接使用 engine
 

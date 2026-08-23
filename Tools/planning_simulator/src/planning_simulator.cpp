@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
+#include "ego_swarm/PlanningTargetSelector.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 #include "ego_swarm/PlannerTypes.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
@@ -36,6 +37,7 @@ namespace
 
 using taiphoon::ego_swarm::BsplineTrajectory;
 using taiphoon::ego_swarm::ContinuousSafetyValidator;
+using taiphoon::ego_swarm::LocalGoalConfig;
 using taiphoon::ego_swarm::OptimizedEgoPlanner;
 using taiphoon::ego_swarm::PathConstraint;
 using taiphoon::ego_swarm::PeerTrajectory;
@@ -44,6 +46,7 @@ using taiphoon::ego_swarm::PeerTrajectoryTableConfig;
 using taiphoon::ego_swarm::PlannerConfig;
 using taiphoon::ego_swarm::PlannerResult;
 using taiphoon::ego_swarm::PlanningSnapshot;
+using taiphoon::ego_swarm::select_planning_target;
 using taiphoon::ego_swarm::SafetyValidationContext;
 using taiphoon::ego_swarm::SafetyValidationResult;
 using taiphoon::ego_swarm::Vector3;
@@ -87,6 +90,8 @@ struct SimulationOutput
 {
     PlannerResult planner_result{};
     SafetyValidationResult safety_result{};
+    Vector3 local_goal{0.0, 0.0, 0.0};
+    bool local_goal_is_final_goal{false};
     std::vector<PeerDefinition> peers{};
     std::string error{};
 };
@@ -652,7 +657,11 @@ void write_output_json(
 
     std::cout << ",\"input\":{\"goal\":";
     write_vector_json(std::cout, input.goal);
-    std::cout << ",\"path_constraint\":\"" <<
+    std::cout << ",\"local_goal\":";
+    write_vector_json(std::cout, output.local_goal);
+    std::cout << ",\"local_goal_is_final_goal\":" <<
+        (output.local_goal_is_final_goal ? "true" : "false") <<
+        ",\"path_constraint\":\"" <<
         path_constraint_name(input.path_constraint) << "\"}"
               << ",\"planner\":{\"is_valid\":" <<
         (plan.is_valid ? "true" : "false") << ",\"is_hold\":" <<
@@ -736,6 +745,11 @@ bool run_simulation(
     }
 
     PlannerConfig config = input.planner_config;
+    // 離線模擬器代表目前 runtime 的 OptimizedEgoPlanner；runtime Node
+    // 會依 Local Goal feature flag 開啟 FIXED_Z 時空 route initializer。
+    // 這裡沒有 ROS2 parameter，因此直接使用目前模擬器的規劃結果模式，
+    // 不改動 planner 本身的預設值或任何核心演算法。
+    config.enable_spatiotemporal_route_planning = true;
     if (config.max_velocity_m_s <= 0.0)
     {
         config.max_velocity_m_s = config.max_velocity_mps;
@@ -745,9 +759,26 @@ bool run_simulation(
         config.max_acceleration_m_s2 = config.max_acceleration_mps2;
     }
 
+    // 與正式 EgoSwarmPlannerNode 相同，網頁輸入的 goal 是 Final Target，
+    // planner 每次只接收目前 Local Goal。這裡重用既有 pure C++ selector，
+    // 不改動核心 planner 或 ROS2 Node。
+    const auto local_goal_result = select_planning_target(
+        true,
+        input.self_state.position,
+        input.goal,
+        input.path_constraint,
+        LocalGoalConfig{});
+    if (!local_goal_result.is_valid)
+    {
+        output.error = "Local Goal selection failed";
+        return false;
+    }
+    output.local_goal = local_goal_result.goal;
+    output.local_goal_is_final_goal = local_goal_result.is_final_goal;
+
     PlanningSnapshot snapshot;
     snapshot.self_state = input.self_state;
-    snapshot.local_goal = input.goal;
+    snapshot.local_goal = output.local_goal;
     snapshot.planning_time_s = SIMULATION_TIME_S;
     snapshot.trajectory_start_time_s = SIMULATION_TIME_S;
     snapshot.frame_revision = FRAME_REVISION;

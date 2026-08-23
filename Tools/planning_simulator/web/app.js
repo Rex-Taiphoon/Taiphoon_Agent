@@ -247,7 +247,7 @@ async function requestPlan() {
     el("time-slider").value = "0";
     renderMetrics(data);
     renderPlots(0);
-    message.textContent = `完成：${data.planner.termination}，安全檢查 ${data.safety.is_safe ? "通過" : "未通過"}`;
+    message.textContent = `完成：${data.planner.termination}，Local Goal ${formatVector(data.input.local_goal)}，安全檢查 ${data.safety.is_safe ? "通過" : "未通過"}`;
   } catch (error) {
     lastResult = null;
     message.className = "message error";
@@ -262,7 +262,11 @@ function renderMetrics(data) {
   const target = el("metrics");
   target.innerHTML = "";
   if (!data) { target.innerHTML = '<p class="muted">執行規劃後顯示。</p>'; return; }
+  const localGoal = data.input.local_goal;
+  const finalGoal = data.input.goal;
   const values = [
+    ["Final Target", formatVector(finalGoal)],
+    ["Local Goal", formatVector(localGoal)],
     ["Planner", data.planner.termination],
     ["安全檢查", data.safety.is_safe ? "PASS" : data.safety.reason],
     ["障礙最小距離", scenario.obstacles.length ? `${format(data.safety.minimum_obstacle_distance_m)} m` : "—"],
@@ -278,6 +282,11 @@ function renderMetrics(data) {
     card.innerHTML = `<div class="metric-label">${label}</div><div class="metric-value">${value}</div>`;
     target.appendChild(card);
   });
+}
+
+function formatVector(point) {
+  if (!point || point.length !== 3) return "—";
+  return `[${format(point[0])}, ${format(point[1])}, ${format(point[2])}]`;
 }
 
 function svgElement(name, attributes = {}) {
@@ -411,8 +420,10 @@ function drawScene(svg, axis, labels, width, height, time) {
     const [x, y] = projector.project(self.position);
     svg.appendChild(svgElement("circle", { cx: x, cy: y, r: 8, class: "actual-dot" }));
   }
-  const goal = projector.project(scenario.self.goal_ned);
-  svg.appendChild(svgElement("circle", { cx: goal[0], cy: goal[1], r: 6, class: "goal-dot" }));
+  const finalGoal = projector.project(scenario.self.goal_ned);
+  svg.appendChild(svgElement("circle", { cx: finalGoal[0], cy: finalGoal[1], r: 7, class: "goal-dot" }));
+  const localGoal = projector.project(lastResult.input?.local_goal || scenario.self.goal_ned);
+  svg.appendChild(svgElement("circle", { cx: localGoal[0], cy: localGoal[1], r: 6, class: "local-goal-dot" }));
 }
 
 function renderPlots(time) {
