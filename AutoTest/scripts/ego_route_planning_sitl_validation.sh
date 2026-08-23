@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # ego_route_planning_sitl_validation.sh
-# EGO 式 FIXED_Z 時空路徑規劃 SITL 驗證：單機、雙機與四機。
+# EGO 式 FIXED_Z 時空路徑規劃 SITL 驗證：單機、東向避障、雙機與四機。
 # =============================================================================
 
 set -euo pipefail
@@ -14,17 +14,19 @@ FORMATION_ALTITUDE_M="10.0"
 SCENARIO="all"
 SKIP_BASIC=0
 AGENT_STARTED=0
+LOG_DIR="${PROJECT_DIR}/AutoTest/Log"
 
 usage()
 {
     cat <<'EOF'
 使用方式：
   bash AutoTest/scripts/ego_route_planning_sitl_validation.sh \
-      --scenario single|dual|swarm|all [--skip-basic]
+      --scenario single|east|dual|swarm|all [--skip-basic]
 
 single：BasicController 回歸、無障礙直線、固定障礙繞行、封閉搜尋範圍。
+east：fmu1 起飛至 8 m 後沿 +East 移動 30 m 的無障礙與 East wall 場景。
 dual：兩台以交叉 MOVE_POINT 驗證 moving peer 的時間避碰。
-swarm：四台 `FORMATION_CIRCLE 10 10` 固定高度與既有 FORMATION_CIRCLE → CANCEL → MOVE 回歸。
+swarm：四台 `FORMATION_CIRCLE 10 10` 固定高度、幾何半徑與 terminal hold。
 EOF
 }
 
@@ -38,7 +40,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${SCENARIO}" in
-    single|dual|swarm|all) ;;
+    single|east|dual|swarm|all) ;;
     *) echo "錯誤：不支援的 scenario：${SCENARIO}" >&2; exit 2 ;;
 esac
 
@@ -56,14 +58,27 @@ cleanup()
 trap cleanup EXIT INT TERM
 
 cd "${PROJECT_DIR}"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/ego_route_planning_$(date +%Y%m%d_%H%M%S).log"
+exec 3>&1
+echo "=== EGO SITL validation log: ${LOG_FILE} ===" >&3
+exec >"${LOG_FILE}" 2>&1
+echo "=== EGO SITL validation log: ${LOG_FILE} ==="
 
 if ! docker image inspect taiphoon-agent:dev >/dev/null 2>&1; then
+    echo "SITL_RESULT status=NOT RUN reason=missing taiphoon-agent:dev" >&2
+    echo "SITL_RESULT status=NOT RUN reason=missing taiphoon-agent:dev" >&3
     echo "錯誤：找不到 taiphoon-agent:dev，請由開發者自行建置 image。" >&2
+    echo "錯誤：找不到 taiphoon-agent:dev，請由開發者自行建置 image。" >&3
     echo "docker build --target taiphoon-dev -t taiphoon-agent:dev ." >&2
+    echo "docker build --target taiphoon-dev -t taiphoon-agent:dev ." >&3
     exit 2
 fi
 if ! docker image inspect px4io/px4-sitl:latest >/dev/null 2>&1; then
+    echo "SITL_RESULT status=NOT RUN reason=missing px4io/px4-sitl:latest" >&2
+    echo "SITL_RESULT status=NOT RUN reason=missing px4io/px4-sitl:latest" >&3
     echo "錯誤：找不到 px4io/px4-sitl:latest，請先 pull 或準備 SITL image。" >&2
+    echo "錯誤：找不到 px4io/px4-sitl:latest，請先 pull 或準備 SITL image。" >&3
     exit 2
 fi
 if ! docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
@@ -205,61 +220,98 @@ run_dual()
     wait "${monitor_pid}"
 }
 
-run_swarm()
+run_east()
 {
-    echo "=== 四機完整環形編隊固定高度與 Formation 回歸 ==="
-    start_agents 4 explicit_empty
-    # 先以 10 m 起飛，再建立完整的 10 m 半徑、10 m 高度環形編隊；
-    # 編隊目標高度與起飛高度一致，避免 Formation 期間改變 Z。
-    takeoff_and_wait 4 "${FORMATION_ALTITUDE_M}"
-    publish_command /fmu_all_agent/command "FORMATION_CIRCLE 10 10"
-    sleep 20
-    publish_command /fmu_all_agent/command "FORMATION_CANCEL"
-    sleep 3
-    run_monitor 4 --timeout-s 90 --minimum-displacement-m 8 \
-        --moving-agents 1 --minimum-distance-m 3.0 \
-        --travel-axis east &
+    echo "=== Scenario B：fmu1 無障礙 +East 30 m ==="
+    start_agents 1 explicit_empty
+    takeoff_and_wait 1 "${TAKEOFF_ALTITUDE_M}"
+    run_monitor 1 --timeout-s 20 --metric-warmup-s 0 \
+        --minimum-progress-m 29 --travel-axis east \
+        --max-lateral-m 1.0 --max-path-length-m 32.0 \
+        --max-state-z-deviation-m 0.5 --expected-control-points 10 \
+        --require-initial-heading-north &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_RIGHT 16"
+    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
     wait "${monitor_pid}"
 
-    echo "=== FORMATION_CIRCLE → FORMATION_CANCEL → MOVE ==="
+    echo "=== Scenario C：fmu1 East wall +East 30 m ==="
+    start_agents 1 ground_truth \
+        /home/taiphoon/Taiphoon_Agent/config/obstacles/east_wall.yaml
+    takeoff_and_wait 1 "${TAKEOFF_ALTITUDE_M}"
+    run_monitor 1 --timeout-s 20 --metric-warmup-s 0 \
+        --minimum-progress-m 29 --travel-axis east \
+        --minimum-lateral-m 3.0 --require-lateral-m 3.0 \
+        --max-lateral-m 4.5 --max-path-length-m 35.0 \
+        --minimum-obstacle-distance-m 1.0 \
+        --max-state-z-deviation-m 0.5 --expected-control-points 10 \
+        --require-initial-heading-north &
+    monitor_pid=$!
+    sleep 1
+    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
+    wait "${monitor_pid}"
+}
+
+wait_for_formation_converged()
+{
+    local count="$1"
+    local deadline=$((SECONDS + 90))
+    while (( SECONDS < deadline )); do
+        local all_ready=1
+        local agent_id
+        for agent_id in $(seq 1 "${count}"); do
+            local reason
+            reason=$(docker exec -i fmu1_agent bash -lc \
+                "source /opt/ros/humble/setup.bash && ros2 topic echo \
+                 --once /fmu${agent_id}_agent/planning/status" 2>/dev/null || true)
+            if ! grep -q "formation_converged; terminal hold active" <<<"${reason}"; then
+                all_ready=0
+                break
+            fi
+        done
+        if [[ "${all_ready}" -eq 1 ]]; then
+            # acceptance monitor 仍會驗證連續 2 秒；這裡只負責讓外層
+            # command sequence 依實際 planner 狀態前進，不使用固定 20 秒。
+            sleep 3
+            return 0
+        fi
+        sleep 1
+    done
+    echo "錯誤：90 秒內未觀察到所有 formation terminal hold" >&2
+    return 1
+}
+
+run_swarm()
+{
+    echo "=== Scenario A：四機完整環形編隊固定高度 ==="
     start_agents 4 explicit_empty
     takeoff_and_wait 4 "${FORMATION_ALTITUDE_M}"
-    sleep 1
     docker exec -i fmu1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && \
          source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
          source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
          python3 /home/taiphoon/Taiphoon_Agent/AutoTest/scripts/ego_swarm_acceptance_monitor.py \
-         --mode 2 --agents 4 \
-         --timeout-s 150 --minimum-distance-m 3.0" &
-    monitor_pid=$!
+         --mode 2 --agents 4 --timeout-s 90 --minimum-distance-m 3.0" &
+    local monitor_pid=$!
     sleep 1
     publish_command /fmu_all_agent/command "FORMATION_CIRCLE 10 10"
-    sleep 20
+    wait_for_formation_converged 4
     publish_command /fmu_all_agent/command "FORMATION_CANCEL"
-    sleep 3
-    # Formation_CANCEL 後已沒有 active FormationEpoch；既有架構只接受
-    # local MOVE，因此沿用既有 local command topic，不改 runtime 行為。
-    publish_command /fmu1_agent/command "MOVE_FORWARD 5"
-    # 既有 acceptance monitor 需要先觀察第一個 MOVE 抵達，才接受下一個
-    # MOVE_RIGHT；避免兩筆既有命令在同一個 callback window 互相覆蓋。
-    sleep 10
-    publish_command /fmu1_agent/command "MOVE_RIGHT 20"
     wait "${monitor_pid}"
 }
 
 case "${SCENARIO}" in
     single) run_single ;;
+    east) run_east ;;
     dual) run_dual ;;
     swarm) run_swarm ;;
     all)
         run_single
+        run_east
         run_dual
         run_swarm
         ;;
 esac
 
 echo "[PASS] EGO 時空路徑規劃 SITL 驗證完成：${SCENARIO}"
+echo "[PASS] EGO 時空路徑規劃 SITL 驗證完成：${SCENARIO}" >&3

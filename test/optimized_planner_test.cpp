@@ -5,8 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
@@ -134,6 +136,74 @@ struct NonfinitePerturbationObjective final : IOptimizationObjective
     }
 };
 
+struct ThresholdLateralObjective final : IOptimizationObjective
+{
+    explicit ThresholdLateralObjective(const double threshold_m = 1.4)
+        : threshold_m(threshold_m)
+    {
+    }
+
+    OptimizationEvaluation evaluate(
+        const std::vector<Vector3>& points) const override
+    {
+        OptimizationEvaluation result;
+        result.is_valid = !points.empty();
+        double maximum_lateral = 0.0;
+        for (const Vector3& point : points)
+        {
+            maximum_lateral = std::max(
+                maximum_lateral, std::abs(point.at(1)));
+        }
+        // 用階梯成本模擬需要達到指定幅度才會改善的 corridor。
+        result.obstacle_cost = 1.0;
+        result.minimum_obstacle_distance_m = 0.0;
+        result.total_cost = maximum_lateral >= threshold_m ? 0.0 : 100.0;
+        return result;
+    }
+
+    double threshold_m;
+};
+
+struct PositiveLateralObjective final : IOptimizationObjective
+{
+    OptimizationEvaluation evaluate(
+        const std::vector<Vector3>& points) const override
+    {
+        OptimizationEvaluation result;
+        result.is_valid = !points.empty();
+        const double maximum_north = std::max_element(
+            points.begin(), points.end(), [](const Vector3& first,
+                                             const Vector3& second)
+            {
+                return first.at(1) < second.at(1);
+            })->at(1);
+        result.obstacle_cost = 1.0;
+        result.minimum_obstacle_distance_m = 0.0;
+        result.total_cost = maximum_north > 0.0 ? 0.0 : 100.0;
+        return result;
+    }
+};
+
+struct SymmetricLateralObjective final : IOptimizationObjective
+{
+    OptimizationEvaluation evaluate(
+        const std::vector<Vector3>& points) const override
+    {
+        OptimizationEvaluation result;
+        result.is_valid = !points.empty();
+        double maximum_lateral = 0.0;
+        for (const Vector3& point : points)
+        {
+            maximum_lateral = std::max(
+                maximum_lateral, std::abs(point.at(1)));
+        }
+        result.obstacle_cost = 1.0;
+        result.minimum_obstacle_distance_m = 0.0;
+        result.total_cost = maximum_lateral > 0.0 ? 0.0 : 100.0;
+        return result;
+    }
+};
+
 TEST(OptimizedSolverTest, NominalAndFailureReasonsAreExplicit)
 {
     ProjectedGradientSolver solver;
@@ -166,6 +236,96 @@ TEST(OptimizedSolverTest, NominalAndFailureReasonsAreExplicit)
     EXPECT_EQ(timeout.termination, SolverTerminationReason::TIMEOUT);
 }
 
+TEST(OptimizedSolverTest, LateralProbeExpandsFromSmallestImprovement)
+{
+    ProjectedGradientSolver solver;
+    ProjectedGradientSolverConfig config;
+    config.max_iterations = 4;
+    config.time_budget_ms = 1000.0;
+    config.initial_step_m = 0.20;
+    const std::vector<Vector3> seed{
+        Vector3{0.0, 0.0, 0.0}, Vector3{3.0, 0.0, 0.0},
+        Vector3{6.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0},
+        Vector3{14.0, 0.0, 0.0}, Vector3{18.0, 0.0, 0.0},
+        Vector3{22.0, 0.0, 0.0}, Vector3{26.0, 0.0, 0.0},
+        Vector3{29.0, 0.0, 0.0}, Vector3{30.0, 0.0, 0.0}};
+    const ProjectedGradientSolver::Projection identity =
+        [](std::vector<Vector3>&) { return true; };
+
+    const auto result = solver.solve(
+        seed, ThresholdLateralObjective{}, config, identity);
+    ASSERT_TRUE(result.is_valid);
+    double maximum_lateral = 0.0;
+    for (const Vector3& point : result.control_points)
+    {
+        maximum_lateral = std::max(maximum_lateral, std::abs(point.at(1)));
+    }
+    EXPECT_GE(maximum_lateral, 1.5);
+    EXPECT_LT(maximum_lateral, 3.0);
+}
+
+TEST(OptimizedSolverTest, LateralProbeUsesAscendingThresholds)
+{
+    const std::vector<Vector3> seed{
+        Vector3{0.0, 0.0, 0.0}, Vector3{3.0, 0.0, 0.0},
+        Vector3{6.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0},
+        Vector3{14.0, 0.0, 0.0}, Vector3{18.0, 0.0, 0.0},
+        Vector3{22.0, 0.0, 0.0}, Vector3{26.0, 0.0, 0.0},
+        Vector3{29.0, 0.0, 0.0}, Vector3{30.0, 0.0, 0.0}};
+    const ProjectedGradientSolver::Projection identity =
+        [](std::vector<Vector3>&) { return true; };
+    for (const std::pair<double, double>& threshold_and_expected : {
+             std::pair<double, double>{0.4, 1.0},
+             std::pair<double, double>{1.4, 2.0},
+             std::pair<double, double>{1.9, 3.0}})
+    {
+        ProjectedGradientSolverConfig config;
+        config.max_iterations = 4;
+        config.time_budget_ms = 1000.0;
+        config.initial_step_m = 0.20;
+        const auto result = ProjectedGradientSolver{}.solve(
+            seed, ThresholdLateralObjective(threshold_and_expected.first),
+            config, identity);
+        ASSERT_TRUE(result.is_valid);
+        double maximum_lateral = 0.0;
+        for (const Vector3& point : result.control_points)
+        {
+            maximum_lateral = std::max(
+                maximum_lateral, std::abs(point.at(1)));
+        }
+        EXPECT_GE(maximum_lateral, threshold_and_expected.first);
+        EXPECT_LT(maximum_lateral, threshold_and_expected.second);
+    }
+}
+
+TEST(OptimizedSolverTest, SameMagnitudeChoosesLowestCostAndDeterministicTie)
+{
+    const std::vector<Vector3> seed{
+        Vector3{0.0, 0.0, 0.0}, Vector3{3.0, 0.0, 0.0},
+        Vector3{6.0, 0.0, 0.0}, Vector3{10.0, 0.0, 0.0},
+        Vector3{14.0, 0.0, 0.0}, Vector3{18.0, 0.0, 0.0},
+        Vector3{22.0, 0.0, 0.0}, Vector3{26.0, 0.0, 0.0},
+        Vector3{29.0, 0.0, 0.0}, Vector3{30.0, 0.0, 0.0}};
+    const ProjectedGradientSolver::Projection identity =
+        [](std::vector<Vector3>&) { return true; };
+    ProjectedGradientSolverConfig config;
+    config.max_iterations = 4;
+    config.time_budget_ms = 1000.0;
+
+    const auto positive = ProjectedGradientSolver{}.solve(
+        seed, PositiveLateralObjective{}, config, identity);
+    ASSERT_TRUE(positive.is_valid);
+    EXPECT_GT(positive.control_points.at(5).at(1), 0.0);
+    EXPECT_LT(std::abs(positive.control_points.at(5).at(1)), 1.0);
+
+    const auto symmetric = ProjectedGradientSolver{}.solve(
+        seed, SymmetricLateralObjective{}, config, identity);
+    ASSERT_TRUE(symmetric.is_valid);
+    // 同成本且同幅度時，固定方向順序與較小 max offset 應保持結果可重現。
+    EXPECT_LT(symmetric.control_points.at(5).at(1), 0.0);
+    EXPECT_LT(std::abs(symmetric.control_points.at(5).at(1)), 1.0);
+}
+
 TEST(OptimizedPlannerTest, OptimizedPlannerConvergesInOpenSpace)
 {
     RawPointObstacleMap map = make_empty_map();
@@ -184,11 +344,52 @@ TEST(OptimizedPlannerTest, OptimizedPlannerConvergesInOpenSpace)
               taiphoon::ego_swarm::PlannerBackendKind::OPTIMIZED);
     EXPECT_EQ(result.termination, PlannerTerminationReason::SUCCESS);
     EXPECT_TRUE(result.trajectory.is_valid());
+    EXPECT_EQ(result.trajectory.control_points().size(), 10U);
     EXPECT_TRUE(result.has_finite_output());
     const auto endpoint = result.trajectory.evaluate(
         result.trajectory.duration_s());
     ASSERT_TRUE(endpoint.is_valid);
     EXPECT_NEAR(endpoint.position.at(0), snapshot.local_goal.at(0), 1.0e-6);
+}
+
+TEST(OptimizedPlannerTest, TenControlPointsKeepLegacySixPointTiming)
+{
+    RawPointObstacleMap map = make_empty_map();
+    for (const double distance : {8.0, 10.0, 30.0})
+    {
+        PlanningSnapshot snapshot = make_snapshot(map);
+        snapshot.local_goal = Vector3{0.0, distance, 0.0};
+        snapshot.path_constraint = PathConstraint::FIXED_Z;
+        snapshot.fixed_z_m = 0.0;
+
+        PlannerConfig six_point_config;
+        six_point_config.control_point_count = 6U;
+        six_point_config.optimizer_time_budget_ms = 100.0;
+        OptimizedEgoPlanner six_point_planner(six_point_config);
+        const auto six_point_result = six_point_planner.plan(snapshot);
+        ASSERT_TRUE(six_point_result.is_valid);
+
+        PlannerConfig ten_point_config;
+        ten_point_config.control_point_count = 10U;
+        ten_point_config.optimizer_time_budget_ms = 100.0;
+        OptimizedEgoPlanner ten_point_planner(ten_point_config);
+        const auto ten_point_result = ten_point_planner.plan(snapshot);
+        ASSERT_TRUE(ten_point_result.is_valid);
+        ASSERT_EQ(ten_point_result.trajectory.control_points().size(), 10U);
+
+        const double baseline_duration =
+            six_point_result.trajectory.duration_s();
+        const double duration_delta = std::abs(
+            ten_point_result.trajectory.duration_s() - baseline_duration);
+        EXPECT_LE(duration_delta, baseline_duration * 0.05 + 1.0e-6)
+            << "distance=" << distance
+            << " six=" << baseline_duration
+            << " ten=" << ten_point_result.trajectory.duration_s();
+        if (distance == 30.0)
+        {
+            EXPECT_LT(ten_point_result.trajectory.duration_s(), 20.0);
+        }
+    }
 }
 
 TEST(OptimizedPlannerTest, LongHorizontalMoveReachesThirtyMetersWithinTwentySeconds)
@@ -818,15 +1019,15 @@ TEST(OptimizedPlannerTest, OptimizerCanUseExpandedHorizontalSearchEnvelope)
                     config.peer_collision_min_distance_m);
     if (result.is_valid)
     {
-        bool has_large_lateral_offset = false;
+        double maximum_lateral_offset = 0.0;
         for (const auto& point : result.trajectory.control_points())
         {
-            if (std::abs(point.at(1)) > config.candidate_offset_m + 0.1)
-            {
-                has_large_lateral_offset = true;
-            }
+            maximum_lateral_offset = std::max(
+                maximum_lateral_offset, std::abs(point.at(1)));
         }
-        EXPECT_TRUE(has_large_lateral_offset);
+        // 新 probe 由小到大搜尋；不應為單點 peer 直接跳到舊的
+        // candidate_offset 以上的大繞行。
+        EXPECT_LE(maximum_lateral_offset, 4.5);
     }
 }
 

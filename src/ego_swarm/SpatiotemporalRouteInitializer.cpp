@@ -31,6 +31,9 @@ constexpr double ROUTE_MAX_TIME_MULTIPLIER = 2.0;
 constexpr double ROUTE_EXTRA_TIME_S = 2.0;
 constexpr double ROUTE_OBSTACLE_CACHE_CELL_M = 2.0;
 constexpr std::size_t ROUTE_MAX_EXPANDED_NODES = 100000U;
+// Route seed 的 nominal speed 與 10 點 planner 共用原本 6 點 cubic
+// B-spline 的 3 spans timing reference。
+constexpr double LEGACY_TIMING_SPAN_COUNT = 3.0;
 
 struct GridState
 {
@@ -211,8 +214,7 @@ double estimate_nominal_speed(
         return 0.0;
     }
 
-    const double span_count = static_cast<double>(
-        control_point_count - BSPLINE_DEGREE);
+    const double span_count = LEGACY_TIMING_SPAN_COUNT;
     const double velocity_duration = distance_m / config.max_velocity_mps;
     const double acceleration_duration = 2.0 * std::sqrt(
         distance_m / config.max_acceleration_mps2);

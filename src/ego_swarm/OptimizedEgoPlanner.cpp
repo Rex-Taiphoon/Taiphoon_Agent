@@ -24,6 +24,11 @@ namespace ego_swarm
 namespace
 {
 
+// 10 點控制器沿用原本 6 點 cubic B-spline 的 3 spans 作為時間基準；
+// 實際 knot interval 仍依目前控制點數量重新分配。
+constexpr double LEGACY_TIMING_SPAN_COUNT = 3.0;
+constexpr double LEGACY_TIMING_CONTROL_POINT_DENOMINATOR = 5.0;
+
 class TrajectoryObjective final : public IOptimizationObjective
 {
 public:
@@ -501,20 +506,25 @@ PlannerResult OptimizedEgoPlanner::plan(
     seed.reserve(count);
     const double distance = distance_between_centers(
         snapshot.self_state.position, snapshot.local_goal);
-    // 30 m 級長距離任務需要在 20 秒內完成，但均勻 control-point
-    // seed 會讓 clamped B-spline 的端點導數過大。使用對稱的
-    // smoothstep 分布降低起步與收尾速度，讓 optimizer 從可行的
-    // 長距離 seed 開始，同時保留相同的起點與終點。
-    const bool long_range_seed = is_finite(distance) && distance > 20.0;
+    // 所有距離都使用對稱 smoothstep 分布，降低 clamped B-spline 的
+    // 起步與收尾速度，讓 10 點 seed 與 6 點 baseline 具有相同的
+    // timing reference；起點與終點仍保持不變。
     for (std::size_t index = 0U; index < count; ++index)
     {
-        double ratio = static_cast<double>(index) / denominator;
-        if (long_range_seed)
+        const double linear_ratio = static_cast<double>(index) / denominator;
+        const double ratio = linear_ratio * linear_ratio *
+            (3.0 - 2.0 * linear_ratio);
+        Vector3 seed_point = interpolate_vectors(
+            snapshot.self_state.position, snapshot.local_goal, ratio);
+        if (snapshot.path_constraint == PathConstraint::LINEAR_Z)
         {
-            ratio = ratio * ratio * (3.0 - 2.0 * ratio);
+            // LINEAR_Z 是明確的幾何約束；smoothstep 只作用於水平
+            // seed，避免 open-space fast path 產生非線性高度控制點。
+            seed_point.at(2) = snapshot.self_state.position.at(2) +
+                (snapshot.local_goal.at(2) -
+                 snapshot.self_state.position.at(2)) * linear_ratio;
         }
-        seed.push_back(interpolate_vectors(
-            snapshot.self_state.position, snapshot.local_goal, ratio));
+        seed.push_back(seed_point);
     }
 
     PlanningSnapshot planning_snapshot = snapshot;
@@ -858,23 +868,22 @@ double OptimizedEgoPlanner::compute_seed_duration_s(
     {
         return 0.0;
     }
-    const double span_count = static_cast<double>(
-        config.control_point_count - BSPLINE_DEGREE);
+    const double span_count = LEGACY_TIMING_SPAN_COUNT;
     const double velocity_duration = distance / config.max_velocity_mps;
     const double acceleration_duration = 2.0 * std::sqrt(
         distance / config.max_acceleration_mps2);
     const double base_duration = std::max(
         span_count * config.knot_interval_s,
         std::max(velocity_duration, acceleration_duration));
-    // Clamped cubic B-spline 的端點速度為
-    // degree * span_count / (control_point_count - 1) 倍的平均速度。
+    // Clamped cubic B-spline 的端點速度沿用舊 6 點／3 spans timing
+    // reference：degree * 3 / (6 - 1) 倍的平均速度。
     // 長距離 seed 若只使用平均速度 duration，會在 endpoint derivative
     // 超過 hard velocity limit，導致 solver 必須在很短的 budget 內先
     // 修正一條本來就不合格的 seed。額外保留 10% 數值裕度，讓水平
     // 繞行的 endpoint 側向偏移也能通過 hard dynamic check。
     const double endpoint_velocity_factor =
         static_cast<double>(BSPLINE_DEGREE) * span_count /
-        static_cast<double>(config.control_point_count - 1U);
+        LEGACY_TIMING_CONTROL_POINT_DENOMINATOR;
     const double endpoint_velocity_duration =
         endpoint_velocity_factor * velocity_duration * 1.11;
     if (distance > 20.0)

@@ -80,7 +80,7 @@ struct PlannerConfig
     // 在新路徑流程驗收後啟用。
     bool enable_spatiotemporal_route_planning{false};
     double knot_interval_s{1.0};
-    std::size_t control_point_count{6U};
+    std::size_t control_point_count{10U};
     double sample_interval_s{0.1};
     // 長距離水平繞行需要保留 tracking 與 lateral detour 的動力學餘裕。
     // 這些仍是 planner／validator 的 hard upper bounds，不代表命令會

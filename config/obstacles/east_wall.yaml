@@ -1,0 +1,10 @@
+# fmu1 +East 30 m 繞障驗收場景；座標使用 swarm_ned：x=North、y=East、z=Down。
+frame_id: swarm_ned
+mode: ground_truth
+sample_spacing_m: 0.5
+publish_rate_hz: 15.0
+
+obstacles:
+  - type: wall
+    center_ned: [0.0, 15.0, -8.0]
+    size_m: [4.0, 0.5, 4.0]

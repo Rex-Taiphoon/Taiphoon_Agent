@@ -28,13 +28,15 @@ class AcceptanceMonitor(Node):
     """收集單次多機驗收的可重複安全與時序指標。"""
 
     def __init__(self, mode: int, agent_count: int, timeout_s: float,
-                 minimum_distance_m: float, max_short_violation_s: float):
+                 minimum_distance_m: float, max_short_violation_s: float,
+                 require_post_cancel_moves: bool):
         super().__init__("ego_swarm_acceptance_monitor")
         self.mode = mode
         self.agent_ids = list(range(1, agent_count + 1))
         self.timeout_s = timeout_s
         self.minimum_distance_m = minimum_distance_m
         self.max_short_violation_s = max_short_violation_s
+        self.require_post_cancel_moves = require_post_cancel_moves
         self.started_at = time.monotonic()
         self.states: Dict[int, Tuple[float, List[float]]] = {}
         self.global_reference: Optional[List[float]] = None
@@ -44,6 +46,12 @@ class AcceptanceMonitor(Node):
         self.yaw_seen = False
         self.formation_seen = False
         self.formation_ready = False
+        self.formation_ready_since: Optional[float] = None
+        self.formation_radius_valid = False
+        self.formation_altitude_valid = False
+        self.formation_target_radius_m: Optional[float] = None
+        self.formation_target_altitude_m: Optional[float] = None
+        self.max_formation_radius_error_m = math.inf
         self.cancel_seen = False
         self.move_results: Dict[str, Dict[str, float]] = {}
         self.active_move: Optional[str] = None
@@ -58,6 +66,8 @@ class AcceptanceMonitor(Node):
         self.max_trajectory_z_span_m = 0.0
         self.trajectory_count = 0
         self.last_trajectory_id: Dict[int, int] = {}
+        self.terminal_hold_seen: Dict[int, bool] = {}
+        self.invalid_control_point_count = False
         self.reason_counts: Dict[str, int] = {}
         self.last_report_at = 0.0
         self.last_status_trajectory_id = 0
@@ -167,20 +177,20 @@ class AcceptanceMonitor(Node):
                       msg.trajectory_id, msg.state,
                       float(msg.min_peer_distance_m),
                       float(msg.planning_time_ms), reason), flush=True)
-        if reason == "formation_converged; terminal hold active":
-            self.formation_ready = all(
-                current_id in self.statuses and
-                self.statuses[current_id][1].reason ==
-                "formation_converged; terminal hold active"
-                for current_id in self.agent_ids
-            )
+        # formation_ready 由 timer_cb 以連續 2 秒的狀態、幾何與高度條件
+        # 一起判定，避免只收到單次 status 就誤判編隊完成。
 
     def trajectory_cb(self, msg: AgentTrajectory) -> None:
         if not msg.valid or msg.agent_index not in self.agent_ids:
             return
         points = list(msg.control_points)
-        if len(points) < 6 or len(points) % 3 != 0:
+        if len(points) == 0 or len(points) % 3 != 0:
             return
+        point_count = len(points) // 3
+        if point_count != 10:
+            self.invalid_control_point_count = True
+        if msg.terminal_hold and self.formation_seen:
+            self.terminal_hold_seen[int(msg.agent_index)] = True
         heights = [float(points[index]) for index in range(2, len(points), 3)]
         if not all(math.isfinite(value) for value in heights):
             return
@@ -226,10 +236,23 @@ class AcceptanceMonitor(Node):
         if text.startswith("FORMATION_CIRCLE "):
             self.formation_seen = True
             self.command_phase = "formation_requested"
+            fields = text.split()
+            if len(fields) == 3:
+                try:
+                    radius_m = float(fields[1])
+                    altitude_m = float(fields[2])
+                    if (math.isfinite(radius_m) and radius_m > 0.0 and
+                            math.isfinite(altitude_m) and altitude_m > 0.0):
+                        self.formation_target_radius_m = radius_m
+                        self.formation_target_altitude_m = altitude_m
+                except ValueError:
+                    pass
             self.set_z_baselines()
         elif text == "FORMATION_CANCEL":
             self.cancel_seen = True
             self.command_phase = "formation_cancelled"
+            if self.mode == 2 and not self.require_post_cancel_moves:
+                self.finished_at = now
         elif text == "MOVE_FORWARD 5" and self.cancel_seen:
             self.begin_move("forward5", now, 5.0)
         elif text == "MOVE_RIGHT 20" and self.cancel_seen:
@@ -291,6 +314,54 @@ class AcceptanceMonitor(Node):
     def timer_cb(self) -> None:
         now = time.monotonic()
         self.update_peer_metrics(now)
+        if self.mode == 2 and self.formation_seen and not self.cancel_seen:
+            statuses_ready = all(
+                agent_id in self.statuses and
+                now - self.statuses[agent_id][0] <= 0.5 and
+                self.statuses[agent_id][1].reason ==
+                "formation_converged; terminal hold active"
+                for agent_id in self.agent_ids)
+            geometry_ready = False
+            altitude_ready = False
+            if len(self.states) == len(self.agent_ids):
+                positions = [self.states[agent_id][1]
+                             for agent_id in self.agent_ids]
+                centroid = [sum(position[index] for position in positions) /
+                            len(positions) for index in range(3)]
+                radii = [self.distance(position, centroid)
+                         for position in positions]
+                target_radius = self.formation_target_radius_m
+                geometry_ready = (
+                    target_radius is not None and
+                    all(abs(radius - target_radius) <= 1.5
+                        for radius in radii))
+                target_altitude = self.formation_target_altitude_m
+                self.max_formation_radius_error_m = min(
+                    self.max_formation_radius_error_m,
+                    max(abs(radius - target_radius) for radius in radii)
+                    if target_radius is not None else math.inf)
+                # 此 monitor 在 takeoff_and_wait 之後才啟動，無法從自身
+                # local NED 原點推回地面絕對高度；起飛等待器已先確認
+                # target_altitude ±0.5 m，這裡確認編隊期間相對該起飛高度
+                # 持續穩定 ±0.5 m。
+                altitude_ready = all(
+                    target_altitude is not None and
+                    agent_id in self.z_baselines and
+                    abs(self.states[agent_id][1][2] -
+                        self.z_baselines[agent_id]) <= 0.5
+                    for agent_id in self.agent_ids)
+            ready_now = statuses_ready and geometry_ready and altitude_ready
+            if ready_now:
+                self.formation_radius_valid = True
+                self.formation_altitude_valid = True
+                if self.formation_ready_since is None:
+                    self.formation_ready_since = now
+                if now - self.formation_ready_since >= 2.0:
+                    self.formation_ready = True
+                    self.command_phase = "formation_converged"
+            else:
+                self.formation_ready_since = None
+                self.formation_ready = False
         if now - self.last_report_at >= 2.0:
             self.last_report_at = now
             print(
@@ -340,9 +411,14 @@ class AcceptanceMonitor(Node):
         if self.mode == 1 and not self.yaw_seen:
             self.failed = True
         if self.mode == 2 and not (
-                self.formation_seen and self.cancel_seen and
-                "forward5" in self.move_results and
-                "right20" in self.move_results):
+                self.formation_seen and self.formation_ready and
+                self.formation_radius_valid and self.formation_altitude_valid and
+                self.cancel_seen and
+                (not self.require_post_cancel_moves or
+                 ("forward5" in self.move_results and
+                  "right20" in self.move_results)) and
+                all(self.terminal_hold_seen.get(agent_id, False)
+                    for agent_id in self.agent_ids)):
             self.failed = True
         if self.mode == 1 and not (
                 "forward30" in self.move_results and
@@ -351,7 +427,13 @@ class AcceptanceMonitor(Node):
         if self.min_peer_distance_m < self.minimum_distance_m and \
                 self.max_contiguous_violation_s > self.max_short_violation_s:
             self.failed = True
-        if self.max_trajectory_z_span_m > 0.05:
+        if any("emergency" in reason or "timeout" in reason or
+               "no_feasible" in reason or "no feasible" in reason or
+               "infeasible" in reason
+               for reason in self.reason_counts):
+            self.failed = True
+        if self.max_trajectory_z_span_m > 0.05 or \
+                self.invalid_control_point_count:
             self.failed = True
         print("ACCEPTANCE_RESULT mode={} pass={} phase={}".format(
             self.mode, not self.failed, self.command_phase), flush=True)
@@ -365,13 +447,21 @@ class AcceptanceMonitor(Node):
                   self.max_state_z_deviation_m,
                   self.max_trajectory_z_span_m, self.trajectory_count),
               flush=True)
+        print("FORMATION_METRICS ready={} radius_valid={} altitude_valid={} "
+              "max_radius_error_m={:.6f} terminal_hold_agents={}".format(
+                  self.formation_ready, self.formation_radius_valid,
+                  self.formation_altitude_valid,
+                  self.max_formation_radius_error_m
+                  if math.isfinite(self.max_formation_radius_error_m) else -1.0,
+                  sorted(self.terminal_hold_seen)), flush=True)
         for move_name, result in sorted(self.move_results.items()):
             print("MOVE_RESULT {} elapsed_s={:.6f} distance_m={:.6f}".format(
                 move_name, result["elapsed_s"], result["distance_m"]),
                 flush=True)
         for reason, count in sorted(self.reason_counts.items()):
-            if "emergency" in reason or "timeout" in reason or \
-                    "no_feasible" in reason:
+            if ("emergency" in reason or "timeout" in reason or
+                    "no_feasible" in reason or "no feasible" in reason or
+                    "infeasible" in reason):
                 print("REASON_COUNT {} count={}".format(reason, count),
                       flush=True)
         self.destroy_node()
@@ -389,6 +479,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-s", type=float, default=180.0)
     parser.add_argument("--minimum-distance-m", type=float, default=3.0)
     parser.add_argument("--max-short-violation-s", type=float, default=0.5)
+    parser.add_argument("--require-post-cancel-moves", action="store_true")
     return parser.parse_args()
 
 
@@ -398,7 +489,8 @@ def main() -> int:
     rclpy.init()
     monitor = AcceptanceMonitor(
         args.mode, args.agents, args.timeout_s,
-        args.minimum_distance_m, args.max_short_violation_s)
+        args.minimum_distance_m, args.max_short_violation_s,
+        args.require_post_cancel_moves)
     try:
         while rclpy.ok() and not monitor.timed_out() and not monitor.completed:
             rclpy.spin_once(monitor, timeout_sec=0.1)
@@ -406,10 +498,9 @@ def main() -> int:
             monitor.finish()
             return 0 if not monitor.failed else 1
         if rclpy.ok():
-            print("ACCEPTANCE_RESULT mode={} pass=false phase=monitor_timeout".
-                  format(args.mode), flush=True)
-            monitor.destroy_node()
-            rclpy.shutdown()
+            monitor.failed = True
+            monitor.command_phase = "monitor_timeout"
+            monitor.finish()
             return 1
     except KeyboardInterrupt:
         monitor.destroy_node()

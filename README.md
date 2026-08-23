@@ -98,16 +98,26 @@ EGO 路徑規劃 SITL 驗證（需要已準備 `taiphoon-agent:dev` 與
 # 單機：BasicController 回歸、直線、固定障礙繞行、封閉範圍 HOLD／Brake
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario single
 
+# fmu1：無障礙與 North 半寬 2 m 的 East wall，沿 +East 移動 30 m
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario east
+
 # 雙機：moving peer 交叉路徑與 3 m 中心距離
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario dual
 
-# 四機：FORMATION_CIRCLE 10 10 固定高度與既有 Formation 回歸
+# 四機：FORMATION_CIRCLE 10 10 固定高度、半徑與 terminal hold
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario swarm
+
+# 完整驗收：Docker 單元測試前置後，依序執行上述場景
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario all
 ```
 
 單機與雙機路徑測試會先對所有測試中的 Agent 發送既有 `TAKEOFF 8.0`；四機 Formation
 測試則發送既有 `TAKEOFF 10.0`，再使用 `FORMATION_CIRCLE 10 10`，讓編隊高度與起飛
-高度一致。
+高度一致。`east` 場景使用沿軸進度（East ≥29 m）而非三維位移判定抵達，並記錄
+實際 North 橫偏、規劃控制點橫偏、累積飛行路徑、高度偏差、障礙物／peer 最小距離、
+planner timeout/emergency/no-feasible 次數與 control-point 數量；每次執行的命令與
+指標會寫入 `AutoTest/Log/`。映像或 network 前置缺失時腳本只標記 SITL `NOT RUN`，
+不會自行建置 image。
 先啟動高度監測器取得地面基準，再發送對應的既有 TAKEOFF；單機／雙機至少達 `7.5 m`，
 四機 Formation 至少達 `9.5 m`，並穩定 1 秒後才發布 MOVE 或 Formation（容許 0.5 m
 SITL 誤差）。不以固定 sleep 代替起飛完成判斷。
@@ -651,7 +661,7 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 陣列長度必須是 3 的倍數；不可依賴巢狀陣列結構。
 `coordinate_frame` 固定為 `COORDINATE_FRAME_WGS84_GEODETIC`，
 `frame_revision` 是全球座標 contract 版本，不是各 Agent 的 local Home 原點。
-接收端會以自己的固定 Home 將控制點轉成公尺制 local NED，再執行 B-spline
+目前 runtime 固定發布 10 個控制點；接收端會以自己的固定 Home 將控制點轉成公尺制 local NED，再執行 B-spline
 取樣、動力學限制與同儕避碰。完成任務的 Agent 會持續發布
 `terminal_hold=true` 的固定終點軌跡 heartbeat，直到超過 peer timeout，讓其他
 Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 global

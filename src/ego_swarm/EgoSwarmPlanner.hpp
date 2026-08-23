@@ -274,6 +274,10 @@ public:
     }
 
 private:
+    // 10 點控制器沿用原本 6 點 cubic B-spline 的 3 spans 作為
+    // duration reference；實際 knot interval 仍依控制點數量分配。
+    static constexpr double LEGACY_TIMING_SPAN_COUNT = 3.0;
+
     /// 候選軌跡的安全與成本評估結果。
     struct CandidateEvaluation
     {
@@ -428,10 +432,22 @@ private:
              index < config_.control_point_count;
              ++index)
         {
-            const double progress = static_cast<double>(index) / denominator;
-            const double profile = std::sin(EGO_SWARM_PI * progress);
-            const Vector3 line_position = interpolate_vectors(
-                current_position, target_position, progress);
+            const double linear_progress = static_cast<double>(index) /
+                denominator;
+            const double smooth_progress = linear_progress * linear_progress *
+                linear_progress * (linear_progress *
+                (linear_progress * 6.0 - 15.0) + 10.0);
+            const double profile = std::sin(EGO_SWARM_PI * linear_progress);
+            const Vector3 line_position{
+                current_position.at(0) +
+                    (target_position.at(0) - current_position.at(0)) *
+                    smooth_progress,
+                current_position.at(1) +
+                    (target_position.at(1) - current_position.at(1)) *
+                    smooth_progress,
+                current_position.at(2) +
+                    (target_position.at(2) - current_position.at(2)) *
+                    linear_progress};
             control_points.push_back(add_vectors(
                 line_position, scale_vector(bend_offset, profile)));
         }
@@ -455,17 +471,18 @@ private:
             return 0.0;
         }
 
-        const double span_count = static_cast<double>(
-            config_.control_point_count - BSPLINE_DEGREE);
+        const double span_count = LEGACY_TIMING_SPAN_COUNT;
         const double minimum_duration =
             span_count * config_.knot_interval_s;
         const double velocity_duration =
             path_length_m / config_.max_velocity_mps;
         const double acceleration_duration = 2.0 * std::sqrt(
             path_length_m / config_.max_acceleration_mps2);
+        const double dynamic_margin = path_length_m > 3.0 ? 1.10 : 1.0;
         return std::max(
             minimum_duration,
-            std::max(velocity_duration, acceleration_duration));
+            dynamic_margin * std::max(velocity_duration,
+                                      acceleration_duration));
     }
 
     /**

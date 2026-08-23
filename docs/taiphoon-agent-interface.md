@@ -653,12 +653,18 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 
 ```bash
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario single
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario east
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario dual
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario swarm
+bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario all
 ```
 
 水平 MOVE 的 `FIXED_Z` 軌跡會維持起點高度；直線 seed 受阻時才使用 bounded 時空 A*
-引導 B-spline。`FREE_3D`、`LINEAR_Z`、垂直 MOVE、FormationEpoch、reservation、
+引導 B-spline。runtime 固定使用 10 個控制點，duration 以舊 6 點 cubic 的 3 spans
+作為 timing reference，實際 knot interval 為 `duration/(10-3)`；直線 seed 使用
+smoothstep，並由 hard dynamic validator 保護 velocity/acceleration/jerk。側移候選在
+solver 內依 `0.5, 1, 1.5, 2, 3, 4, 6, 8, 10 m` 由小到大評估，同一幅度先選最低
+成本且偏移較小者。`FREE_3D`、`LINEAR_Z`、垂直 MOVE、FormationEpoch、reservation、
 priority 與既有 HOLD／Brake 行為不因這個 initializer 改變。
 
 SITL 單機／雙機路徑驗收會先啟動高度監測器取得地面基準，再使用既有 `TAKEOFF 8.0`；
@@ -666,7 +672,12 @@ SITL 單機／雙機路徑驗收會先啟動高度監測器取得地面基準，
 編隊高度與起飛高度一致。讀取
 既有 `AgentState.position_global`，確認每台 Agent 相對起飛基準至少上升 `7.5 m`
 （單機／雙機）或 `9.5 m`（四機 Formation），並穩定 1 秒後才發布 MOVE 或 Formation；
-兩者皆允許 0.5 m SITL 誤差。這是測試前置條件，不新增 runtime topic 或命令。
+兩者皆允許 0.5 m SITL 誤差。`east` 另使用 `config/obstacles/east_wall.yaml`：牆中心
+為 `[North=0, East=15, Down=-8]`、尺寸 `[4, 0.5, 4]`，固定高度禁止垂直繞行；驗收
+要求 East progress ≥29 m、障礙 clearance ≥1 m、North 橫偏 3.0～4.5 m、路徑長 ≤35 m。
+Monitor 會輸出 `east_progress_m`、`max_state_north_offset_m`、
+`max_trajectory_north_offset_m`、`flown_path_length_m`、高度與 planner failure 指標，
+並將完整命令與結果寫入 `AutoTest/Log/`。這是測試前置條件，不新增 runtime topic 或命令。
 
 ---
 

@@ -8,7 +8,10 @@
 #include "ego_swarm/ProjectedGradientSolver.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <limits>
+#include <utility>
 
 namespace taiphoon
 {
@@ -74,8 +77,10 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
     }
 
     double step_m = config.initial_step_m;
+    std::size_t next_lateral_probe_index = 0U;
     const auto find_coordinate_improvement = [
-        &objective, &projection, &config, &elapsed_ms](
+        &objective, &projection, &config, &elapsed_ms,
+        &next_lateral_probe_index](
         const std::vector<Vector3>& base,
         const OptimizationEvaluation& base_evaluation,
         const double step,
@@ -85,13 +90,84 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         improved_points = base;
         improved_evaluation = base_evaluation;
 
-        // Prefer one smooth corridor-shaped translation for a long peer
-        // line.  The first/last interior points stay on the direct seed so
-        // endpoint velocity remains bounded; the middle points carry the
-        // lateral clearance.  This is still a projected deformation of the
-        // single seed, not an additional topology.
-        if (base.size() >= 6U)
+        constexpr std::array<double, 9U> LATERAL_PROBE_STEPS_M{
+            0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0};
+        bool budget_exhausted = false;
+        bool found_improvement = false;
+        double best_lateral_offset_m = std::numeric_limits<double>::max();
+
+        const auto consider_candidate = [&](std::vector<Vector3> candidate)
         {
+            if (elapsed_ms() >= config.time_budget_ms)
+            {
+                budget_exhausted = true;
+                return;
+            }
+            if (!projection(candidate) ||
+                !is_finite_control_points(candidate))
+            {
+                return;
+            }
+            const OptimizationEvaluation evaluation =
+                objective.evaluate(candidate);
+            if (!evaluation.is_valid ||
+                !is_finite(evaluation.total_cost) ||
+                base_evaluation.total_cost - evaluation.total_cost <=
+                    config.convergence_tolerance)
+            {
+                return;
+            }
+
+            double lateral_offset_m = 0.0;
+            for (std::size_t point_index = 1U;
+                 point_index + 1U < candidate.size(); ++point_index)
+            {
+                for (const std::size_t axis : {0U, 1U})
+                {
+                    lateral_offset_m = std::max(
+                        lateral_offset_m,
+                        std::abs(candidate.at(point_index).at(axis) -
+                                 base.at(point_index).at(axis)));
+                }
+            }
+
+            const bool lower_cost = !found_improvement ||
+                evaluation.total_cost < improved_evaluation.total_cost -
+                    config.convergence_tolerance;
+            const bool equal_cost = found_improvement &&
+                std::abs(evaluation.total_cost -
+                         improved_evaluation.total_cost) <=
+                    config.convergence_tolerance;
+            const bool smaller_offset = equal_cost &&
+                lateral_offset_m < best_lateral_offset_m;
+            if (lower_cost || smaller_offset)
+            {
+                improved_points = std::move(candidate);
+                improved_evaluation = evaluation;
+                best_lateral_offset_m = lateral_offset_m;
+                found_improvement = true;
+            }
+        };
+
+        double previous_step_m = -1.0;
+        for (; next_lateral_probe_index < LATERAL_PROBE_STEPS_M.size();
+             ++next_lateral_probe_index)
+        {
+            const double configured_step_m =
+                LATERAL_PROBE_STEPS_M.at(next_lateral_probe_index);
+            // 側移探測固定依序使用設計表；optimizer_initial_step_m 只
+            // 控制後續 coordinate descent，不能跳過較小的 detour。
+            const double probe_step_m = std::min(
+                LATERAL_PROBE_STEPS_M.back(), configured_step_m);
+            if (std::abs(probe_step_m - previous_step_m) <=
+                EGO_SWARM_EPSILON_M)
+            {
+                continue;
+            }
+            previous_step_m = probe_step_m;
+            found_improvement = false;
+            best_lateral_offset_m = std::numeric_limits<double>::max();
+
             const double horizontal_delta_x =
                 base.back().at(0) - base.front().at(0);
             const double horizontal_delta_y =
@@ -106,27 +182,22 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
             const double lateral_delta =
                 base.back().at(lateral_axis) -
                 base.front().at(lateral_axis);
-            // Body-frame MOVE after a yaw can leave a small lateral residual
-            // in the global NED goal.  Treat a mostly-forward route as the
-            // same corridor case; otherwise the generic translation probe
-            // may find a geometrically clear but dynamically sharp detour
-            // before this smooth bounded candidate is considered.
             const double lateral_residual_tolerance = std::max(
                 1.0, 0.1 * std::abs(forward_delta));
-            if (std::abs(forward_delta) > EGO_SWARM_EPSILON_M &&
-                std::abs(lateral_delta) <= lateral_residual_tolerance)
+            const bool mostly_forward = base.size() >= 6U &&
+                std::abs(forward_delta) > EGO_SWARM_EPSILON_M &&
+                std::abs(lateral_delta) <= lateral_residual_tolerance;
+
+            if (mostly_forward)
             {
                 const bool long_forward_route =
                     std::abs(forward_delta) > 25.0;
-                const double corridor_step = long_forward_route
-                    ? std::max(step, 10.0)
-                    : std::max(step, 8.0);
+                const double lateral_profile = long_forward_route
+                    ? 0.65 : 0.85;
+                const double endpoint_profile = long_forward_route
+                    ? 0.25 : 0.40;
                 for (const double direction : {-1.0, 1.0})
                 {
-                    if (elapsed_ms() >= config.time_budget_ms)
-                    {
-                        return false;
-                    }
                     std::vector<Vector3> candidate = base;
                     for (std::size_t point_index = 1U;
                          point_index + 1U < candidate.size(); ++point_index)
@@ -135,149 +206,52 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
                             static_cast<double>(candidate.size() - 1U);
                         const double smooth_ratio = ratio * ratio *
                             (3.0 - 2.0 * ratio);
-                        // Raise the lateral offset early enough for a peer
-                        // that is already close to the current position.
-                        // The previous sin^2 profile left the first interior
-                        // point near the centerline, so a valid route could
-                        // still pass below 3 m before reaching the side.
-                        double lateral_profile = long_forward_route
-                            ? 0.65
-                            : 0.85;
-                        if (point_index == 1U ||
-                            point_index + 2U == candidate.size())
-                        {
-                            // Keep the endpoint derivative within the
-                            // velocity bound while moving sideways early.
-                            // The forward component is non-zero as well;
-                            // long routes need a smaller lateral start so
-                            // the combined endpoint velocity stays below
-                            // the hard limit. Preserve the established
-                            // profile for shorter obstacle transitions.
-                            lateral_profile = long_forward_route ? 0.25 : 0.40;
-                        }
+                        const double profile =
+                            (point_index == 1U ||
+                             point_index + 2U == candidate.size())
+                            ? endpoint_profile : lateral_profile;
                         candidate.at(point_index).at(forward_axis) =
                             base.front().at(forward_axis) +
                             forward_delta * smooth_ratio;
                         candidate.at(point_index).at(lateral_axis) =
-                            base.front().at(lateral_axis) + direction *
-                            corridor_step * lateral_profile;
+                            base.front().at(lateral_axis) +
+                            direction * probe_step_m * profile;
                     }
-                    if (!projection(candidate) ||
-                        !is_finite_control_points(candidate))
-                    {
-                        continue;
-                    }
-                    const OptimizationEvaluation evaluation =
-                        objective.evaluate(candidate);
-                    if (evaluation.is_valid &&
-                        is_finite(evaluation.total_cost) &&
-                        base_evaluation.total_cost - evaluation.total_cost >
-                            config.convergence_tolerance)
-                    {
-                        improved_points = candidate;
-                        improved_evaluation = evaluation;
-                        return true;
-                    }
+                    consider_candidate(std::move(candidate));
                 }
             }
 
-            const double corridor_step = std::max(step, 8.0);
             for (const std::size_t axis : {0U, 1U})
             {
                 for (const double direction : {-1.0, 1.0})
                 {
-                    if (elapsed_ms() >= config.time_budget_ms)
-                    {
-                        return false;
-                    }
                     std::vector<Vector3> candidate = base;
                     for (std::size_t point_index = 1U;
                          point_index + 1U < candidate.size(); ++point_index)
                     {
-                        double profile = 1.0;
-                        if (point_index == 1U ||
-                            point_index + 2U == candidate.size())
-                        {
-                            profile = 0.0;
-                        }
-                        else if (point_index == 2U || point_index == 3U ||
-                                 point_index + 3U == candidate.size() ||
-                                 point_index + 4U == candidate.size())
-                        {
-                            profile = 0.75;
-                        }
-                        candidate.at(point_index).at(axis) +=
-                            direction * corridor_step * profile;
-                    }
-                    if (!projection(candidate) ||
-                        !is_finite_control_points(candidate))
-                    {
-                        continue;
-                    }
-                    const OptimizationEvaluation evaluation =
-                        objective.evaluate(candidate);
-                    if (evaluation.is_valid &&
-                        is_finite(evaluation.total_cost) &&
-                        base_evaluation.total_cost - evaluation.total_cost >
-                            config.convergence_tolerance)
-                    {
-                        improved_points = candidate;
-                        improved_evaluation = evaluation;
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Try a few bounded horizontal translations before per-control-point
-        // coordinate descent.  This is important when a symmetric barrier
-        // makes the lateral finite-difference gradient zero: a single large
-        // continuous side-step can leave the centerline in one evaluation,
-        // while many small point-wise steps would consume the 20 ms budget.
-        for (const double coarse_step : {8.0, 6.0, 4.5, 4.0, 2.0, 1.0, 0.5})
-        {
-            const double candidate_step = std::max(step, coarse_step);
-            for (const std::size_t axis : {0U, 1U})
-            {
-                for (const double direction : {-1.0, 1.0})
-                {
-                    if (elapsed_ms() >= config.time_budget_ms)
-                    {
-                        return false;
-                    }
-                    std::vector<Vector3> candidate = base;
-                    for (std::size_t point_index = 1U;
-                         point_index + 1U < candidate.size(); ++point_index)
-                    {
-                        const double normalized_index =
-                            static_cast<double>(point_index) /
+                        const double ratio = static_cast<double>(point_index) /
                             static_cast<double>(candidate.size() - 1U);
-                        const double sine_profile = std::sin(
-                            3.14159265358979323846 * normalized_index);
-                        const double sine_squared = sine_profile *
-                            sine_profile;
-                        const double smooth_profile = sine_squared *
-                            sine_squared;
+                        // 以 sin^2 建立平滑的水平 bump；相比原本的
+                        // step profile，不會在第一／最後內點產生尖角，
+                        // 仍讓所有 N/E 正負方向候選可被同幅度比較。
+                        const double profile = std::sin(
+                            3.14159265358979323846 * ratio);
+                        const double smooth_profile = std::min(
+                            1.0, 1.05 * profile * profile);
                         candidate.at(point_index).at(axis) +=
-                            direction * candidate_step * smooth_profile;
+                            direction * probe_step_m * smooth_profile;
                     }
-                    if (!projection(candidate) ||
-                        !is_finite_control_points(candidate))
-                    {
-                        continue;
-                    }
-                    const OptimizationEvaluation evaluation =
-                        objective.evaluate(candidate);
-                    if (evaluation.is_valid &&
-                        is_finite(evaluation.total_cost) &&
-                        base_evaluation.total_cost - evaluation.total_cost >
-                            config.convergence_tolerance)
-                    {
-                        improved_points = candidate;
-                        improved_evaluation = evaluation;
-                        return true;
-                    }
+                    consider_candidate(std::move(candidate));
                 }
+            }
+
+            if (budget_exhausted || found_improvement)
+            {
+                if (found_improvement)
+                {
+                    ++next_lateral_probe_index;
+                }
+                return found_improvement;
             }
         }
 
