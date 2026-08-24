@@ -89,7 +89,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 - `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalGoalSelector`／`PlanningTargetSelector`：Local Goal 開啟時依 Final Target、
-  PathConstraint 與 horizon 產生本輪 Planning Target；功能關閉時直接保留 Final Target
+  PathConstraint、horizon、fresh 同儕 future trajectory 與 fresh 局部障礙物地圖，
+  先過濾終點佔位衝突並產生安全側向候選，再交給完整 trajectory planner；功能關閉時直接保留 Final Target
 - `ReplanTrigger`：Local Goal 開啟時依 segment progress、Final Target 變更、
   segment 結束與 active trajectory safety 判斷是否允許重規劃
 - `PlannerAcceptancePolicy`：只有 planner 成功且輸出 finite、reservation（若需要）
@@ -119,7 +120,9 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `enable_local_goal_planning` | `bool` | `true` | Local Goal segmented planning；水平 FIXED_Z 受阻時使用 bounded 時空 A*，FREE_3D／LINEAR_Z 沿用既有 planner |
 | `enable_generic_trajectory_reservation` | `bool` | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
+| `peer_planning_margin_m` | `m` | `1.0` | planner 產生路徑時額外保留的機間距離；最終 safety validator 仍以 peer collision distance 驗證 |
 | `local_goal_horizon_m` | `double` | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
+| `local_goal_detour_margin_m` | `double` | `3.0` | Local Goal 側向繞行相對於 peer collision distance 額外保留的追蹤裕度（公尺） |
 | `local_goal_replan_ratio` | `double` | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
 | `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
 | `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |

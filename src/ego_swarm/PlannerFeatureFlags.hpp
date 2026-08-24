@@ -18,6 +18,7 @@ namespace ego_swarm
 {
 
 constexpr double DEFAULT_LOCAL_GOAL_HORIZON_M = 10.0;
+constexpr double DEFAULT_LOCAL_GOAL_DETOUR_MARGIN_M = 3.0;
 constexpr double DEFAULT_LOCAL_GOAL_REPLAN_RATIO = 0.70;
 constexpr double DEFAULT_MINIMUM_REPLAN_INTERVAL_S = 0.5;
 
@@ -39,6 +40,8 @@ struct PlannerFeatureFlags
     double local_goal_replan_ratio{DEFAULT_LOCAL_GOAL_REPLAN_RATIO};
     /// 正常 progress-based replan 之間的最短間隔，單位為秒。
     double minimum_replan_interval_s{DEFAULT_MINIMUM_REPLAN_INTERVAL_S};
+    /// 同儕／障礙物側向候選額外保留的追蹤裕度，單位為公尺。
+    double local_goal_detour_margin_m{DEFAULT_LOCAL_GOAL_DETOUR_MARGIN_M};
 };
 
 /**
@@ -73,6 +76,13 @@ inline PlannerFeatureFlags normalize_planner_feature_flags(
     {
         normalized.minimum_replan_interval_s =
             DEFAULT_MINIMUM_REPLAN_INTERVAL_S;
+    }
+
+    if (!std::isfinite(normalized.local_goal_detour_margin_m) ||
+        normalized.local_goal_detour_margin_m < 0.0)
+    {
+        normalized.local_goal_detour_margin_m =
+            DEFAULT_LOCAL_GOAL_DETOUR_MARGIN_M;
     }
 
     return normalized;

@@ -145,12 +145,16 @@ def launch_nodes(context, *args, **kwargs):
                     value_type=bool)},
                 {"local_goal_horizon_m": LaunchConfiguration(
                     "local_goal_horizon_m")},
+                {"local_goal_detour_margin_m": LaunchConfiguration(
+                    "local_goal_detour_margin_m")},
                 {"local_goal_replan_ratio": LaunchConfiguration(
                     "local_goal_replan_ratio")},
                 {"minimum_replan_interval_s": LaunchConfiguration(
                     "minimum_replan_interval_s")},
                 {"peer_trajectory_timeout_s": LaunchConfiguration(
                     "peer_trajectory_timeout_s")},
+                {"peer_planning_margin_m": LaunchConfiguration(
+                    "peer_planning_margin_m")},
                 {"max_peer_time_skew_s": LaunchConfiguration(
                     "max_peer_time_skew_s")},
                 {"obstacle_cloud_timeout_s": LaunchConfiguration(
@@ -299,6 +303,10 @@ def generate_launch_description():
             default_value="10.0",
             description="Local Goal 單段距離 horizon（公尺）"),
         DeclareLaunchArgument(
+            "local_goal_detour_margin_m",
+            default_value="3.0",
+            description="Local Goal 側向繞行額外追蹤裕度（公尺）"),
+        DeclareLaunchArgument(
             "local_goal_replan_ratio",
             default_value="0.70",
             description="Local Goal progress-based replan 比例"),
@@ -310,6 +318,10 @@ def generate_launch_description():
             "peer_trajectory_timeout_s",
             default_value="2.0",
             description="同儕未來軌跡 freshness timeout（秒）"),
+        DeclareLaunchArgument(
+            "peer_planning_margin_m",
+            default_value="1.0",
+            description="planner 額外保留的機間追蹤裕度（公尺）"),
         DeclareLaunchArgument(
             "max_peer_time_skew_s",
             default_value="1.0",

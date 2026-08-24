@@ -21,11 +21,12 @@ usage()
     cat <<'EOF'
 使用方式：
   bash AutoTest/scripts/ego_route_planning_sitl_validation.sh \
-      --scenario single|east|dual|swarm|all [--skip-basic]
+      --scenario single|east|dual|four_move|swarm|all [--skip-basic]
 
 single：BasicController 回歸、無障礙直線、固定障礙繞行、封閉搜尋範圍。
 east：fmu1 起飛至 8 m 後沿 +East 移動 30 m 的無障礙與 East wall 場景。
 dual：兩台以交叉 MOVE_POINT 驗證 moving peer 的時間避碰。
+four_move：四台起飛後維持西向東 8 m 間距，僅 fmu1 執行 +East MOVE_RIGHT 30 m。
 swarm：四台 `FORMATION_CIRCLE 10 10` 固定高度、幾何半徑與 terminal hold。
 EOF
 }
@@ -40,7 +41,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${SCENARIO}" in
-    single|east|dual|swarm|all) ;;
+    single|east|dual|four_move|swarm|all) ;;
     *) echo "錯誤：不支援的 scenario：${SCENARIO}" >&2; exit 2 ;;
 esac
 
@@ -252,6 +253,22 @@ run_east()
     wait "${monitor_pid}"
 }
 
+run_four_move()
+{
+    echo "=== Scenario D：四機西向東排列，僅 fmu1 +East MOVE_RIGHT 30 m ==="
+    start_agents 4 explicit_empty
+    takeoff_and_wait 4 "${TAKEOFF_ALTITUDE_M}"
+    run_monitor 4 --moving-agents 1 --timeout-s 120 \
+        --metric-warmup-s 0 --minimum-progress-m 29 \
+        --travel-axis east --minimum-lateral-m 2.5 \
+        --minimum-distance-m 3.0 --max-state-z-deviation-m 0.5 \
+        --expected-control-points 10 --require-initial-heading-north &
+    local monitor_pid=$!
+    sleep 1
+    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
+    wait "${monitor_pid}"
+}
+
 wait_for_formation_converged()
 {
     local count="$1"
@@ -304,11 +321,13 @@ case "${SCENARIO}" in
     single) run_single ;;
     east) run_east ;;
     dual) run_dual ;;
+    four_move) run_four_move ;;
     swarm) run_swarm ;;
     all)
         run_single
         run_east
         run_dual
+        run_four_move
         run_swarm
         ;;
 esac

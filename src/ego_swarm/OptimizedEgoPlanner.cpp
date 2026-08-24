@@ -275,7 +275,7 @@ private:
             const double hard_separation_error =
                 config_.peer_collision_min_distance_m - distance;
             const double soft_separation_error =
-                config_.peer_collision_min_distance_m +
+                peer_planning_soft_clearance_m(config_) +
                 config_.optimizer_peer_soft_margin_m - distance;
             if (hard_separation_error > 0.0)
             {
@@ -535,6 +535,9 @@ PlannerResult OptimizedEgoPlanner::plan(
         SpatiotemporalRouteInitializer route_initializer;
         const SpatiotemporalRouteResult route_result =
             route_initializer.initialize(snapshot, route_config, seed);
+        result.route_search_used = route_result.used_search;
+        result.route_expanded_nodes = route_result.expanded_nodes;
+        result.route_search_time_ms = route_result.search_time_ms;
         if (!route_result.is_valid)
         {
             result.termination = convert_route_reason(
@@ -838,6 +841,8 @@ bool OptimizedEgoPlanner::is_valid_config(const PlannerConfig& config)
            config.obstacle_clearance_m >= 0.0 &&
            is_finite(config.peer_collision_min_distance_m) &&
            config.peer_collision_min_distance_m >= 0.0 &&
+           is_finite(config.peer_planning_margin_m) &&
+           config.peer_planning_margin_m >= 0.0 &&
            is_finite(config.goal_weight) && config.goal_weight >= 0.0 &&
            is_finite(config.smoothness_weight) &&
            config.smoothness_weight >= 0.0 &&

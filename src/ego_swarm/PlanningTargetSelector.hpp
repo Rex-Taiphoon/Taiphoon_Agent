@@ -53,5 +53,37 @@ inline LocalGoalResult select_planning_target(
     return compute_local_goal(current, final_target, path_constraint, config);
 }
 
+/**
+ * @brief 依同儕與局部障礙物 environment 選擇安全 Planning Target
+ *
+ * Local Goal 功能關閉時保留既有 Final Target 語意；功能開啟時，候選
+ * Local Goal 會先通過低成本終點安全檢查，再交給完整 trajectory planner。
+ */
+inline LocalGoalResult select_planning_target(
+    const bool enable_local_goal_planning,
+    const Vector3& current,
+    const Vector3& final_target,
+    const PathConstraint path_constraint,
+    const LocalGoalConfig& config,
+    const LocalGoalEnvironment& environment)
+{
+    if (!enable_local_goal_planning)
+    {
+        LocalGoalResult result;
+        if (!is_finite_vector(final_target))
+        {
+            return result;
+        }
+        result.goal = final_target;
+        result.is_valid = true;
+        result.is_final_goal = true;
+        result.failure_reason = LocalGoalFailureReason::NONE;
+        return result;
+    }
+
+    return compute_safe_local_goal(
+        current, final_target, path_constraint, config, environment);
+}
+
 }  // namespace ego_swarm
 }  // namespace taiphoon

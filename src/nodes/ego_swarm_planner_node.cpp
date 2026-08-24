@@ -179,6 +179,9 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         "local_goal_horizon_m",
         ego_swarm::DEFAULT_LOCAL_GOAL_HORIZON_M);
     declare_parameter<double>(
+        "local_goal_detour_margin_m",
+        ego_swarm::DEFAULT_LOCAL_GOAL_DETOUR_MARGIN_M);
+    declare_parameter<double>(
         "local_goal_replan_ratio",
         ego_swarm::DEFAULT_LOCAL_GOAL_REPLAN_RATIO);
     declare_parameter<double>(
@@ -195,6 +198,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_FORMATION_MIN_DISTANCE_M);
     declare_parameter<double>("peer_collision_min_distance_m",
                              DEFAULT_PEER_COLLISION_MIN_DISTANCE_M);
+    declare_parameter<double>("peer_planning_margin_m", 1.0);
     declare_parameter<double>("obstacle_clearance_m",
                              DEFAULT_OBSTACLE_CLEARANCE_M);
     declare_parameter<double>("knot_interval_s", 1.0);
@@ -258,6 +262,8 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         get_parameter("enable_generic_trajectory_reservation").as_bool();
     requested_feature_flags.local_goal_horizon_m = get_parameter(
         "local_goal_horizon_m").as_double();
+    requested_feature_flags.local_goal_detour_margin_m = get_parameter(
+        "local_goal_detour_margin_m").as_double();
     requested_feature_flags.local_goal_replan_ratio = get_parameter(
         "local_goal_replan_ratio").as_double();
     requested_feature_flags.minimum_replan_interval_s = get_parameter(
@@ -301,6 +307,8 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
 
     planner_config_.peer_collision_min_distance_m = get_parameter(
         "peer_collision_min_distance_m").as_double();
+    planner_config_.peer_planning_margin_m = get_parameter(
+        "peer_planning_margin_m").as_double();
     planner_config_.obstacle_clearance_m = get_parameter(
         "obstacle_clearance_m").as_double();
     planner_config_.knot_interval_s = get_parameter(
@@ -463,12 +471,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 "reservation_lead=%.2f s reservation_step=%.2f s "
                 "reservation_horizon=%.2f s crossing_penalty=%.2f m "
                 "compat_origin_agent=%d peer_distance=%.2f m "
-                "obstacle_clearance=%.2f m peer_timeout=%.2f s "
+                "peer_planning_margin=%.2f m obstacle_clearance=%.2f m "
+                "peer_timeout=%.2f s "
                 "max_peer_time_skew=%.2f s obstacle_timeout=%.2f s "
                 "require_obstacle_cloud=%s move_attitude_timeout=%.2f s "
                 "slot_switch_penalty=%.2f m member_stable_scans=%d "
                 "feature_local_goal=%s feature_generic_reservation=%s "
-                "local_goal_horizon=%.2f m local_goal_replan_ratio=%.2f "
+                "local_goal_horizon=%.2f m local_goal_detour_margin=%.2f m "
+                "local_goal_replan_ratio=%.2f "
                 "minimum_replan_interval=%.2f s",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 planner_backend_.c_str(), optimizer_max_iterations_,
@@ -477,6 +487,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 formation_crossing_penalty_m_,
                 swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
+                planner_config_.peer_planning_margin_m,
                 planner_config_.obstacle_clearance_m,
                 peer_trajectory_timeout_s_, max_peer_time_skew_s_,
                 obstacle_cloud_timeout_s_,
@@ -487,6 +498,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 planner_feature_flags_.enable_generic_trajectory_reservation ?
                     "true" : "false",
                 planner_feature_flags_.local_goal_horizon_m,
+                planner_feature_flags_.local_goal_detour_margin_m,
                 planner_feature_flags_.local_goal_replan_ratio,
                 planner_feature_flags_.minimum_replan_interval_s);
 }
@@ -2261,18 +2273,51 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         planning_state.position = current;
     }
 
+    const bool should_reserve_trajectory =
+        ego_swarm::should_reserve_moving_trajectory(
+            has_formation_, planner_feature_flags_);
+    const double plan_start_delay_s = should_reserve_trajectory
+        ? reservation_lead_time_s_ : 0.0;
+    const rclcpp::Time plan_start_time = now +
+        rclcpp::Duration::from_seconds(plan_start_delay_s);
+    const double plan_start_time_s = plan_start_time.seconds();
+
+    std::vector<ego_swarm::PeerTrajectory> active_peers;
+    peer_trajectories_.get_active(now_s, active_peers);
+    ego_swarm::LocalGoalEnvironment local_goal_environment;
+    local_goal_environment.now_s = now_s;
+    local_goal_environment.candidate_start_time_s = plan_start_time_s;
+    local_goal_environment.self_agent_id = agent_index_;
+    local_goal_environment.peers_are_fresh = peer_data_valid;
+    local_goal_environment.peers = active_peers;
+    local_goal_environment.obstacle_map = &obstacle_map_;
+    local_goal_environment.peer_collision_min_distance_m =
+        planner_config_.peer_collision_min_distance_m;
+    local_goal_environment.obstacle_clearance_m =
+        planner_config_.obstacle_clearance_m;
+    local_goal_environment.maximum_velocity_mps =
+        planner_config_.max_velocity_mps;
+    const double local_goal_detour_offset_m = std::max(
+        planner_config_.peer_collision_min_distance_m +
+            planner_feature_flags_.local_goal_detour_margin_m,
+        planner_config_.obstacle_clearance_m + 1.0);
     const auto planning_target_result = ego_swarm::select_planning_target(
         planner_feature_flags_.enable_local_goal_planning,
         current,
         final_target,
         path_constraint,
         ego_swarm::LocalGoalConfig{
-            planner_feature_flags_.local_goal_horizon_m});
+            planner_feature_flags_.local_goal_horizon_m,
+            1.0,
+            local_goal_detour_offset_m},
+        local_goal_environment);
     if (!planning_target_result.is_valid)
     {
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "Local Goal selection failed; fail-closed hold/brake");
+            "Local Goal selection failed (%s); fail-closed hold/brake",
+            ego_swarm::local_goal_failure_reason_string(
+                planning_target_result.failure_reason).c_str());
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
         if (std::isfinite(speed_mps) && speed_mps <= 0.2)
@@ -2391,14 +2436,6 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
     }
 
-    const bool should_reserve_trajectory =
-        ego_swarm::should_reserve_moving_trajectory(
-            has_formation_, planner_feature_flags_);
-    const double plan_start_delay_s = should_reserve_trajectory
-        ? reservation_lead_time_s_ : 0.0;
-    const rclcpp::Time plan_start_time = now +
-        rclcpp::Duration::from_seconds(plan_start_delay_s);
-    const double plan_start_time_s = plan_start_time.seconds();
     ego_swarm::PlanningSnapshot snapshot;
     snapshot.self_state = planning_state;
     snapshot.local_goal = planning_target;
@@ -2410,7 +2447,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     snapshot.fixed_z_m = final_target.at(2);
     snapshot.obstacle_map = &obstacle_map_;
     snapshot.peers_are_fresh = peer_data_valid;
-    peer_trajectories_.get_active(now_s, snapshot.peers);
+    snapshot.peers = active_peers;
 
     // Progress-based replan 的 candidate 若失敗，先保留仍在
     // duration 內且通過最新 safety validation 的舊 trajectory；
@@ -2462,8 +2499,18 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             result.termination);
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "Optimized planner failed (%s); fail-closed hold/brake",
-            failure_reason.c_str());
+            "Optimized planner failed (%s) termination=%s planning_ms=%.2f "
+            "budget_ms=%.2f iterations=%zu search_radius_m=%.2f "
+            "route_search=%s route_nodes=%zu route_ms=%.2f min_peer_m=%.2f; "
+            "fail-closed hold/brake",
+            failure_reason.c_str(),
+            ego_swarm::planner_termination_reason_string(
+                result.termination).c_str(),
+            result.planning_time_ms, optimizer_time_budget_ms_,
+            result.iteration_count, planner_config_.optimizer_search_radius_m,
+            result.route_search_used ? "true" : "false",
+            result.route_expanded_nodes, result.route_search_time_ms,
+            result.minimum_peer_distance_m);
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
         if (std::isfinite(speed_mps) && speed_mps <= 0.2)

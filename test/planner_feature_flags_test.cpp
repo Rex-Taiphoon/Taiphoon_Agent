@@ -26,6 +26,7 @@ TEST(PlannerFeatureFlagsTest, EnablesLocalGoalByDefaultAndKeepsReservationOff)
     EXPECT_DOUBLE_EQ(flags.local_goal_horizon_m, 10.0);
     EXPECT_DOUBLE_EQ(flags.local_goal_replan_ratio, 0.70);
     EXPECT_DOUBLE_EQ(flags.minimum_replan_interval_s, 0.5);
+    EXPECT_DOUBLE_EQ(flags.local_goal_detour_margin_m, 3.0);
 }
 
 TEST(PlannerFeatureFlagsTest, PreservesValidOverrides)
@@ -35,7 +36,8 @@ TEST(PlannerFeatureFlagsTest, PreservesValidOverrides)
         true,
         20.0,
         0.8,
-        1.25};
+        1.25,
+        2.0};
 
     const PlannerFeatureFlags normalized =
         normalize_planner_feature_flags(requested);
@@ -45,6 +47,7 @@ TEST(PlannerFeatureFlagsTest, PreservesValidOverrides)
     EXPECT_DOUBLE_EQ(normalized.local_goal_horizon_m, 20.0);
     EXPECT_DOUBLE_EQ(normalized.local_goal_replan_ratio, 0.8);
     EXPECT_DOUBLE_EQ(normalized.minimum_replan_interval_s, 1.25);
+    EXPECT_DOUBLE_EQ(normalized.local_goal_detour_margin_m, 2.0);
 }
 
 TEST(PlannerFeatureFlagsTest, RestoresDefaultsForInvalidNumericOverrides)
@@ -66,6 +69,7 @@ TEST(PlannerFeatureFlagsTest, RestoresDefaultsForInvalidNumericOverrides)
     EXPECT_DOUBLE_EQ(normalized.local_goal_horizon_m, 10.0);
     EXPECT_DOUBLE_EQ(normalized.local_goal_replan_ratio, 0.70);
     EXPECT_DOUBLE_EQ(normalized.minimum_replan_interval_s, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.local_goal_detour_margin_m, 3.0);
 }
 
 TEST(PlannerFeatureFlagsTest, RejectsOutOfRangeReplanRatio)
@@ -89,6 +93,17 @@ TEST(PlannerFeatureFlagsTest, RejectsOutOfRangeReplanRatio)
     EXPECT_DOUBLE_EQ(
         normalize_planner_feature_flags(above_one).local_goal_replan_ratio,
         0.70);
+}
+
+TEST(PlannerFeatureFlagsTest, RestoresDefaultForInvalidDetourMargin)
+{
+    PlannerFeatureFlags requested;
+    requested.local_goal_detour_margin_m =
+        std::numeric_limits<double>::quiet_NaN();
+
+    EXPECT_DOUBLE_EQ(
+        normalize_planner_feature_flags(requested).local_goal_detour_margin_m,
+        3.0);
 }
 
 }  // namespace

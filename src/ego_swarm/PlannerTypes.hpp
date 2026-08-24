@@ -115,7 +115,23 @@ struct PlannerConfig
     double reservation_lead_time_s{0.5};
     double reservation_step_s{0.5};
     double reservation_horizon_s{5.0};
+    // Planner 內部為 PX4 setpoint tracking、狀態同步與取樣誤差保留的
+    // 機間距離裕度；ContinuousSafetyValidator 仍只使用
+    // peer_collision_min_distance_m 作為對外安全契約。
+    double peer_planning_margin_m{1.0};
 };
+
+/**
+ * @brief 取得 optimizer 的機間 soft tracking barrier 距離
+ *
+ * 這個距離只用於成本函式，不會取代 planner hard check 或最後的
+ * ContinuousSafetyValidator 門檻。
+ */
+inline double peer_planning_soft_clearance_m(const PlannerConfig& config)
+{
+    return config.peer_collision_min_distance_m +
+        config.peer_planning_margin_m;
+}
 
 /// 單一 planner cycle 使用的 immutable 輸入資料。
 struct PlanningSnapshot
@@ -169,6 +185,9 @@ struct PlannerResult
     double trajectory_start_time_s{0.0};
     double planning_time_ms{0.0};
     std::size_t iteration_count{0U};
+    bool route_search_used{false};
+    std::size_t route_expanded_nodes{0U};
+    double route_search_time_ms{0.0};
     PlannerBackendKind backend{PlannerBackendKind::DETERMINISTIC};
     PlannerTerminationReason termination{PlannerTerminationReason::INVALID_INPUT};
 
@@ -187,7 +206,8 @@ struct PlannerResult
             !is_finite(obstacle_cost) ||
             !is_finite(peer_cost) ||
             !is_finite(trajectory_start_time_s) ||
-            !is_finite(planning_time_ms))
+            !is_finite(planning_time_ms) ||
+            !is_finite(route_search_time_ms))
         {
             return false;
         }
