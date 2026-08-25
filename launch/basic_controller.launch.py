@@ -379,7 +379,7 @@ def generate_launch_description():
             description="PX4 local NED 到達容許誤差（公尺）"),
         DeclareLaunchArgument(
             "global_arrival_tolerance_m",
-            default_value="1.0",
+            default_value="3.0",
             description=(
                 "相容名稱；GPS 投影至本機 planner-local NED 的"
                 "到達容許誤差（公尺）")),
