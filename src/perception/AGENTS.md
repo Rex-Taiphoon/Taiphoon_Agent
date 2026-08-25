@@ -72,7 +72,7 @@ Sensor emulation 的：
 
 必須從 vehicle pose 更新。
 
-禁止固定在 swarm origin。
+禁止固定在不隨 UAV 移動的場景原點。
 
 ### 5. Map Freshness
 

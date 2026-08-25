@@ -82,11 +82,11 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | **執行檔** | `ego_swarm_planner` |
 | **節點名稱** | `ego_swarm_planner` |
 | **命名空間** | `fmu{N}` |
-| **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 local NED 輸出軌跡。 |
+| **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 planner-local NED 輸出軌跡。 |
 | **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count`、planner backend／optimizer／reservation 參數 |
 
 **內部組件**：
-- `SwarmFrame`：將 WGS84 全球座標與本機固定 Home 的公尺制 local NED 互轉
+- `LocalNedFrame`：將 WGS84 全球座標與單一指定 Home 的公尺制 local NED 互轉；planner 實例使用本 Agent freeze 的 Home
 - `FormationSlotPlanner`：虛擬編隊槽位計算
 - `LocalGoalSelector`／`PlanningTargetSelector`：Local Goal 開啟時依 Final Target、
   PathConstraint、horizon、fresh 同儕 future trajectory 與 fresh 局部障礙物地圖，
@@ -136,7 +136,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `max_jerk_mps3` | `double` | `3.0` | safety validator／emergency brake 的最大 jerk |
 | `candidate_offset_m` | `double` | `3.0` | 局部候選軌跡偏移量 |
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
-| `global_arrival_tolerance_m` | `double` | `1.0` | 本機 Home 建立的 global-to-local NED 到達容許誤差 |
+| `global_arrival_tolerance_m` | `double` | `1.0` | 相容參數名稱；WGS84 投影至本機 planner-local NED 的到達容許誤差 |
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
 | `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
@@ -168,7 +168,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | 參數 | 型別 | Node 預設值 | 說明 |
 |------|------|-------------|------|
 | `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
-| `agent_index` | `int` | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
+| `agent_index` | `int` | `1` | Agent 索引；供 synthetic sensor 訂閱自身 pose |
 | `swarm_origin_agent_index` | `int` | `1` | synthetic sensor 的固定 `swarm_ned` 原點 Agent |
 | `config_file` | `string` | 空字串 | YAML 場景檔；Launch 預設使用 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | `double` | `15.0` | PointCloud2 發布頻率 |
@@ -324,7 +324,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | `state` | `uint8` | 規劃器狀態 |
 | `trajectory_id` | `uint32` | 目前軌跡識別碼 |
 | `map_valid` | `bool` | 障礙物地圖是否有效 |
-| `localization_valid` | `bool` | 共同座標是否有效 |
+| `localization_valid` | `bool` | 本 Agent 的 planner-local frame 是否有效 |
 | `peer_data_valid` | `bool` | 同儕資料是否可用 |
 | `planning_time_ms` | `float32` | 最近一次規劃耗時 |
 | `min_obstacle_distance_m` | `float32` | 最近障礙物距離 |
@@ -452,14 +452,16 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   再進行 control-point optimization。`FREE_3D`、`LINEAR_Z` 與垂直 MOVE 不經此 A*。
   deterministic candidate 類別僅保留相容與回歸用途。
 - AgentTrajectory 對外使用 WGS84 全球座標；各接收端以自己的固定 Home 轉成公尺制
-  local NED，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
+  `planner_ned`，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
 - 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的 mission goal position
   累加，水平位移使用保存的 target yaw。全體 `/fmu_all_agent/command` 的同名命令只在
-  FormationEpoch 啟用時有效，改為以共同 `swarm_ned` 位移平移 Formation center，保留
-  編隊形狀與 slot assignment；未在編隊時拒絕。
-- 全體 `MOVE_POINT x y z yaw` 的 `x/y/z` 是共同 `swarm_ned` 中 Formation center 的
-  絕對目標，`yaw` 仍由 BasicController 以絕對航向語意套用至每台 Agent。
+  FormationEpoch 啟用時有效。位移沿固定 NED 軸定義，各 Agent 在自身 `planner_ned`
+  套用相同向量後，以 WGS84 FormationEpoch 交換 center；未在編隊時拒絕。
+- 全體 `MOVE_POINT x y z yaw` 保留既有行為：收到命令的 Agent 以自身 `planner_ned`
+  解讀 `x/y/z`，再轉成 WGS84 Formation center。不同 Home 下這不是唯一的全球絕對目標；
+  修正需重新定義命令契約與 proposal／adoption 行為，本次不更動。`yaw` 仍由
+  BasicController 以絕對航向語意套用至每台 Agent。
 - 單機命令只有尚未建立 target yaw 的第一個水平命令需要新鮮 AgentAttitude；後續命令
   不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
 - `YAW` 的相對角度累加到保存的 target yaw；`MOVE_POINT` 的絕對 yaw 會重設 target yaw。
@@ -481,7 +483,10 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   frame/time、map／peer freshness、動力學限制、同儕 separation 與 obstacle clearance。
   Candidate 必須依序通過 planner、reservation（若需要）與 safety validation 才能更新
   active state 並發布 `AgentTrajectory`；失敗則保留安全舊路線或發布 dynamic braking trajectory。
-- PointCloud2 應以共同 `swarm_ned` 座標供局部障礙物地圖使用；YAML 障礙物描述
+- PointCloud2 的 `frame_id="swarm_ned"` 是既有障礙物介面；模擬器目前以
+  `swarm_origin_agent_index` 建立共享場景原點。planner 內部則使用 receiver 自己的
+  `planner_ned`，現行 callback 尚未執行兩者間的 frame conversion。修正這個邊界會
+  改變 runtime 行為，因此本次只記錄現況，不改 frame_id 或轉換流程。YAML 障礙物描述
   用於建立 `box`、`cylinder` 與 `wall` 等模擬場景。
 - `mission_planner`、`trajectory_controller` 與第一版觀測式防撞已被 EGO-Swarm
   取代；舊 `/ned_target` 與 `/waypoints` 僅保留相容或純邏輯測試用途。
@@ -560,7 +565,7 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `MOVE_UP <x>` | 距離 (公尺) | 向上移動 |
 | `MOVE_DOWN <x>` | 距離 (公尺) | 向下移動 |
 | `YAW <angle>` | 相對角度 (度) | 以目前航向為基準順時針旋轉，由 BasicController 直接發布 |
-| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 單機時為 Agent 目標；全體編隊時為共同 swarm_ned 的 Formation center 目標，yaw 由 BasicController 直接設定 |
+| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 單機時為 Agent 目標；全體編隊時由 proposal Agent 的 planner-local NED 解讀 Formation center，yaw 由 BasicController 直接設定 |
 
 #### 基礎控制命令
 

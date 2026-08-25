@@ -46,7 +46,7 @@
 #include "ego_swarm/PlannerTargetSemantics.hpp"
 #include "ego_swarm/PositionArrival.hpp"
 #include "ego_swarm/ReplanTrigger.hpp"
-#include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/LocalNedFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
 #include "ego_swarm/TrajectoryReservationPolicy.hpp"
 #include "formation/PeerMatcher.hpp"
@@ -65,7 +65,7 @@ constexpr double DEFAULT_OBSTACLE_CLEARANCE_M = 1.0;
 constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
 constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
-constexpr double DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M = 1.0;
+constexpr double DEFAULT_PLANNER_ARRIVAL_TOLERANCE_M = 1.0;
 constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 2.0;
 constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 1.0;
 constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
@@ -185,18 +185,18 @@ private:
         const std::string& reason,
         const rclcpp::Time& now,
         bool peer_data_valid);
-    bool update_swarm_frame();
-    bool update_local_swarm_transform();
-    bool get_position_in_swarm_frame(
+    bool update_planner_frame();
+    bool update_planner_to_px4_ned_transform();
+    bool get_position_in_planner_frame(
         const taiphoon_agent::msg::AgentState& state,
         ego_swarm::Vector3& position) const;
-    bool get_target_in_local_ned(
+    bool get_target_in_px4_local_ned(
         const ego_swarm::Vector3& target,
         ego_swarm::Vector3& local_target) const;
     /** @brief 清除不再代表目前控制狀態的 terminal hold heartbeat。 */
     void clear_terminal_hold();
     ego_swarm::PositionArrivalResult evaluate_target_arrival(
-        const ego_swarm::Vector3& current_global_ned,
+        const ego_swarm::Vector3& current_planner_ned,
         const ego_swarm::Vector3& final_target) const;
     void invalidate_active_plan();
     /** @brief 取得目前任務真正的 Final Target。 */
@@ -250,7 +250,8 @@ private:
 
     std::string agent_namespace_{"fmu1_agent"};
     int agent_index_{1};
-    int swarm_origin_agent_index_{1};
+    /// 舊 launch 相容參數的快取；planner origin 固定使用本 Agent Home。
+    int legacy_swarm_origin_agent_index_{1};
     double planning_rate_hz_{DEFAULT_EGO_PLANNER_RATE_HZ};
     double peer_trajectory_timeout_s_{DEFAULT_PEER_TRAJECTORY_TIMEOUT_S};
     double max_peer_time_skew_s_{DEFAULT_MAX_PEER_TIME_SKEW_S};
@@ -258,7 +259,7 @@ private:
     bool require_obstacle_cloud_{true};
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
     double local_arrival_tolerance_m_{DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M};
-    double global_arrival_tolerance_m_{DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M};
+    double planner_arrival_tolerance_m_{DEFAULT_PLANNER_ARRIVAL_TOLERANCE_M};
     double move_attitude_timeout_s_{DEFAULT_MOVE_ATTITUDE_TIMEOUT_S};
     double formation_slot_switch_penalty_m_ =
         DEFAULT_FORMATION_SLOT_SWITCH_PENALTY_M;
@@ -281,13 +282,14 @@ private:
     ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
     ego_swarm::PeerDeconflictionPlanner peer_deconfliction_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};
-    ego_swarm::SwarmFrame swarm_frame_{};
-    ego_swarm::GeoCoordinate frame_origin_{};
-    /// 目前 local Home 所屬的 Agent ID（本機自身）；-1 表示尚未建立 Home。
-    int frame_origin_agent_index_{-1};
-    uint32_t frame_revision_{0U};
-    bool has_local_swarm_transform_{false};
-    ego_swarm::Vector3 local_swarm_offset_{0.0, 0.0, 0.0};
+    ego_swarm::LocalNedFrame planner_frame_{};
+    ego_swarm::GeoCoordinate planner_frame_origin_{};
+    /// planner-local Home 所屬的 Agent ID（本機自身）；-1 表示尚未建立。
+    int planner_frame_origin_agent_index_{-1};
+    uint32_t planner_frame_revision_{0U};
+    /// planner-local NED 至 PX4 local NED 的固定平移是否已建立。
+    bool has_planner_to_px4_ned_transform_{false};
+    ego_swarm::Vector3 planner_to_px4_ned_offset_{0.0, 0.0, 0.0};
 
     bool has_own_state_{false};
     bool has_previous_state_sample_{false};

@@ -56,7 +56,7 @@ struct FormationParams
 struct ReferenceCentroid
 {
     std::array<float, 3> centroid{0.0F, 0.0F, 0.0F};
-    bool gps_based{false};  ///< 是否以 GPS 共同參考系計算（false = 原混框算法）
+    bool gps_based{false};  ///< 是否以 WGS84 交換後轉入自身 local frame 計算
 };
 
 constexpr float PI = 3.14159265358979323846F;
@@ -163,7 +163,7 @@ public:
     }
 
     /**
-     * @brief 將同儕位置換算到自身 local frame（共同參考系）
+     * @brief 將同儕 WGS84 位置換算到自身 local frame
      *
      * 各機 position_ned 以自身 HOME 為原點，直接混算質心會造成
      * 編隊圓心在全球座標下偏移；以 GPS 差補正後，所有位置都在
@@ -222,7 +222,7 @@ public:
     /**
      * @brief 計算編隊質心快照（指令當下或成員變化時呼叫）
      *
-     * 以 GPS 共同參考系將所有線上同儕位置換算到自身 local frame 後取平均，
+     * 將所有線上同儕的 WGS84 位置換算到自身 local frame 後取平均，
      * 作為編隊的固定參考點；任一同儕 GPS 無效時退回原混框算法（直接平均
      * 各機 local 位置）並回傳 gps_based=false。
      *

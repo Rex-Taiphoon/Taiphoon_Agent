@@ -86,7 +86,7 @@ bool is_inside_box(
 
 }  // namespace
 
-TEST(ObstacleCloudTest, SamplesBoxWithSwarmNedFloat32Fields)
+TEST(ObstacleCloudTest, PreservesLegacySwarmNedFrameId)
 {
     const auto result = ObstacleCloudGenerator::generate(
         {make_box({5.0F, 0.0F, -2.0F})},

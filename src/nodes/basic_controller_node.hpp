@@ -29,7 +29,7 @@
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_trajectory.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/LocalNedFrame.hpp"
 #include "safety/PositionSafetyMonitor.hpp"
 #include "safety/StatePublisher.hpp"
 #include "formation/FormationCalculator.hpp"
@@ -271,8 +271,9 @@ private:
     mutable std::mutex agent_trajectory_mutex_;
 
     /// 自身 Home 對應的全球軌跡轉換 frame；不使用發送端 origin。
-    ego_swarm::SwarmFrame trajectory_frame_{};
-    ego_swarm::Vector3 trajectory_local_offset_{0.0, 0.0, 0.0};
+    ego_swarm::LocalNedFrame trajectory_frame_{};
+    /// trajectory frame 至 PX4 local NED 的固定平移。
+    ego_swarm::Vector3 trajectory_frame_to_px4_ned_offset_{0.0, 0.0, 0.0};
     bool has_trajectory_frame_{false};
 
     // ==================== 狀態旗標 ====================

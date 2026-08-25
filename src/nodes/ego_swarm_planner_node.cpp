@@ -214,7 +214,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>("local_arrival_tolerance_m",
                              DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M);
     declare_parameter<double>("global_arrival_tolerance_m",
-                             DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M);
+                             DEFAULT_PLANNER_ARRIVAL_TOLERANCE_M);
     declare_parameter<double>("move_attitude_timeout_s",
                              DEFAULT_MOVE_ATTITUDE_TIMEOUT_S);
     declare_parameter<double>("formation_slot_switch_penalty_m",
@@ -249,11 +249,11 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         agent_index_ = compute_self_index();
     }
 
-    swarm_origin_agent_index_ = get_parameter(
+    legacy_swarm_origin_agent_index_ = get_parameter(
         "swarm_origin_agent_index").as_int();
-    if (swarm_origin_agent_index_ <= 0)
+    if (legacy_swarm_origin_agent_index_ <= 0)
     {
-        swarm_origin_agent_index_ = 1;
+        legacy_swarm_origin_agent_index_ = 1;
     }
 
     planning_rate_hz_ = get_parameter("planning_rate_hz").as_double();
@@ -334,17 +334,17 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         "candidate_offset_m").as_double();
     local_arrival_tolerance_m_ = get_parameter(
         "local_arrival_tolerance_m").as_double();
-    global_arrival_tolerance_m_ = get_parameter(
+    planner_arrival_tolerance_m_ = get_parameter(
         "global_arrival_tolerance_m").as_double();
     if (!std::isfinite(local_arrival_tolerance_m_) ||
         local_arrival_tolerance_m_ < 0.0)
     {
         local_arrival_tolerance_m_ = DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M;
     }
-    if (!std::isfinite(global_arrival_tolerance_m_) ||
-        global_arrival_tolerance_m_ < 0.0)
+    if (!std::isfinite(planner_arrival_tolerance_m_) ||
+        planner_arrival_tolerance_m_ < 0.0)
     {
-        global_arrival_tolerance_m_ = DEFAULT_GLOBAL_ARRIVAL_TOLERANCE_M;
+        planner_arrival_tolerance_m_ = DEFAULT_PLANNER_ARRIVAL_TOLERANCE_M;
     }
     move_attitude_timeout_s_ = get_parameter(
         "move_attitude_timeout_s").as_double();
@@ -526,7 +526,7 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 optimizer_time_budget_ms_, reservation_lead_time_s_,
                 reservation_step_s_, reservation_horizon_s_,
                 formation_crossing_penalty_m_,
-                swarm_origin_agent_index_,
+                legacy_swarm_origin_agent_index_,
                 planner_config_.peer_collision_min_distance_m,
                 planner_config_.peer_planning_margin_m,
                 planner_config_.obstacle_clearance_m,
@@ -714,13 +714,14 @@ void EgoSwarmPlannerNode::peer_state_cb(
     peer.last_arrival = std::chrono::steady_clock::now();
     peer.has_state = true;
 
-    // peer 的 position_ned 屬於 peer 自己的 local frame，不能直接拿來和
-    // 本機 swarm frame 比較。速度仍供 transition／動態安全邏輯使用，
+    // peer 的 position_ned 屬於 peer 自己的 PX4 local frame，不能直接拿來和
+    // 本機 planner-local NED 比較。位置先從 WGS84 投影；速度仍供
+    // transition／動態安全邏輯使用，
     // 但不再作為 formation convergence 的到位條件。
     ego_swarm::Vector3 current_position{};
     const double sample_time_s = this->now().seconds();
-    if (swarm_frame_.has_origin() &&
-        get_position_in_swarm_frame(peer.state, current_position) &&
+    if (planner_frame_.has_origin() &&
+        get_position_in_planner_frame(peer.state, current_position) &&
         std::isfinite(sample_time_s))
     {
         const double delta_time_s = sample_time_s - peer.previous_position_time_s;
@@ -1000,7 +1001,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         return false;
     }
 
-    if (!has_own_state_ || !update_swarm_frame() ||
+    if (!has_own_state_ || !update_planner_frame() ||
         !ego_swarm::is_finite_vector(formation_center_))
     {
         RCLCPP_WARN(
@@ -1019,8 +1020,10 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
             RCLCPP_WARN(get_logger(), "Rejecting invalid group MOVE_POINT");
             return false;
         }
-        // 全體 MOVE_POINT 的 x/y/z 是共同 swarm_ned 中 Formation center
-        // 的絕對目標；各 Agent 不會把它解讀成自己的 slot 目標。
+        // 保留既有全體 MOVE_POINT 行為：收到命令的 Agent 以自己的
+        // planner-local NED 解讀 x/y/z，再轉成 WGS84 Formation center。
+        // 因各 Agent origin 不同，這個絕對 NED 命令本身不具全機唯一語意；
+        // 本次僅校正名稱，不改動 proposal／adoption 行為。
         requested_center = ego_swarm::Vector3{
             static_cast<double>(parsed.param_value),
             static_cast<double>(parsed.param2),
@@ -1034,26 +1037,26 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
             return false;
         }
 
-        ego_swarm::SwarmMoveDirection direction{};
+        ego_swarm::NedMoveDirection direction{};
         switch (parsed.command)
         {
             case utils::AgentCommand::MOVE_FORWARD:
-                direction = ego_swarm::SwarmMoveDirection::FORWARD;
+                direction = ego_swarm::NedMoveDirection::FORWARD;
                 break;
             case utils::AgentCommand::MOVE_BACKWARD:
-                direction = ego_swarm::SwarmMoveDirection::BACKWARD;
+                direction = ego_swarm::NedMoveDirection::BACKWARD;
                 break;
             case utils::AgentCommand::MOVE_LEFT:
-                direction = ego_swarm::SwarmMoveDirection::LEFT;
+                direction = ego_swarm::NedMoveDirection::LEFT;
                 break;
             case utils::AgentCommand::MOVE_RIGHT:
-                direction = ego_swarm::SwarmMoveDirection::RIGHT;
+                direction = ego_swarm::NedMoveDirection::RIGHT;
                 break;
             case utils::AgentCommand::MOVE_UP:
-                direction = ego_swarm::SwarmMoveDirection::UP;
+                direction = ego_swarm::NedMoveDirection::UP;
                 break;
             case utils::AgentCommand::MOVE_DOWN:
-                direction = ego_swarm::SwarmMoveDirection::DOWN;
+                direction = ego_swarm::NedMoveDirection::DOWN;
                 break;
             default:
                 RCLCPP_WARN(get_logger(), "Unsupported group MOVE command");
@@ -1061,7 +1064,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         }
 
         ego_swarm::Vector3 delta{};
-        if (!ego_swarm::common_swarm_ned_offset(
+        if (!ego_swarm::ned_axis_offset(
                 direction, static_cast<double>(parsed.param_value), delta))
         {
             RCLCPP_WARN(get_logger(), "Rejecting non-finite group MOVE delta");
@@ -1078,8 +1081,8 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
 
     // 驗證目標可以轉回 WGS84，避免產生無法被其他 Agent 驗證的 Epoch。
     ego_swarm::GeoCoordinate target_geo{};
-    if (!swarm_frame_.from_swarm_ned(requested_center, target_geo) ||
-        !ego_swarm::SwarmFrame::is_valid_geodetic(target_geo))
+    if (!planner_frame_.from_local_ned(requested_center, target_geo) ||
+        !ego_swarm::LocalNedFrame::is_valid_geodetic(target_geo))
     {
         RCLCPP_WARN(get_logger(), "Rejecting group MOVE outside valid WGS84 range");
         return false;
@@ -1150,7 +1153,7 @@ EgoSwarmPlannerNode::live_peer_min_distance(
             return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
         }
         ego_swarm::Vector3 peer_position{};
-        if (!get_position_in_swarm_frame(
+        if (!get_position_in_planner_frame(
                 peer_iterator->second.state, peer_position))
         {
             return ego_swarm::LivePeerDistanceResult{true, false, 0.0};
@@ -1216,7 +1219,7 @@ EgoSwarmPlannerNode::make_peer_deconfliction_input(
         }
         const PeerState& peer_state = iterator->second;
         ego_swarm::Vector3 position{};
-        if (!get_position_in_swarm_frame(peer_state.state, position))
+        if (!get_position_in_planner_frame(peer_state.state, position))
         {
             continue;
         }
@@ -1516,7 +1519,7 @@ bool EgoSwarmPlannerNode::epoch_is_valid(
         epoch.spacing_m < 0.0 || !std::isfinite(epoch.center_latitude_deg) ||
         !std::isfinite(epoch.center_longitude_deg) ||
         !std::isfinite(epoch.center_altitude_m) ||
-        !ego_swarm::SwarmFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
+        !ego_swarm::LocalNedFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
             epoch.center_latitude_deg, epoch.center_longitude_deg,
             epoch.center_altitude_m}))
     {
@@ -1530,7 +1533,7 @@ bool EgoSwarmPlannerNode::epoch_is_valid(
             !std::isfinite(epoch.member_latitudes_deg.at(index)) ||
             !std::isfinite(epoch.member_longitudes_deg.at(index)) ||
             !std::isfinite(epoch.member_altitudes_m.at(index)) ||
-            !ego_swarm::SwarmFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
+            !ego_swarm::LocalNedFrame::is_valid_geodetic(ego_swarm::GeoCoordinate{
                 epoch.member_latitudes_deg.at(index),
                 epoch.member_longitudes_deg.at(index),
                 epoch.member_altitudes_m.at(index)}))
@@ -1578,7 +1581,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
     const std::vector<int>& member_ids,
     const ego_swarm::Vector3* requested_center)
 {
-    if (!has_own_state_ || !update_swarm_frame())
+    if (!has_own_state_ || !update_planner_frame())
     {
         RCLCPP_WARN(get_logger(),
                     "Formation proposal deferred until local WGS84 Home is ready");
@@ -1614,8 +1617,8 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
 
     if (has_accepted_formation_epoch_)
     {
-        // 一般 membership 變更沿用 parent center；群組 MOVE 則以共同
-        // swarm_ned 計算出的新 center 建立下一個 Epoch。
+        // 一般 membership 變更沿用 parent center；群組 MOVE 則由本機
+        // planner-local NED 計算新 center，再以 WGS84 建立下一個 Epoch。
         ego_swarm::GeoCoordinate proposal_center{
             accepted_formation_epoch_.center_latitude_deg,
             accepted_formation_epoch_.center_longitude_deg,
@@ -1623,7 +1626,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         if (requested_center != nullptr)
         {
             if (!ego_swarm::is_finite_vector(*requested_center) ||
-                !swarm_frame_.from_swarm_ned(*requested_center, proposal_center))
+                !planner_frame_.from_local_ned(*requested_center, proposal_center))
             {
                 RCLCPP_WARN(
                     get_logger(),
@@ -1716,7 +1719,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         if (has_formation_center_target_)
         {
             ego_swarm::GeoCoordinate target_center{};
-            if (!swarm_frame_.from_swarm_ned(
+            if (!planner_frame_.from_local_ned(
                     formation_center_, target_center))
             {
                 RCLCPP_WARN(
@@ -1734,7 +1737,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
             const ego_swarm::Vector3 target_center_ned =
                 ego_swarm::scale_vector(target_position_sum, 1.0 / count);
             ego_swarm::GeoCoordinate target_center{};
-            if (!swarm_frame_.from_swarm_ned(
+            if (!planner_frame_.from_local_ned(
                     target_center_ned, target_center))
             {
                 RCLCPP_WARN(
@@ -1753,7 +1756,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
             proposal.center_longitude_deg = longitude_sum / count;
             // 第一次若沒有完整成員 target，才以同步成員位置建立初始
             // 中心；之後的 CIRCLE/HORI/VERT 均沿用保存的目標中心。
-            proposal.center_altitude_m = swarm_frame_.origin().altitude_m;
+            proposal.center_altitude_m = planner_frame_.origin().altitude_m;
         }
     }
     proposal.snapshot_hash = formation_epoch_hash(proposal);
@@ -1775,7 +1778,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
 
 bool EgoSwarmPlannerNode::update_formation_assignment()
 {
-    if (!has_accepted_formation_epoch_ || !swarm_frame_.has_origin())
+    if (!has_accepted_formation_epoch_ || !planner_frame_.has_origin())
     {
         return false;
     }
@@ -1788,7 +1791,7 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
     {
         ids.push_back(accepted_formation_epoch_.member_agent_ids.at(index));
         ego_swarm::Vector3 position{};
-        if (!swarm_frame_.to_swarm_ned(ego_swarm::GeoCoordinate{
+        if (!planner_frame_.to_local_ned(ego_swarm::GeoCoordinate{
                 accepted_formation_epoch_.member_latitudes_deg.at(index),
                 accepted_formation_epoch_.member_longitudes_deg.at(index),
                 accepted_formation_epoch_.member_altitudes_m.at(index)}, position))
@@ -1798,7 +1801,7 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
         positions.push_back(position);
     }
     ego_swarm::Vector3 center{};
-    if (!swarm_frame_.to_swarm_ned(ego_swarm::GeoCoordinate{
+    if (!planner_frame_.to_local_ned(ego_swarm::GeoCoordinate{
             accepted_formation_epoch_.center_latitude_deg,
             accepted_formation_epoch_.center_longitude_deg,
             accepted_formation_epoch_.center_altitude_m}, center))
@@ -2007,6 +2010,10 @@ void EgoSwarmPlannerNode::obstacle_cb(
         RCLCPP_WARN(get_logger(), "obstacle_cb received nullptr");
         return;
     }
+    // `swarm_ned` 是既有 PointCloud2 外部契約。模擬器目前仍可使用
+    // swarm_origin_agent_index 建立共享障礙物 frame；planner 並未在此
+    // 執行 shared-frame -> planner-local 轉換。該架構修正會改變 runtime，
+    // 不屬於本次純命名變更。
     if (msg->header.frame_id != "swarm_ned")
     {
         RCLCPP_WARN(get_logger(), "Rejecting obstacle cloud with frame '%s'",
@@ -2084,7 +2091,7 @@ void EgoSwarmPlannerNode::trajectory_cb(
         return;
     }
 
-    if (frame_revision_ == 0U || !swarm_frame_.has_origin())
+    if (planner_frame_revision_ == 0U || !planner_frame_.has_origin())
     {
         RCLCPP_WARN(
             get_logger(),
@@ -2123,8 +2130,8 @@ void EgoSwarmPlannerNode::trajectory_cb(
             msg->control_points.at(index + 1U),
             msg->control_points.at(index + 2U)};
         ego_swarm::Vector3 local_point{};
-        if (!ego_swarm::SwarmFrame::is_valid_geodetic(global_point) ||
-            !swarm_frame_.to_swarm_ned(global_point, local_point))
+        if (!ego_swarm::LocalNedFrame::is_valid_geodetic(global_point) ||
+            !planner_frame_.to_local_ned(global_point, local_point))
         {
             RCLCPP_WARN(
                 get_logger(),
@@ -2138,7 +2145,7 @@ void EgoSwarmPlannerNode::trajectory_cb(
     ego_swarm::PeerTrajectory peer;
     peer.agent_id = static_cast<int>(msg->agent_index);
     peer.trajectory_id = msg->trajectory_id;
-    peer.frame_revision = frame_revision_;
+    peer.frame_revision = planner_frame_revision_;
     peer.terminal_hold = msg->terminal_hold;
     peer.message_time_s = static_cast<double>(msg->stamp.sec) +
         static_cast<double>(msg->stamp.nanosec) * 1.0e-9;
@@ -2217,7 +2224,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
     const bool peer_data_valid = peer_trajectories_.all_fresh(
         now_s, expected_peer_ids);
-    if (!has_own_state_ || !update_swarm_frame())
+    if (!has_own_state_ || !update_planner_frame())
     {
         (void)peer_trajectories_.prune(now_s);
         publish_status(PLANNER_STATE_HOLD, "Local WGS84 Home unavailable",
@@ -2248,7 +2255,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                     active_plan_.trajectory.duration_s())
             {
                 ego_swarm::Vector3 current{};
-                if (get_position_in_swarm_frame(own_state_, current))
+                if (get_position_in_planner_frame(own_state_, current))
                 {
                     publish_plan(
                         active_plan_, current, now, active_plan_start_time_,
@@ -2287,7 +2294,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         // occupancy 資料不應取得本機 BasicController 的控制權。
         ego_swarm::Vector3 current{};
         const bool current_position_available =
-            get_position_in_swarm_frame(own_state_, current);
+            get_position_in_planner_frame(own_state_, current);
         if (has_terminal_hold_ && current_position_available &&
             ego_swarm::distance_between_centers(
                 current, terminal_hold_position_) >
@@ -2350,7 +2357,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     }
 
     ego_swarm::Vector3 current{};
-    if (!get_position_in_swarm_frame(own_state_, current))
+    if (!get_position_in_planner_frame(own_state_, current))
     {
         (void)peer_trajectories_.prune(now_s);
         publish_status(PLANNER_STATE_HOLD, "Own GPS position unavailable",
@@ -2494,13 +2501,14 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     const auto arrival = evaluate_target_arrival(current, final_target);
     // 編隊的槽位與中心由 FormationEpoch 的 WGS84 snapshot 定義；local
     // NED 只是在本機控制器內的投影，可能因 PX4 Home/odometry 與 GPS
-    // frozen transform 的小幅差異而比 global 位置多出誤差。編隊到位
-    // 時以共同 global NED 判斷，避免已在槽位內的 Agent 永遠無法建立
-    // terminal hold；一般 MOVE 仍要求 local 與 global 都通過。
-    const bool formation_global_arrived = has_formation_ &&
-        arrival.global_valid &&
-        arrival.global_error_m <= global_arrival_tolerance_m_;
-    if (arrival.reached || formation_global_arrived)
+    // frozen transform 的小幅差異而比 planner-local 位置多出誤差。編隊到位
+    // 時以 GPS 投影所得的 planner-local NED 判斷，避免已在槽位內的 Agent
+    // 永遠無法建立 terminal hold；一般 MOVE 仍要求 PX4 local 與
+    // planner-local 兩者都通過。
+    const bool formation_planner_arrived = has_formation_ &&
+        arrival.planner_valid &&
+        arrival.planner_error_m <= planner_arrival_tolerance_m_;
+    if (arrival.reached || formation_planner_arrived)
     {
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
@@ -2513,7 +2521,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             has_terminal_hold_ &&
             ego_swarm::distance_between_centers(
                 terminal_hold_position_, final_target) <=
-            global_arrival_tolerance_m_;
+            planner_arrival_tolerance_m_;
         if (formation_target_hold_active)
         {
             publish_plan(
@@ -2790,7 +2798,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     snapshot.local_goal = planning_target;
     snapshot.planning_time_s = now_s;
     snapshot.trajectory_start_time_s = plan_start_time_s;
-    snapshot.frame_revision = frame_revision_;
+    snapshot.frame_revision = planner_frame_revision_;
     snapshot.self_agent_id = agent_index_;
     snapshot.path_constraint = path_constraint;
     snapshot.fixed_z_m = final_target.at(2);
@@ -3150,40 +3158,40 @@ void EgoSwarmPlannerNode::scan_peers_cb()
     }
 }
 
-bool EgoSwarmPlannerNode::update_swarm_frame()
+bool EgoSwarmPlannerNode::update_planner_frame()
 {
     if (!has_own_state_ || !is_finite_state_position(own_state_))
     {
         return false;
     }
 
-    if (swarm_frame_.has_origin())
+    if (planner_frame_.has_origin())
     {
-        return update_local_swarm_transform();
+        return update_planner_to_px4_ned_transform();
     }
 
     // 全球 WGS84 trajectory 不再要求所有 Agent 共用同一個 origin。每個
     // planner 只 freeze 自己的 Home，接收 peer 時再轉成本機 NED。
     const ego_swarm::GeoCoordinate origin = to_geo(own_state_);
-    if (!ego_swarm::SwarmFrame::is_valid_geodetic(origin) ||
-        !swarm_frame_.set_origin(origin))
+    if (!ego_swarm::LocalNedFrame::is_valid_geodetic(origin) ||
+        !planner_frame_.set_origin(origin))
     {
         return false;
     }
 
-    frame_origin_ = origin;
-    frame_origin_agent_index_ = agent_index_;
-    frame_revision_ = swarm_frame_.frame_revision();
+    planner_frame_origin_ = origin;
+    planner_frame_origin_agent_index_ = agent_index_;
+    planner_frame_revision_ = planner_frame_.frame_revision();
     RCLCPP_INFO(
         get_logger(),
         "Selected and froze local Home for Agent %d, local revision=%u",
-        frame_origin_agent_index_, frame_revision_);
-    return swarm_frame_.has_origin() && update_local_swarm_transform();
+        planner_frame_origin_agent_index_, planner_frame_revision_);
+    return planner_frame_.has_origin() && update_planner_to_px4_ned_transform();
 }
 
-bool EgoSwarmPlannerNode::update_local_swarm_transform()
+bool EgoSwarmPlannerNode::update_planner_to_px4_ned_transform()
 {
-    if (has_local_swarm_transform_)
+    if (has_planner_to_px4_ned_transform_)
     {
         return true;
     }
@@ -3196,8 +3204,8 @@ bool EgoSwarmPlannerNode::update_local_swarm_transform()
         return false;
     }
 
-    ego_swarm::Vector3 current_swarm{};
-    if (!get_position_in_swarm_frame(own_state_, current_swarm))
+    ego_swarm::Vector3 current_planner_ned{};
+    if (!get_position_in_planner_frame(own_state_, current_planner_ned))
     {
         return false;
     }
@@ -3206,14 +3214,16 @@ bool EgoSwarmPlannerNode::update_local_swarm_transform()
         static_cast<double>(own_state_.position_ned[0]),
         static_cast<double>(own_state_.position_ned[1]),
         static_cast<double>(own_state_.position_ned[2])};
-    local_swarm_offset_ = ego_swarm::subtract_vectors(
-        current_local, current_swarm);
-    has_local_swarm_transform_ =
-        ego_swarm::is_finite_vector(local_swarm_offset_);
-    return has_local_swarm_transform_;
+    // 兩套 NED 軸向相同；保留既有固定平移，將 planner-local target
+    // 映射到 PX4 local odometry frame。
+    planner_to_px4_ned_offset_ = ego_swarm::subtract_vectors(
+        current_local, current_planner_ned);
+    has_planner_to_px4_ned_transform_ =
+        ego_swarm::is_finite_vector(planner_to_px4_ned_offset_);
+    return has_planner_to_px4_ned_transform_;
 }
 
-bool EgoSwarmPlannerNode::get_position_in_swarm_frame(
+bool EgoSwarmPlannerNode::get_position_in_planner_frame(
     const taiphoon_agent::msg::AgentState& state,
     ego_swarm::Vector3& position) const
 {
@@ -3222,29 +3232,29 @@ bool EgoSwarmPlannerNode::get_position_in_swarm_frame(
         position = ego_swarm::Vector3{0.0, 0.0, 0.0};
         return false;
     }
-    return swarm_frame_.to_swarm_ned(to_geo(state), position);
+    return planner_frame_.to_local_ned(to_geo(state), position);
 }
 
-bool EgoSwarmPlannerNode::get_target_in_local_ned(
+bool EgoSwarmPlannerNode::get_target_in_px4_local_ned(
     const ego_swarm::Vector3& target,
     ego_swarm::Vector3& local_target) const
 {
     local_target = ego_swarm::Vector3{0.0, 0.0, 0.0};
-    if (!has_local_swarm_transform_ || !ego_swarm::is_finite_vector(target))
+    if (!has_planner_to_px4_ned_transform_ || !ego_swarm::is_finite_vector(target))
     {
         return false;
     }
-    local_target = ego_swarm::add_vectors(target, local_swarm_offset_);
+    local_target = ego_swarm::add_vectors(target, planner_to_px4_ned_offset_);
     return ego_swarm::is_finite_vector(local_target);
 }
 
 ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
-    const ego_swarm::Vector3& current_global_ned,
+    const ego_swarm::Vector3& current_planner_ned,
     const ego_swarm::Vector3& final_target) const
 {
     ego_swarm::PositionArrivalResult result;
     ego_swarm::Vector3 target_local{};
-    if (!get_target_in_local_ned(final_target, target_local))
+    if (!get_target_in_px4_local_ned(final_target, target_local))
     {
         return result;
     }
@@ -3254,8 +3264,8 @@ ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
         static_cast<double>(own_state_.position_ned[1]),
         static_cast<double>(own_state_.position_ned[2])};
     return ego_swarm::evaluate_position_arrival(
-        current_local, target_local, current_global_ned, final_target,
-        local_arrival_tolerance_m_, global_arrival_tolerance_m_);
+        current_local, target_local, current_planner_ned, final_target,
+        local_arrival_tolerance_m_, planner_arrival_tolerance_m_);
 }
 
 void EgoSwarmPlannerNode::invalidate_active_plan()
@@ -3354,7 +3364,7 @@ EgoSwarmPlannerNode::evaluate_formation_convergence(const double now_s) const
         if (member_id == agent_index_)
         {
             observation.has_fresh_state =
-                get_position_in_swarm_frame(own_state_, observation.position);
+                get_position_in_planner_frame(own_state_, observation.position);
             observation.has_fresh_occupancy =
                 has_terminal_hold_ && terminal_hold_plan_.trajectory.is_valid();
         }
@@ -3368,7 +3378,7 @@ EgoSwarmPlannerNode::evaluate_formation_convergence(const double now_s) const
                     now_steady - peer.last_arrival).count();
                 observation.has_fresh_state = age_s >= 0.0 &&
                     age_s <= peer_trajectory_timeout_s_ &&
-                    get_position_in_swarm_frame(
+                    get_position_in_planner_frame(
                         peer.state, observation.position);
 
                 ego_swarm::PeerTrajectory peer_trajectory;
@@ -3381,7 +3391,7 @@ EgoSwarmPlannerNode::evaluate_formation_convergence(const double now_s) const
         observations.push_back(observation);
     }
     return ego_swarm::FormationConvergenceEvaluator::evaluate(
-        observations, global_arrival_tolerance_m_);
+        observations, planner_arrival_tolerance_m_);
 }
 
 bool EgoSwarmPlannerNode::get_current_final_target(
@@ -3452,8 +3462,8 @@ ego_swarm::SafetyValidationResult EgoSwarmPlannerNode::validate_plan(
     context.max_time_skew_s = max_peer_time_skew_s_;
     context.max_future_start_delay_s = reservation_lead_time_s_ +
         reservation_horizon_s_ + 1.0;
-    context.frame_revision = frame_revision_;
-    context.trajectory_frame_revision = frame_revision_;
+    context.frame_revision = planner_frame_revision_;
+    context.trajectory_frame_revision = planner_frame_revision_;
     context.self_agent_id = agent_index_;
     ego_swarm::PeerTrajectoryTable snapshot_table;
     if (peer_snapshot != nullptr)
@@ -3653,7 +3663,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         return;
     }
 
-    if (!has_own_state_ || !update_swarm_frame())
+    if (!has_own_state_ || !update_planner_frame())
     {
         RCLCPP_WARN(get_logger(),
                     "Mission intent deferred until local WGS84 Home is ready");
@@ -3661,7 +3671,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     }
 
     ego_swarm::Vector3 current{};
-    if (!get_position_in_swarm_frame(own_state_, current))
+    if (!get_position_in_planner_frame(own_state_, current))
     {
         return;
     }
@@ -3840,7 +3850,7 @@ void EgoSwarmPlannerNode::publish_plan(
     for (const auto& point : trajectory.control_points())
     {
         ego_swarm::GeoCoordinate global_point{};
-        if (!swarm_frame_.from_swarm_ned(point, global_point))
+        if (!planner_frame_.from_local_ned(point, global_point))
         {
             RCLCPP_WARN(
                 get_logger(),
@@ -3924,7 +3934,7 @@ void EgoSwarmPlannerNode::publish_status(
     if (result == nullptr)
     {
         ego_swarm::Vector3 current{};
-        if (get_position_in_swarm_frame(own_state_, current))
+        if (get_position_in_planner_frame(own_state_, current))
         {
             const auto live_peer_distance = live_peer_min_distance(current);
             if (live_peer_distance.has_peer && live_peer_distance.data_valid)

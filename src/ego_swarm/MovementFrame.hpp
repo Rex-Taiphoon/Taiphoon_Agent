@@ -16,8 +16,8 @@ namespace taiphoon
 namespace ego_swarm
 {
 
-/** @brief 全體編隊命令使用的共同 swarm_ned 移動方向。 */
-enum class SwarmMoveDirection : uint8_t
+/** @brief 依 North、East、Down 固定軸定義的移動方向。 */
+enum class NedMoveDirection : uint8_t
 {
     FORWARD,
     BACKWARD,
@@ -28,13 +28,13 @@ enum class SwarmMoveDirection : uint8_t
 };
 
 /**
- * @brief 將全體命令距離轉為共同 swarm_ned 位移。
+ * @brief 將命令距離轉為 NED 軸向位移。
  *
- * 全體編隊命令不使用各機 target yaw；所有 Agent 使用相同的 North/East/Down
- * 基準，才能讓 Formation center 以同一方向平移。
+ * 此函式只產生與原點無關的向量；呼叫端負責在自己的 planner-local NED
+ * 套用位移，並以 WGS84 Formation center 交換結果。
  */
-inline bool common_swarm_ned_offset(
-    const SwarmMoveDirection direction,
+inline bool ned_axis_offset(
+    const NedMoveDirection direction,
     const double distance_m,
     Vector3& offset_ned)
 {
@@ -46,22 +46,22 @@ inline bool common_swarm_ned_offset(
 
     switch (direction)
     {
-        case SwarmMoveDirection::FORWARD:
+        case NedMoveDirection::FORWARD:
             offset_ned.at(0) = distance_m;
             break;
-        case SwarmMoveDirection::BACKWARD:
+        case NedMoveDirection::BACKWARD:
             offset_ned.at(0) = -distance_m;
             break;
-        case SwarmMoveDirection::LEFT:
+        case NedMoveDirection::LEFT:
             offset_ned.at(1) = -distance_m;
             break;
-        case SwarmMoveDirection::RIGHT:
+        case NedMoveDirection::RIGHT:
             offset_ned.at(1) = distance_m;
             break;
-        case SwarmMoveDirection::UP:
+        case NedMoveDirection::UP:
             offset_ned.at(2) = -distance_m;
             break;
-        case SwarmMoveDirection::DOWN:
+        case NedMoveDirection::DOWN:
             offset_ned.at(2) = distance_m;
             break;
     }

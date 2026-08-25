@@ -74,7 +74,7 @@ public:
     /**
      * @brief 查詢位置到最近障礙物點的距離
      *
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的位置；須與地圖使用相同的 metric NED frame
      * @return 最近距離；有效空地圖回傳正無限大，無效地圖回傳 NaN
      */
     virtual double nearest_distance(
@@ -83,7 +83,7 @@ public:
     /**
      * @brief 檢查位置是否滿足障礙物 clearance
      *
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的位置；須與地圖使用相同的 metric NED frame
      * @param clearance_m 所需最小距離，單位為公尺
      * @return true 表示位置安全；無效地圖一律回傳 false
      */
@@ -94,7 +94,7 @@ public:
     /**
      * @brief 計算位置的障礙物距離成本
      *
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的位置；須與地圖使用相同的 metric NED frame
      * @return 所有障礙物點的 inverse-distance 成本；empty map 為零
      */
     virtual double obstacle_cost(

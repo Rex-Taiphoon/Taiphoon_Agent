@@ -4,7 +4,7 @@
  * @author Taiphoon Agent Team
  * @date 2026-08-10
  *
- * 測試核心模組的 GPS 共同座標、非連續 Agent ID 槽位、B-spline、
+ * 測試核心模組的 WGS84 與 receiver-local NED、非連續 Agent ID 槽位、B-spline、
  * 同儕軌跡生命週期、機體中心距離與 deterministic 候選規劃行為。
  */
 
@@ -27,7 +27,7 @@
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PositionArrival.hpp"
-#include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/LocalNedFrame.hpp"
 #include "ego_swarm/TrajectoryPriority.hpp"
 #include "perception/RawPointObstacleMap.hpp"
 #include "utils/CommandTypes.hpp"
@@ -50,7 +50,7 @@ using taiphoon::ego_swarm::PeerTrajectory;
 using taiphoon::ego_swarm::PeerTrajectoryStatus;
 using taiphoon::ego_swarm::PeerTrajectoryTable;
 using taiphoon::ego_swarm::PlannerConfig;
-using taiphoon::ego_swarm::SwarmFrame;
+using taiphoon::ego_swarm::LocalNedFrame;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::ego_swarm::distance_between_centers;
 using taiphoon::ego_swarm::has_trajectory_priority;
@@ -116,13 +116,13 @@ RawPointObstacleMap make_obstacle_map(const std::vector<Vector3>& points)
     return map;
 }
 
-TEST(SwarmFrameTest, ConvertsGpsToCommonNed)
+TEST(LocalNedFrameTest, ConvertsWgs84ToLocalNed)
 {
-    SwarmFrame frame;
+    LocalNedFrame frame;
     ASSERT_TRUE(frame.set_origin(GeoCoordinate{25.000000, 121.000000, 100.0}));
 
     Vector3 ned{};
-    ASSERT_TRUE(frame.to_swarm_ned(
+    ASSERT_TRUE(frame.to_local_ned(
         GeoCoordinate{25.000009, 121.000010, 95.0}, ned));
 
     EXPECT_NEAR(ned.at(0), 1.0, 0.05);
@@ -130,51 +130,51 @@ TEST(SwarmFrameTest, ConvertsGpsToCommonNed)
     EXPECT_NEAR(ned.at(2), 5.0, 1.0e-9);
 }
 
-TEST(SwarmFrameTest, ConvertsReceiverLocalNedBackToWgs84)
+TEST(LocalNedFrameTest, ConvertsReceiverLocalNedBackToWgs84)
 {
-    SwarmFrame frame;
+    LocalNedFrame frame;
     ASSERT_TRUE(frame.set_origin(GeoCoordinate{25.000000, 121.000000, 100.0}));
 
     const Vector3 expected_ned{12.0, -7.0, 3.5};
     GeoCoordinate global{};
-    ASSERT_TRUE(frame.from_swarm_ned(expected_ned, global));
+    ASSERT_TRUE(frame.from_local_ned(expected_ned, global));
 
     Vector3 round_trip{};
-    ASSERT_TRUE(frame.to_swarm_ned(global, round_trip));
+    ASSERT_TRUE(frame.to_local_ned(global, round_trip));
     EXPECT_NEAR(round_trip.at(0), expected_ned.at(0), 1.0e-6);
     EXPECT_NEAR(round_trip.at(1), expected_ned.at(1), 1.0e-6);
     EXPECT_NEAR(round_trip.at(2), expected_ned.at(2), 1.0e-9);
 }
 
-TEST(SwarmFrameTest, RejectsNonFiniteGps)
+TEST(LocalNedFrameTest, RejectsNonFiniteGps)
 {
-    SwarmFrame frame;
+    LocalNedFrame frame;
     ASSERT_TRUE(frame.set_origin(GeoCoordinate{25.0, 121.0, 100.0}));
 
     Vector3 ned{4.0, 5.0, 6.0};
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    EXPECT_FALSE(frame.to_swarm_ned(
+    EXPECT_FALSE(frame.to_local_ned(
         GeoCoordinate{nan, 121.0, 100.0}, ned));
     EXPECT_NEAR(ned.at(0), 0.0, 1.0e-12);
     EXPECT_NEAR(ned.at(1), 0.0, 1.0e-12);
     EXPECT_NEAR(ned.at(2), 0.0, 1.0e-12);
 }
 
-TEST(SwarmFrameTest, RejectsDifferentFrameOrigins)
+TEST(LocalNedFrameTest, RejectsDifferentFrameOrigins)
 {
     const GeoCoordinate origin{25.0, 121.0, 100.0};
     const GeoCoordinate compatible_origin{25.0, 121.0, 100.0005};
     const GeoCoordinate different_origin{25.0001, 121.0, 100.0};
 
-    EXPECT_TRUE(SwarmFrame::are_origins_compatible(
+    EXPECT_TRUE(LocalNedFrame::are_origins_compatible(
         origin, compatible_origin));
-    EXPECT_FALSE(SwarmFrame::are_origins_compatible(
+    EXPECT_FALSE(LocalNedFrame::are_origins_compatible(
         origin, different_origin));
 }
 
-TEST(SwarmFrameTest, FreezesOriginAndRevision)
+TEST(LocalNedFrameTest, FreezesOriginAndRevision)
 {
-    SwarmFrame frame;
+    LocalNedFrame frame;
     const GeoCoordinate origin{25.0, 121.0, 100.0};
     const GeoCoordinate different_origin{25.0001, 121.0, 100.0};
 
@@ -182,18 +182,18 @@ TEST(SwarmFrameTest, FreezesOriginAndRevision)
     EXPECT_TRUE(frame.has_origin());
     EXPECT_EQ(frame.frame_revision(), 1U);
     EXPECT_FALSE(frame.set_origin(different_origin));
-    EXPECT_TRUE(SwarmFrame::are_origins_compatible(frame.origin(), origin));
+    EXPECT_TRUE(LocalNedFrame::are_origins_compatible(frame.origin(), origin));
     EXPECT_EQ(frame.frame_revision(), 1U);
 }
 
-TEST(SwarmFrameTest, DoesNotInventOriginWhenOriginIsUnavailable)
+TEST(LocalNedFrameTest, DoesNotInventOriginWhenOriginIsUnavailable)
 {
-    SwarmFrame frame;
+    LocalNedFrame frame;
     Vector3 ned{1.0, 2.0, 3.0};
 
     EXPECT_FALSE(frame.has_origin());
     EXPECT_EQ(frame.frame_revision(), 0U);
-    EXPECT_FALSE(frame.to_swarm_ned(
+    EXPECT_FALSE(frame.to_local_ned(
         GeoCoordinate{25.0, 121.0, 100.0}, ned));
     const Vector3 zero{0.0, 0.0, 0.0};
     EXPECT_EQ(ned, zero);
@@ -254,38 +254,38 @@ TEST(MovementFrameTest, ConvertsBodyForwardAndRightUsingCommandYaw)
     EXPECT_NEAR(offset.at(1), 5.0, 1.0e-9);
 }
 
-TEST(MovementFrameTest, ConvertsCommonSwarmDirections)
+TEST(MovementFrameTest, ConvertsNedAxisDirections)
 {
-    using taiphoon::ego_swarm::SwarmMoveDirection;
-    using taiphoon::ego_swarm::common_swarm_ned_offset;
+    using taiphoon::ego_swarm::NedMoveDirection;
+    using taiphoon::ego_swarm::ned_axis_offset;
 
-    const std::array<std::pair<SwarmMoveDirection, Vector3>, 6> expected = {{
-        {SwarmMoveDirection::FORWARD, {2.0, 0.0, 0.0}},
-        {SwarmMoveDirection::BACKWARD, {-2.0, 0.0, 0.0}},
-        {SwarmMoveDirection::LEFT, {0.0, -2.0, 0.0}},
-        {SwarmMoveDirection::RIGHT, {0.0, 2.0, 0.0}},
-        {SwarmMoveDirection::UP, {0.0, 0.0, -2.0}},
-        {SwarmMoveDirection::DOWN, {0.0, 0.0, 2.0}},
+    const std::array<std::pair<NedMoveDirection, Vector3>, 6> expected = {{
+        {NedMoveDirection::FORWARD, {2.0, 0.0, 0.0}},
+        {NedMoveDirection::BACKWARD, {-2.0, 0.0, 0.0}},
+        {NedMoveDirection::LEFT, {0.0, -2.0, 0.0}},
+        {NedMoveDirection::RIGHT, {0.0, 2.0, 0.0}},
+        {NedMoveDirection::UP, {0.0, 0.0, -2.0}},
+        {NedMoveDirection::DOWN, {0.0, 0.0, 2.0}},
     }};
 
     for (const auto& item : expected)
     {
         Vector3 offset{};
-        ASSERT_TRUE(common_swarm_ned_offset(item.first, 2.0, offset));
+        ASSERT_TRUE(ned_axis_offset(item.first, 2.0, offset));
         EXPECT_DOUBLE_EQ(offset.at(0), item.second.at(0));
         EXPECT_DOUBLE_EQ(offset.at(1), item.second.at(1));
         EXPECT_DOUBLE_EQ(offset.at(2), item.second.at(2));
     }
 }
 
-TEST(MovementFrameTest, RejectsNonFiniteCommonSwarmDistance)
+TEST(MovementFrameTest, RejectsNonFiniteNedDistance)
 {
     Vector3 offset{1.0, 2.0, 3.0};
-    EXPECT_FALSE(taiphoon::ego_swarm::common_swarm_ned_offset(
-        taiphoon::ego_swarm::SwarmMoveDirection::FORWARD,
+    EXPECT_FALSE(taiphoon::ego_swarm::ned_axis_offset(
+        taiphoon::ego_swarm::NedMoveDirection::FORWARD,
         std::numeric_limits<double>::quiet_NaN(), offset));
-    EXPECT_FALSE(taiphoon::ego_swarm::common_swarm_ned_offset(
-        taiphoon::ego_swarm::SwarmMoveDirection::RIGHT,
+    EXPECT_FALSE(taiphoon::ego_swarm::ned_axis_offset(
+        taiphoon::ego_swarm::NedMoveDirection::RIGHT,
         std::numeric_limits<double>::infinity(), offset));
 }
 
@@ -655,31 +655,31 @@ TEST(EgoSwarmPlannerTest, ExactHoldLocksEveryControlPointToTarget)
     }
 }
 
-TEST(PositionArrivalTest, RequiresLocalAndGlobalPositions)
+TEST(PositionArrivalTest, RequiresPx4LocalAndPlannerPositions)
 {
     const Vector3 current_local{10.0, 20.0, -5.0};
     const Vector3 target_local{10.2, 20.2, -5.1};
-    const Vector3 current_global{1.0, 2.0, 3.0};
-    const Vector3 target_global{1.2, 2.2, 3.1};
+    const Vector3 current_planner{1.0, 2.0, 3.0};
+    const Vector3 target_planner{1.2, 2.2, 3.1};
 
     const auto reached = taiphoon::ego_swarm::evaluate_position_arrival(
-        current_local, target_local, current_global, target_global,
+        current_local, target_local, current_planner, target_planner,
         0.5, 0.5);
     EXPECT_TRUE(reached.local_valid);
-    EXPECT_TRUE(reached.global_valid);
+    EXPECT_TRUE(reached.planner_valid);
     EXPECT_TRUE(reached.reached);
 
     const auto local_missed =
         taiphoon::ego_swarm::evaluate_position_arrival(
             Vector3{11.0, 20.0, -5.0}, target_local,
-            current_global, target_global, 0.5, 0.5);
+            current_planner, target_planner, 0.5, 0.5);
     EXPECT_FALSE(local_missed.reached);
 
-    const auto global_missed =
+    const auto planner_missed =
         taiphoon::ego_swarm::evaluate_position_arrival(
             current_local, target_local,
-            Vector3{2.0, 2.0, 3.0}, target_global, 0.5, 0.5);
-    EXPECT_FALSE(global_missed.reached);
+            Vector3{2.0, 2.0, 3.0}, target_planner, 0.5, 0.5);
+    EXPECT_FALSE(planner_missed.reached);
 }
 
 TEST(BsplineTrajectoryTest, RejectsNonFiniteControlPoint)

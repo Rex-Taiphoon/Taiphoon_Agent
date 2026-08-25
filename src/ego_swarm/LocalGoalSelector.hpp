@@ -111,8 +111,8 @@ struct LocalGoalResult
  * horizon；如此水平移動不會因原始三維高度差而縮短可規劃的水平距離。
  * LINEAR_Z 與 FREE_3D 則沿 current 到 Final Target 的完整向量做比例插值。
  *
- * @param current 目前位置，使用共同 planning frame，單位為公尺
- * @param final_target 任務真正終點，使用共同 planning frame，單位為公尺
+ * @param current 目前位置，使用本 Agent 的 planner-local NED，單位為公尺
+ * @param final_target 任務真正終點，使用本 Agent 的 planner-local NED，單位為公尺
  * @param path_constraint 路徑高度約束
  * @param config Local Goal 計算設定
  * @return Local Goal 計算結果；輸入非法時回傳無效結果

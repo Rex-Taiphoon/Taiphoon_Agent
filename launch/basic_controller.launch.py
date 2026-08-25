@@ -380,7 +380,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "global_arrival_tolerance_m",
             default_value="1.0",
-            description="GPS 共同 NED 到達容許誤差（公尺）"),
+            description=(
+                "相容名稱；GPS 投影至本機 planner-local NED 的"
+                "到達容許誤差（公尺）")),
         DeclareLaunchArgument(
             "move_attitude_timeout_s",
             default_value="1.0",

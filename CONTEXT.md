@@ -25,15 +25,19 @@ _Avoid_：驅動層、硬體層
 _Avoid_：PID 控制器、姿態控制
 
 **EGO-Swarm 局部規劃器 (EGO-Swarm Local Planner)**：
-每個 Agent 本地執行的軌跡規劃模組。以共同 `swarm_ned` 中的目前狀態、編隊槽位、PointCloud2 障礙物地圖與同儕未來軌跡，產生符合平滑性、動力學限制、障礙物 clearance 與同儕中心距離的時間化 B-spline 軌跡。規劃器只發布本機軌跡，不直接控制其他 Agent 的飛控。
+每個 Agent 本地執行的軌跡規劃模組。以該 Agent 的 `planner_ned` 表示目前狀態、編隊槽位、PointCloud2 障礙物地圖與同儕未來軌跡，產生符合平滑性、動力學限制、障礙物 clearance 與同儕中心距離的時間化 B-spline 軌跡。規劃器只發布本機軌跡，不直接控制其他 Agent 的飛控。
 _Avoid_：集中式全機隊控制器、直接發布 PX4 setpoint
+
+**規劃局部 NED (Planner-local NED / `planner_ned`)**：
+每個 Agent 以自己的 WGS84 Home 建立並 freeze 的公尺制局部 NED frame。它只供該 Agent 內部規劃與安全計算，不是所有 Agent 共用同一原點的座標系。跨 Agent 的狀態、軌跡與編隊資料以 WGS84 作為共同交換表示，接收端再投影至自己的 `planner_ned`。
+_Avoid_：`swarm_ned`、共同 NED、全機群共用原點
 
 **同儕未來軌跡 (Peer Future Trajectory)**：
 Agent 透過 `/fmu_all_agent/swarm/agent_trajectories` 廣播的時間化 B-spline 軌跡。短暫缺少新資料時，沿用最後一份有效軌跡，不因資料年齡自動擴張安全半徑；中心距離門檻仍由任務參數決定。
 _Avoid_：只代表目前位置的 AgentState
 
 **局部障礙物地圖 (Local Obstacle Map)**：
-由 `sensor_msgs/msg/PointCloud2` 建立的 `swarm_ned` 局部障礙物表示。PointCloud2 可以由真實感測器或 `ObstacleCloudSimulator` 產生；靜態障礙物與同儕未來軌跡分別處理。
+由 `sensor_msgs/msg/PointCloud2` 建立、並與使用端 `planner_ned` 對齊的局部障礙物表示。PointCloud2 可以由真實感測器或 `ObstacleCloudSimulator` 產生；靜態障礙物與同儕未來軌跡分別處理。
 
 **任務意圖 (Mission Intent)**：
 GCS 或其他 Agent 命令轉換後的高階目標，例如移動點、取消編隊或編隊幾何。任務意圖只輸入 EGO-Swarm 規劃器，不直接寫入 PX4 控制 topic。

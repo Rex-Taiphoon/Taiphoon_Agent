@@ -447,17 +447,17 @@ void ObstacleCloudSimulatorNode::update_sensor_pose()
         return;
     }
 
-    if (!swarm_frame_.has_origin())
+    if (!shared_obstacle_frame_.has_origin())
     {
         if (!has_origin_state_ || !is_valid_global_state(origin_state_) ||
-            !swarm_frame_.set_origin(to_geo(origin_state_)))
+            !shared_obstacle_frame_.set_origin(to_geo(origin_state_)))
         {
             return;
         }
     }
 
     ego_swarm::Vector3 position{};
-    if (!swarm_frame_.to_swarm_ned(to_geo(own_state_), position))
+    if (!shared_obstacle_frame_.to_local_ned(to_geo(own_state_), position))
     {
         return;
     }

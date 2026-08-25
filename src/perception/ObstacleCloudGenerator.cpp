@@ -4,7 +4,8 @@
  * @author Taiphoon Agent Team
  * @date 2026-08-10
  *
- * 所有幾何均在 swarm_ned 中採樣，並在輸出前再次驗證有限數值，避免非法點
+ * 所有幾何均在設定的障礙物場景 metric NED frame 中採樣，並在輸出前
+ * 再次驗證有限數值，避免非法點
  * 被未來的飛行規劃器或 ROS2 PointCloud2 Adapter 使用。
  */
 

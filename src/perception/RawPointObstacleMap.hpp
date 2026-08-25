@@ -22,7 +22,7 @@ namespace perception
 constexpr double DEFAULT_OBSTACLE_MAP_TIMEOUT_S = 1.0;
 
 /**
- * @brief 由有限 swarm NED 點集合構成的局部障礙物地圖
+ * @brief 由同一個 metric NED frame 的有限點集合構成的局部障礙物地圖
  */
 class RawPointObstacleMap final : public IObstacleMap
 {
@@ -48,7 +48,7 @@ public:
      *
      * 空的 points 仍會建立 valid map，這是 explicit empty 的核心語意。
      * 
-     * @param points swarm NED 障礙物點
+     * @param points 與 planner query 相同 metric NED frame 的障礙物點
      * @param stamp_s 地圖時間戳，單位為秒
      * @return true 表示資料已接受
      */
@@ -99,7 +99,7 @@ public:
 
     /**
      * @brief 查詢最近障礙物點距離
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的同 frame NED 位置
      * @return 最近距離；empty map 為正無限大
      */
     double nearest_distance(
@@ -107,7 +107,7 @@ public:
 
     /**
      * @brief 檢查位置是否滿足 clearance
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的同 frame NED 位置
      * @param clearance_m 最小 clearance，單位為公尺
      * @return true 表示位置安全
      */
@@ -117,7 +117,7 @@ public:
 
     /**
      * @brief 計算位置的 inverse-distance 障礙物成本
-     * @param position 待查詢的 swarm NED 位置
+     * @param position 待查詢的同 frame NED 位置
      * @return 障礙物成本
      */
     double obstacle_cost(

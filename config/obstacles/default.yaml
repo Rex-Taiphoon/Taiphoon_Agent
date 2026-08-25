@@ -1,5 +1,7 @@
 # Taiphoon_Agent 障礙物 PointCloud2 模擬設定
-# 座標一律使用 swarm_ned：x=North、y=East、z=Down。
+# 舊障礙物場景 frame_id 保留為 swarm_ned：x=North、y=East、z=Down。
+# 其 origin 由 obstacle_cloud_simulator 的 swarm_origin_agent_index 指定，
+# 不代表所有 Agent 的 planner 共用同一個 NED origin。
 # 目前此檔案是純資料契約，未引入 yaml-cpp；未來 ROS2 Node 可映射為
 # taiphoon::perception::GenerationConfig 與 std::vector<ObstacleDefinition>。
 

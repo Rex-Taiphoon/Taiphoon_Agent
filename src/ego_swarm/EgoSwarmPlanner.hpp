@@ -139,8 +139,8 @@ public:
      * heartbeat 明確保留固定終點。
      * 若所有候選都不安全，回傳有限值 hold 軌跡並將 is_valid 設為 false。
      *
-     * @param current_position 目前機體中心的 swarm_ned 位置
-     * @param target_position 編隊槽位或任務目標的 swarm_ned 位置
+     * @param current_position 目前機體中心的 planner-local NED 位置
+     * @param target_position 編隊槽位或任務目標的 planner-local NED 位置
      * @param obstacle_map 已驗證且具 freshness 狀態的局部障礙物地圖
      * @param peer_table 同儕軌跡生命週期表
      * @param now_s 目前共同時間，單位為秒
@@ -265,7 +265,7 @@ public:
      * 漂移會讓下一個 setpoint 跟著移動。此方法以指定座標填滿所有
      * B-spline 控制點，使軌跡在整個有效時間窗與逾時後的端點都固定。
      *
-     * @param hold_position 要鎖定的 swarm NED 座標
+     * @param hold_position 要鎖定的 planner-local NED 座標
      * @return 有效的固定 hold 軌跡；輸入或設定無效時回傳空結果
      */
     PlannerResult make_exact_hold_result(const Vector3& hold_position) const

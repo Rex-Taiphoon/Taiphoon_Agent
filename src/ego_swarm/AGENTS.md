@@ -18,7 +18,7 @@
 
 本模組負責：
 
-- `SwarmFrame`
+- `LocalNedFrame`
 - planning state / snapshot
 - B-spline trajectory representation
 - trajectory derivatives

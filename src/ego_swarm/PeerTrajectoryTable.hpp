@@ -45,7 +45,7 @@ struct PeerTrajectoryTableConfig
 
 constexpr double PEER_TRAJECTORY_TIME_EPSILON_S = 1.0e-6;
 
-/// 同儕軌跡及其共同時間與座標 frame metadata。
+/// 已轉入 receiver planner-local NED 的同儕軌跡及共同時間 metadata。
 struct PeerTrajectory
 {
     int agent_id{0};

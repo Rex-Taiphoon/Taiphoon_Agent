@@ -265,7 +265,7 @@ TEST(FormationCalculatorTest, VertLinearAcceptsSafetyMarginBoundary)
         FormationType::VERT_LINEAR, params, 4, 3.0F));
 }
 
-// ==================== GPS 共同參考系換算測試 ====================
+// ==================== WGS84 交換後轉入 receiver-local frame 測試 ====================
 
 TEST(FormationCalculatorTest, GpsOffsetMetersEast)
 {
@@ -430,7 +430,7 @@ TEST(FormationCalculatorTest, ComputeReferenceCentroidGpsCorrected)
 
     EXPECT_TRUE(ref.gps_based);
     EXPECT_NEAR(ref.centroid[0], 0.0F, 1e-3F);
-    // 共同參考系質心 = 自身位置 + 東向偏移平均（0+3+6+9)/4 = 4.5m
+    // receiver-local 質心 = 自身位置 + 東向偏移平均（0+3+6+9)/4 = 4.5m
     EXPECT_NEAR(ref.centroid[1], 4.5F, 0.5F);
     EXPECT_NEAR(ref.centroid[2], -8.0F, 1e-3F);
 }

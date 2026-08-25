@@ -1,11 +1,11 @@
 /**
  * @file SwarmFrame.hpp
- * @brief GPS 座標轉換至共同 swarm_ned 的純 C++ 模組
+ * @brief WGS84 與局部 metric NED 互轉的相容標頭
  * @author Taiphoon Agent Team
  * @date 2026-08-10
  *
- * 本模組提供區域 WGS84 NED 轉換，讓每台 Agent 的 GPS 位置能在
- * 同一個共同座標系中進行編隊與同儕避碰計算。
+ * canonical 類別名稱為 LocalNedFrame。保留本檔名與 SwarmFrame alias，
+ * 避免既有 include 立即失效；這不代表多個 Agent 共用同一個 NED 原點。
  */
 
 #pragma once
@@ -29,9 +29,15 @@ constexpr double DEGREES_TO_RADIANS = 0.017453292519943295;
 /// 弧度轉角度常數。
 constexpr double RADIANS_TO_DEGREES = 57.2957795130823208768;
 /// 緯度／經度原點相容性容差，單位為度。
-constexpr double SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG = 1.0e-9;
+constexpr double LOCAL_NED_ORIGIN_LAT_LON_EPSILON_DEG = 1.0e-9;
 /// 高度原點相容性容差，單位為公尺。
-constexpr double SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
+constexpr double LOCAL_NED_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
+/// 舊名稱相容常數；不表示多 Agent 共用 frame。
+constexpr double SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG =
+    LOCAL_NED_ORIGIN_LAT_LON_EPSILON_DEG;
+/// 舊名稱相容常數；不表示多 Agent 共用 frame。
+constexpr double SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M =
+    LOCAL_NED_ORIGIN_ALTITUDE_EPSILON_M;
 
 /**
  * @brief WGS84 與局部 metric NED 座標轉換器
@@ -39,13 +45,13 @@ constexpr double SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M = 1.0e-3;
  * 設定原點後，所有 GPS 座標都會轉成 x=North、y=East、z=Down。
  * 轉換採用原點附近的 WGS84 曲率半徑，適合機群尺度的局部座標計算。
  */
-class SwarmFrame
+class LocalNedFrame
 {
 public:
     /**
      * @brief 建立尚未設定原點的座標轉換器
      */
-    SwarmFrame() = default;
+    LocalNedFrame() = default;
 
     /**
      * @brief 檢查 GPS 座標的有限值與地理範圍
@@ -70,7 +76,7 @@ public:
     }
 
     /**
-     * @brief 檢查兩個 GPS 原點是否代表同一個共同座標系
+     * @brief 檢查兩個 GPS 原點是否代表同一套局部 NED frame
      *
      * 訊息序列化可能造成極小浮點誤差；集中使用相同容差，避免不同
      * ROS2 組裝層對 frame identity 得出不一致結果。
@@ -89,15 +95,15 @@ public:
         }
 
         return std::abs(left.latitude_deg - right.latitude_deg) <=
-                   SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
+                   LOCAL_NED_ORIGIN_LAT_LON_EPSILON_DEG &&
             std::abs(left.longitude_deg - right.longitude_deg) <=
-                SWARM_FRAME_ORIGIN_LAT_LON_EPSILON_DEG &&
+                LOCAL_NED_ORIGIN_LAT_LON_EPSILON_DEG &&
             std::abs(left.altitude_m - right.altitude_m) <=
-                SWARM_FRAME_ORIGIN_ALTITUDE_EPSILON_M;
+                LOCAL_NED_ORIGIN_ALTITUDE_EPSILON_M;
     }
 
     /**
-     * @brief 設定共同座標系原點
+     * @brief 設定並 freeze 這套局部 NED frame 的 WGS84 原點
      *
      * @param origin GPS 原點
      * @return true 表示原點有效並已設定
@@ -131,7 +137,7 @@ public:
     }
 
     /**
-     * @brief 取得目前共同座標系原點
+     * @brief 取得目前局部 NED frame 的 WGS84 原點
      *
      * @return GPS 原點；未設定時為全零結構
      */
@@ -141,7 +147,7 @@ public:
     }
 
     /**
-     * @brief 取得共同座標系的 revision／epoch
+     * @brief 取得局部 NED frame 的 revision／epoch
      *
      * revision 在第一次成功設定 origin 時建立，之後 origin freeze，
      * 因此同一個 frame lifetime 內不會改變。
@@ -154,13 +160,13 @@ public:
     }
 
     /**
-     * @brief 將 GPS 座標轉換為共同 swarm_ned
+     * @brief 將 WGS84 座標轉換為此實例的局部 metric NED
      *
      * @param coordinate 待轉換的 GPS 座標
      * @param[out] out_ned 轉換後的 North、East、Down 位置
      * @return true 表示轉換成功；失敗時 out_ned 會被清為零
      */
-    bool to_swarm_ned(
+    bool to_local_ned(
         const GeoCoordinate& coordinate,
         Vector3& out_ned) const
     {
@@ -215,6 +221,15 @@ public:
         return true;
     }
 
+    /** @brief 舊 API 相容入口；請改用 to_local_ned。 */
+    [[deprecated("use to_local_ned")]]
+    bool to_swarm_ned(
+        const GeoCoordinate& coordinate,
+        Vector3& out_ned) const
+    {
+        return to_local_ned(coordinate, out_ned);
+    }
+
     /**
      * @brief 將局部 NED 位置轉回 WGS84 geodetic 座標
      *
@@ -224,7 +239,7 @@ public:
      * @param[out] out_coordinate WGS84 緯度、經度與高度
      * @return true 表示轉換成功
      */
-    bool from_swarm_ned(
+    bool from_local_ned(
         const Vector3& ned,
         GeoCoordinate& out_coordinate) const
     {
@@ -269,6 +284,15 @@ public:
         return is_valid_geodetic(out_coordinate);
     }
 
+    /** @brief 舊 API 相容入口；請改用 from_local_ned。 */
+    [[deprecated("use from_local_ned")]]
+    bool from_swarm_ned(
+        const Vector3& ned,
+        GeoCoordinate& out_coordinate) const
+    {
+        return from_local_ned(ned, out_coordinate);
+    }
+
 private:
     /**
      * @brief 將經度差限制到最短角度
@@ -290,6 +314,9 @@ private:
     bool has_origin_{false};
     uint32_t frame_revision_{0U};
 };
+
+/// 舊類別名稱的 source-compatibility alias；不表示多 Agent 共用 NED 原點。
+using SwarmFrame [[deprecated("use LocalNedFrame")]] = LocalNedFrame;
 
 }  // namespace ego_swarm
 }  // namespace taiphoon

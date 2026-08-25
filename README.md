@@ -5,8 +5,8 @@
 
 > 本 README 已反映目前 EGO-Swarm runtime。移動命令由 Planner 單一路徑處理，
 > 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的目標位置累加；水平位移使用保存的
-> target yaw。全體命令在啟用編隊時以共同 `swarm_ned` 平移 Formation center，保留 slot
-> assignment；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
+> target yaw。全體相對命令在啟用編隊時沿 NED 固定軸平移 WGS84 Formation center，保留
+> slot assignment；runtime planner 使用 optimized continuous backend，編隊使用 WGS84 FormationEpoch
 > 與 deterministic minimum-cost assignment。水平 `FIXED_Z` MOVE 會先以 Local Goal
 > 分段；Local Goal 會先以 fresh 同儕軌跡與局部障礙物地圖過濾不安全終點，必要時產生
 > 保留追蹤裕度的側向候選；直線 seed 受阻時再使用 bounded 時空 A* 產生側繞 seed，
@@ -442,7 +442,7 @@ ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMA
 
 | 編隊類型 | 描述 | 離線容錯 |
 |----------|------|----------|
-| **環形** | 所有無人機等角分布在圓周上，質心為共同座標中的編隊參考點 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
+| **環形** | 所有無人機等角分布在圓周上，質心為 WGS84 定義的編隊參考點 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 | **水平直列** | 沿 Y 軸（右向）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 | **垂直直列** | 沿 Z 軸（向下）等間距排列 | EGO-Swarm 依目前 AgentState 重新計算槽位 |
 
@@ -520,7 +520,8 @@ sensor_msgs/msg/PointCloud2
 支援 `box`、`cylinder`、`wall`，以及 `explicit_empty`、`ground_truth`、
 `synthetic_sensor` 三種障礙物來源（亦相容 `ground_truth_map`、
 `sensor_emulation` 舊名稱）。Synthetic sensor 會從 AgentState／AgentAttitude
-更新 UAV 在 `swarm_ned` 的目前 pose；尚未取得 pose 時不發布固定原點的假資料。
+更新 UAV 在障礙物模擬器既有 `swarm_ned` 場景 frame 的目前 pose；尚未取得 pose 時
+不發布固定原點的假資料。
 可直接從 [`config/obstacles/default.yaml`](config/obstacles/default.yaml) 複製場景再
 修改；Launch 可使用 `enable_obstacle_cloud_simulator:=true` 啟動模擬器：
 
@@ -552,8 +553,12 @@ obstacles:
     size_m: [0.5, 20.0, 6.0]
 ```
 
-PointCloud2 與 EGO-Swarm 規劃資料使用共同 `swarm_ned` 座標；障礙物 Publisher 與
-EGO planner Subscriber 均使用 best_effort QoS depth 10。
+`swarm_ned` 在此是既有 PointCloud2／YAML 場景契約：模擬器以
+`swarm_origin_agent_index` 指定的 Agent 建立共享障礙物原點。EGO planner 的軌跡與
+同儕避碰則使用各 Agent 自己的 `planner_ned`，跨 Agent 資料以 WGS84 交換。現行
+obstacle callback 尚未把共享障礙物 frame 轉換為 receiver 的 `planner_ned`；這是需要
+另案處理的 runtime frame 邊界，不能只把字串改名。Publisher 與 Subscriber 均使用
+best_effort QoS depth 10。
 
 ---
 
@@ -587,8 +592,11 @@ EGO planner Subscriber 均使用 best_effort QoS depth 10。
 | `FORMATION_CANCEL` | 無參數 | 取消編隊，停止發布 NED 目標 |
 
 全體 `/fmu_all_agent/command` 的 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 只在編隊
-啟用時有效，方向固定為共同 `swarm_ned` 的 `+North/-North/+East/-East/-Down/+Down`；
-全體 `MOVE_POINT` 的 x/y/z 是共同 Formation center 絕對目標。單機 MOVE 語意維持不變。
+啟用時有效，方向固定為 `+North/-North/+East/-East/-Down/+Down`；各 Agent 在自己的
+`planner_ned` 套用同一個、與原點無關的位移，再以 WGS84 FormationEpoch 交換 center。
+全體 `MOVE_POINT` 仍保留既有絕對 NED 行為：每個收到命令的 Agent 會用自身
+`planner_ned` 解讀 x/y/z，因此在 Home 不同時不具唯一的全球目標語意；修正此契約會
+牽涉命令架構與 runtime 行為，本次不更動。單機 MOVE 語意維持不變。
 
 **使用範例**：
 
@@ -718,7 +726,7 @@ Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 gl
 | `max_jerk_mps3` | double | `3.0` | safety validator／煞車使用的最大 jerk（公尺/秒^3） |
 | `candidate_offset_m` | double | `3.0` | 局部候選軌跡側向／垂直偏移 |
 | `local_arrival_tolerance_m` | double | `0.5` | PX4 local NED 到達容許誤差（公尺） |
-| `global_arrival_tolerance_m` | double | `1.0` | GPS 轉換共同 NED 到達容許誤差（公尺） |
+| `global_arrival_tolerance_m` | double | `1.0` | 相容參數名稱；GPS 轉換至本機 `planner_ned` 的到達容許誤差（公尺） |
 | `move_attitude_timeout_s` | double | `1.0` | 水平 MOVE 可使用的 AgentAttitude freshness window |
 | `formation_slot_switch_penalty_m` | double | `2.0` | minimum-cost assignment 換槽位成本 |
 | `formation_member_stable_scan_count` | int | `2` | discovery 成員集合連續穩定掃描次數 |
@@ -765,8 +773,8 @@ peer/map freshness、同儕 separation 與 obstacle clearance；移動軌跡逾�
 | `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
 | `config_file` | string | 空字串 | YAML 場景檔；Launch 預設為 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | double | `15.0` | PointCloud2 發布頻率 |
-| `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 建立共同 frame |
-| `swarm_origin_agent_index` | int | `1` | synthetic sensor 的相容參數；障礙物資料仍以 `swarm_ned` 公尺座標輸入 |
+| `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 訂閱自身 pose |
+| `swarm_origin_agent_index` | int | `1` | synthetic sensor 既有共享 `swarm_ned` 障礙物場景的原點 Agent；仍實際生效 |
 | `mode` | string | `explicit_empty` | ROS2 parameter 覆蓋 YAML `mode`；預設發布 fresh zero-point cloud |
 | `range_m` | double | `20.0` | 感測範圍 |
 | `horizontal_fov_deg` | double | `270.0` | 水平視野 |
@@ -828,7 +836,7 @@ macOS 宿主
 src/
   ├── core/           - 抽象介面定義（IController, IBasicFlightController）
   ├── controllers/    - 飛行控制器（BasicController）、命令處理（AgentCommandHandler）
-  ├── ego_swarm/      - SwarmFrame、FormationSlotPlanner、B-spline 與局部規劃核心
+  ├── ego_swarm/      - LocalNedFrame、FormationSlotPlanner、B-spline 與局部規劃核心
   ├── perception/     - 障礙物幾何採樣與 PointCloud2 Adapter
   ├── nodes/          - ROS2 節點封裝
   │     ├── basic_controller_node.hpp/cpp   - BasicControllerNode（生命週期管理）

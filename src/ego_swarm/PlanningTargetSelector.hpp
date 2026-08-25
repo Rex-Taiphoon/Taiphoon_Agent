@@ -24,8 +24,8 @@ namespace ego_swarm
  * segmented planning 影響；功能開啟時才委派給 Local Goal Selector。
  *
  * @param enable_local_goal_planning 是否啟用 segmented Local Goal planning
- * @param current 目前位置，使用共同 planning frame，單位為公尺
- * @param final_target 任務真正終點，使用共同 planning frame，單位為公尺
+ * @param current 目前位置，使用本 Agent 的 planner-local NED，單位為公尺
+ * @param final_target 任務真正終點，使用本 Agent 的 planner-local NED，單位為公尺
  * @param path_constraint 路徑高度約束
  * @param config Local Goal 計算設定
  * @return 本輪 Planning Target；輸入或計算非法時回傳無效結果

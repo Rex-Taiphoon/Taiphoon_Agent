@@ -74,7 +74,7 @@ struct ObstacleDefinition
 };
 
 /**
- * @brief 感測器在 swarm_ned 中的姿態
+ * @brief 感測器在障礙物場景 metric NED frame 中的姿態
  *
  * heading_rad 以 +x（North）為 0，朝 +y（East）為正方向。
  * pitch_rad 為向上為正；這樣可在 NED 座標中明確表達垂直視野。
@@ -188,7 +188,7 @@ public:
      *
      * @param obstacles 障礙物定義列表
      * @param config 生成模式與採樣設定
-     * @param sensor_pose 感測器在 swarm_ned 中的姿態
+     * @param sensor_pose 感測器在障礙物場景 metric NED frame 中的姿態
      * @return PointCloud2 相容資料與生成統計
      * @throws std::invalid_argument 當設定或障礙物幾何無效時拋出
      */

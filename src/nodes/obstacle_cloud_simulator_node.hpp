@@ -16,7 +16,7 @@
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_state.hpp"
 
-#include "ego_swarm/SwarmFrame.hpp"
+#include "ego_swarm/LocalNedFrame.hpp"
 #include "perception/ObstacleCloudGenerator.hpp"
 
 namespace taiphoon
@@ -52,7 +52,8 @@ private:
     perception::GenerationConfig generation_config_{};
     perception::SensorPose sensor_pose_{};
     std::vector<perception::ObstacleDefinition> obstacles_{};
-    ego_swarm::SwarmFrame swarm_frame_{};
+    /// 舊 `swarm_ned` 障礙物場景的共享 frame；其 origin 由參數指定。
+    ego_swarm::LocalNedFrame shared_obstacle_frame_{};
     taiphoon_agent::msg::AgentState own_state_{};
     taiphoon_agent::msg::AgentState origin_state_{};
     bool has_own_state_{false};

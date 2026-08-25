@@ -580,7 +580,7 @@ void BasicControllerNode::agent_trajectory_cb(
         static_cast<double>(latest_gps_.lat),
         static_cast<double>(latest_gps_.lon),
         static_cast<double>(latest_gps_.alt)};
-    if (!ego_swarm::SwarmFrame::is_valid_geodetic(own_global) ||
+    if (!ego_swarm::LocalNedFrame::is_valid_geodetic(own_global) ||
         msg->coordinate_frame !=
             taiphoon_agent::msg::AgentTrajectory::
                 COORDINATE_FRAME_WGS84_GEODETIC ||
@@ -605,7 +605,7 @@ void BasicControllerNode::agent_trajectory_cb(
                 msg->trajectory_id);
             return;
         }
-        trajectory_local_offset_ = ego_swarm::Vector3{
+        trajectory_frame_to_px4_ned_offset_ = ego_swarm::Vector3{
             static_cast<double>(current_local_ned[0]),
             static_cast<double>(current_local_ned[1]),
             static_cast<double>(current_local_ned[2])};
@@ -643,8 +643,8 @@ void BasicControllerNode::agent_trajectory_cb(
             msg->control_points.at(index + 1U),
             msg->control_points.at(index + 2U)};
         ego_swarm::Vector3 local_ned_point{};
-        if (!ego_swarm::SwarmFrame::is_valid_geodetic(global_point) ||
-            !trajectory_frame_.to_swarm_ned(global_point, local_ned_point))
+        if (!ego_swarm::LocalNedFrame::is_valid_geodetic(global_point) ||
+            !trajectory_frame_.to_local_ned(global_point, local_ned_point))
         {
             RCLCPP_WARN(this->get_logger(),
                         "Rejecting AgentTrajectory id=%u: WGS84 point is invalid",
@@ -653,9 +653,9 @@ void BasicControllerNode::agent_trajectory_cb(
         }
 
         const ego_swarm::Vector3 local_point{
-            trajectory_local_offset_.at(0) + local_ned_point.at(0),
-            trajectory_local_offset_.at(1) + local_ned_point.at(1),
-            trajectory_local_offset_.at(2) + local_ned_point.at(2)};
+            trajectory_frame_to_px4_ned_offset_.at(0) + local_ned_point.at(0),
+            trajectory_frame_to_px4_ned_offset_.at(1) + local_ned_point.at(1),
+            trajectory_frame_to_px4_ned_offset_.at(2) + local_ned_point.at(2)};
         if (!ego_swarm::is_finite_vector(local_point))
         {
             RCLCPP_WARN(this->get_logger(),
