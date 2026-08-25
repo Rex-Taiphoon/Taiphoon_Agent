@@ -207,6 +207,13 @@ def launch_nodes(context, *args, **kwargs):
                     "reservation_step_s")},
                 {"reservation_horizon_s": LaunchConfiguration(
                     "reservation_horizon_s")},
+                {"enable_peer_deconfliction": ParameterValue(
+                    LaunchConfiguration("enable_peer_deconfliction"),
+                    value_type=bool)},
+                {"peer_deconfliction_release_margin_m": LaunchConfiguration(
+                    "peer_deconfliction_release_margin_m")},
+                {"peer_deconfliction_max_escape_distance_m": LaunchConfiguration(
+                    "peer_deconfliction_max_escape_distance_m")},
             ],
             output="screen",
             emulate_tty=True,
@@ -414,6 +421,18 @@ def generate_launch_description():
             "reservation_horizon_s",
             default_value="5.0",
             description="Reservation start time 最遠搜尋範圍（秒）"),
+        DeclareLaunchArgument(
+            "enable_peer_deconfliction",
+            default_value="true",
+            description="是否啟用已進入 peer hard clearance 的 deterministic recovery"),
+        DeclareLaunchArgument(
+            "peer_deconfliction_release_margin_m",
+            default_value="1.0",
+            description="近距離 recovery 結束前需超過 hard clearance 的裕度（公尺）"),
+        DeclareLaunchArgument(
+            "peer_deconfliction_max_escape_distance_m",
+            default_value="12.0",
+            description="近距離 recovery 的最大水平脫困距離（公尺）"),
         DeclareLaunchArgument(
             "obstacle_clearance_m",
             default_value="1.0",

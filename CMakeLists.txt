@@ -322,6 +322,16 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 近距離 peer recovery planner 純 C++ 測試
+  ament_add_gtest(test_peer_deconfliction_planner
+    test/peer_deconfliction_planner_test.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_peer_deconfliction_planner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Dynamic safety 與 emergency brake 測試（純 C++）
   ament_add_gtest(test_dynamic_safety
     test/dynamic_safety_test.cpp

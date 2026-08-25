@@ -234,6 +234,13 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                              DEFAULT_RESERVATION_STEP_S);
     declare_parameter<double>("reservation_horizon_s",
                              DEFAULT_RESERVATION_HORIZON_S);
+    declare_parameter<bool>("enable_peer_deconfliction", true);
+    declare_parameter<double>(
+        "peer_deconfliction_release_margin_m",
+        DEFAULT_PEER_DECONFLICTION_RELEASE_MARGIN_M);
+    declare_parameter<double>(
+        "peer_deconfliction_max_escape_distance_m",
+        DEFAULT_PEER_DECONFLICTION_MAX_ESCAPE_DISTANCE_M);
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     agent_index_ = get_parameter("agent_index").as_int();
@@ -418,6 +425,40 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     planner_config_.reservation_horizon_s = reservation_horizon_s_;
     planner_config_.enable_spatiotemporal_route_planning =
         planner_feature_flags_.enable_local_goal_planning;
+    peer_deconfliction_enabled_ = get_parameter(
+        "enable_peer_deconfliction").as_bool();
+    const double peer_deconfliction_release_margin_m = get_parameter(
+        "peer_deconfliction_release_margin_m").as_double();
+    const double peer_deconfliction_max_escape_distance_m = get_parameter(
+        "peer_deconfliction_max_escape_distance_m").as_double();
+    const double normalized_release_margin_m =
+        std::isfinite(peer_deconfliction_release_margin_m) &&
+        peer_deconfliction_release_margin_m > 0.0
+        ? peer_deconfliction_release_margin_m
+        : DEFAULT_PEER_DECONFLICTION_RELEASE_MARGIN_M;
+    const double normalized_max_escape_distance_m =
+        std::isfinite(peer_deconfliction_max_escape_distance_m) &&
+        peer_deconfliction_max_escape_distance_m >
+            planner_config_.peer_collision_min_distance_m
+        ? peer_deconfliction_max_escape_distance_m
+        : DEFAULT_PEER_DECONFLICTION_MAX_ESCAPE_DISTANCE_M;
+    if (!peer_deconfliction_enabled_)
+    {
+        RCLCPP_INFO(get_logger(), "Peer deconfliction recovery disabled");
+    }
+    if (!peer_deconfliction_planner_.set_config(
+        ego_swarm::PeerDeconflictionConfig{
+            planner_config_.peer_collision_min_distance_m,
+            normalized_release_margin_m,
+            normalized_max_escape_distance_m,
+            planner_config_.sample_interval_s,
+            0.15,
+            0.10}))
+    {
+        RCLCPP_ERROR(get_logger(),
+                     "Peer deconfliction recovery parameters are invalid");
+        return;
+    }
     auto optimized_planner = std::make_unique<ego_swarm::OptimizedEgoPlanner>();
     if (!optimized_planner->set_config(planner_config_))
     {
@@ -1128,6 +1169,303 @@ EgoSwarmPlannerNode::live_peer_min_distance(
     }
     return ego_swarm::LivePeerDistanceResult{
         true, std::isfinite(minimum_distance), minimum_distance};
+}
+
+ego_swarm::PeerDeconflictionInput
+EgoSwarmPlannerNode::make_peer_deconfliction_input(
+    const ego_swarm::Vector3& current,
+    const ego_swarm::Vector3& final_target,
+    const double now_s,
+    const bool peer_data_valid) const
+{
+    ego_swarm::PeerDeconflictionInput input;
+    input.self_agent_id = agent_index_;
+    input.self_position = current;
+    input.final_target = final_target;
+    input.now_s = now_s;
+    input.peers_are_fresh = peer_data_valid;
+    input.obstacle_map = &obstacle_map_;
+    input.planner_config = planner_config_;
+
+    std::vector<int> peer_ids;
+    if (has_formation_ && has_accepted_formation_epoch_)
+    {
+        peer_ids = accepted_formation_epoch_.member_agent_ids;
+    }
+    else
+    {
+        peer_ids.reserve(peers_.size());
+        for (const auto& entry : peers_)
+        {
+            peer_ids.push_back(entry.first);
+        }
+    }
+    std::sort(peer_ids.begin(), peer_ids.end());
+    peer_ids.erase(std::unique(peer_ids.begin(), peer_ids.end()), peer_ids.end());
+
+    for (const int peer_id : peer_ids)
+    {
+        if (peer_id <= 0 || peer_id == agent_index_)
+        {
+            continue;
+        }
+        const auto iterator = peers_.find(peer_id);
+        if (iterator == peers_.end() || !iterator->second.has_state)
+        {
+            continue;
+        }
+        const PeerState& peer_state = iterator->second;
+        ego_swarm::Vector3 position{};
+        if (!get_position_in_swarm_frame(peer_state.state, position))
+        {
+            continue;
+        }
+
+        ego_swarm::PeerDeconflictionPeer peer;
+        peer.agent_id = peer_id;
+        peer.position = position;
+        const double age_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - peer_state.last_arrival).count();
+        peer.velocity_valid = peer_state.has_velocity &&
+            std::isfinite(age_s) && age_s >= 0.0 &&
+            age_s <= peer_trajectory_timeout_s_ &&
+            ego_swarm::is_finite_vector(peer_state.velocity_ned);
+        if (peer.velocity_valid)
+        {
+            peer.velocity = peer_state.velocity_ned;
+        }
+
+        ego_swarm::PeerTrajectory peer_trajectory;
+        peer.can_move = true;
+        if (peer_trajectories_.get_fresh(peer_id, now_s, peer_trajectory))
+        {
+            peer.can_move = !peer_trajectory.terminal_hold;
+        }
+        input.peers.push_back(peer);
+    }
+    return input;
+}
+
+bool EgoSwarmPlannerNode::peer_deconfliction_released(
+    const ego_swarm::PeerDeconflictionInput& input) const
+{
+    if (peer_deconfliction_conflict_peer_ids_.empty())
+    {
+        return false;
+    }
+    const double release_distance =
+        peer_deconfliction_planner_.release_distance_m();
+    for (const int peer_id : peer_deconfliction_conflict_peer_ids_)
+    {
+        const auto iterator = std::find_if(
+            input.peers.begin(), input.peers.end(),
+            [peer_id](const ego_swarm::PeerDeconflictionPeer& peer)
+            {
+                return peer.agent_id == peer_id;
+            });
+        if (iterator == input.peers.end() ||
+            ego_swarm::distance_between_centers(
+                input.self_position, iterator->position) +
+                ego_swarm::EGO_SWARM_EPSILON_M < release_distance)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void EgoSwarmPlannerNode::clear_peer_deconfliction_state()
+{
+    peer_deconfliction_active_ = false;
+    peer_deconfliction_owner_id_ = 0;
+    peer_deconfliction_conflict_peer_ids_.clear();
+}
+
+bool EgoSwarmPlannerNode::publish_peer_deconfliction_hold(
+    const ego_swarm::Vector3& current,
+    const ego_swarm::Vector3& final_target,
+    const int owner_agent_id,
+    const std::vector<int>& conflict_peer_ids,
+    const std::string& reason,
+    const rclcpp::Time& now,
+    const bool peer_data_valid)
+{
+    if (!ego_swarm::is_finite_vector(current) ||
+        !ego_swarm::is_finite_vector(final_target))
+    {
+        return false;
+    }
+
+    const bool can_reuse_hold = peer_deconfliction_active_ &&
+        peer_deconfliction_owner_id_ != agent_index_ && has_active_plan_ &&
+        active_plan_.is_hold && active_plan_.trajectory.is_valid();
+    if (!can_reuse_hold)
+    {
+        const auto hold_result = ego_swarm::make_exact_hold_result(
+            current, planner_config_);
+        if (!hold_result.is_valid || !hold_result.has_finite_output())
+        {
+            return false;
+        }
+        clear_terminal_hold();
+        active_plan_ = hold_result;
+        active_plan_target_ = current;
+        active_plan_final_target_ = final_target;
+        active_plan_start_time_ = now;
+        active_plan_trajectory_id_ = ++trajectory_id_;
+        has_active_plan_ = true;
+        emergency_brake_active_ = false;
+        waiting_for_replan_ = false;
+        waiting_retry_time_s_ = 0.0;
+    }
+
+    peer_deconfliction_active_ = true;
+    peer_deconfliction_owner_id_ = owner_agent_id;
+    peer_deconfliction_conflict_peer_ids_ = conflict_peer_ids;
+    publish_plan(
+        active_plan_, current, now, active_plan_start_time_,
+        active_plan_trajectory_id_, true);
+    publish_status(
+        PLANNER_STATE_HOLD, reason, &active_plan_, true, peer_data_valid, now);
+    return true;
+}
+
+bool EgoSwarmPlannerNode::handle_peer_deconfliction(
+    const ego_swarm::Vector3& current,
+    const ego_swarm::Vector3& final_target,
+    const ego_swarm::VehiclePlanningState& planning_state,
+    const rclcpp::Time& now,
+    const bool peer_data_valid)
+{
+    if (!peer_deconfliction_enabled_)
+    {
+        return false;
+    }
+
+    const double now_s = now.seconds();
+    const auto input = make_peer_deconfliction_input(
+        current, final_target, now_s, peer_data_valid);
+    const double speed_mps = std::sqrt(
+        ego_swarm::squared_norm(planning_state.velocity));
+    const bool stationary = std::isfinite(speed_mps) && speed_mps <= 0.2;
+
+    if (peer_deconfliction_active_)
+    {
+        if (!input.peers_are_fresh || input.obstacle_map == nullptr ||
+            !input.obstacle_map->is_valid() ||
+            !input.obstacle_map->is_fresh(input.now_s))
+        {
+            clear_peer_deconfliction_state();
+            return false;
+        }
+
+        if (peer_deconfliction_released(input))
+        {
+            clear_peer_deconfliction_state();
+            if (!stationary)
+            {
+                publish_emergency_brake(
+                    planning_state, final_target,
+                    "peer deconfliction clearance reached; braking before mission replan",
+                    now, peer_data_valid);
+                return true;
+            }
+            invalidate_active_plan();
+            return false;
+        }
+
+        if (peer_deconfliction_owner_id_ != agent_index_)
+        {
+            return publish_peer_deconfliction_hold(
+                current, final_target, peer_deconfliction_owner_id_,
+                peer_deconfliction_conflict_peer_ids_,
+                "Peer deconfliction: waiting for owner to clear", now,
+                peer_data_valid);
+        }
+
+        if (has_active_plan_ && active_plan_.trajectory.is_valid())
+        {
+            const double elapsed_s =
+                (now - active_plan_start_time_).seconds();
+            const auto validation = peer_deconfliction_planner_.validate_remaining(
+                active_plan_.trajectory, elapsed_s, input, true);
+            if (std::isfinite(elapsed_s) && elapsed_s >= 0.0 &&
+                elapsed_s <= active_plan_.trajectory.duration_s() &&
+                validation.is_safe)
+            {
+                publish_plan(
+                    active_plan_, current, now, active_plan_start_time_,
+                    active_plan_trajectory_id_, false);
+                publish_status(
+                    PLANNER_STATE_RUNNING,
+                    "Peer deconfliction escape in progress",
+                    &active_plan_, true, peer_data_valid, now);
+                return true;
+            }
+        }
+
+        if (!stationary)
+        {
+            clear_peer_deconfliction_state();
+            publish_emergency_brake(
+                planning_state, final_target,
+                "optimized_emergency_brake: recovery trajectory expired or unsafe",
+                now, peer_data_valid);
+            return true;
+        }
+        invalidate_active_plan();
+    }
+
+    const auto decision = peer_deconfliction_planner_.decide(input);
+    if (decision.action == ego_swarm::PeerDeconflictionAction::NONE)
+    {
+        return false;
+    }
+    if (decision.action == ego_swarm::PeerDeconflictionAction::BLOCKED)
+    {
+        return false;
+    }
+    if (!stationary)
+    {
+        return false;
+    }
+
+    if (decision.action == ego_swarm::PeerDeconflictionAction::HOLD)
+    {
+        return publish_peer_deconfliction_hold(
+            current, final_target, decision.owner_agent_id,
+            decision.conflict_peer_ids,
+            "Peer deconfliction: holding non-owner", now, peer_data_valid);
+    }
+
+    if (decision.action != ego_swarm::PeerDeconflictionAction::ESCAPE ||
+        !decision.plan.is_valid || !decision.plan.trajectory.is_valid())
+    {
+        return false;
+    }
+
+    clear_terminal_hold();
+    active_plan_ = decision.plan;
+    active_plan_target_ = decision.escape_target;
+    active_plan_final_target_ = final_target;
+    active_plan_start_time_ = now;
+    active_plan_trajectory_id_ = ++trajectory_id_;
+    has_active_plan_ = true;
+    emergency_brake_active_ = false;
+    waiting_for_replan_ = false;
+    waiting_retry_time_s_ = 0.0;
+    peer_deconfliction_active_ = true;
+    peer_deconfliction_owner_id_ = decision.owner_agent_id;
+    peer_deconfliction_conflict_peer_ids_ = decision.conflict_peer_ids;
+    publish_plan(
+        active_plan_, current, now, active_plan_start_time_,
+        active_plan_trajectory_id_, false);
+    publish_status(
+        PLANNER_STATE_RUNNING,
+        "Peer deconfliction escape started; owner=" +
+            std::to_string(decision.owner_agent_id),
+        &active_plan_, true, peer_data_valid, now);
+    return true;
 }
 
 std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
@@ -2032,6 +2370,17 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         publish_emergency_brake(
             planning_state, current, "target unavailable", now,
             peer_data_valid);
+        (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    // 近距離 recovery 必須先於 live hard gate 處理：若起點已低於
+    // peer_collision_min_distance，正常 validator 會合理地拒絕 sample 0，
+    // 但 recovery 需要在「不再惡化、逐步拉開」的窄化契約下取得一次移動
+    // 機會。所有無法證明 recovery 安全的情況仍回到下面既有 hold/brake。
+    if (handle_peer_deconfliction(
+            current, final_target, planning_state, now, peer_data_valid))
+    {
         (void)peer_trajectories_.prune(now_s);
         return;
     }

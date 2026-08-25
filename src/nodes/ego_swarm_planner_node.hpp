@@ -38,6 +38,7 @@
 #include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
+#include "ego_swarm/PeerDeconflictionPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PlannerAcceptancePolicy.hpp"
 #include "ego_swarm/PlannerFeatureFlags.hpp"
@@ -84,6 +85,8 @@ constexpr double DEFAULT_FORMATION_CROSSING_PENALTY_M = 10.0;
 constexpr double DEFAULT_RESERVATION_LEAD_TIME_S = 0.5;
 constexpr double DEFAULT_RESERVATION_STEP_S = 0.5;
 constexpr double DEFAULT_RESERVATION_HORIZON_S = 5.0;
+constexpr double DEFAULT_PEER_DECONFLICTION_RELEASE_MARGIN_M = 1.0;
+constexpr double DEFAULT_PEER_DECONFLICTION_MAX_ESCAPE_DISTANCE_M = 12.0;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -160,6 +163,28 @@ private:
         const ego_swarm::FormationConfig& second) const;
     ego_swarm::LivePeerDistanceResult live_peer_min_distance(
         const ego_swarm::Vector3& current) const;
+    ego_swarm::PeerDeconflictionInput make_peer_deconfliction_input(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& final_target,
+        double now_s,
+        bool peer_data_valid) const;
+    bool handle_peer_deconfliction(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& final_target,
+        const ego_swarm::VehiclePlanningState& planning_state,
+        const rclcpp::Time& now,
+        bool peer_data_valid);
+    bool peer_deconfliction_released(
+        const ego_swarm::PeerDeconflictionInput& input) const;
+    void clear_peer_deconfliction_state();
+    bool publish_peer_deconfliction_hold(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& final_target,
+        int owner_agent_id,
+        const std::vector<int>& conflict_peer_ids,
+        const std::string& reason,
+        const rclcpp::Time& now,
+        bool peer_data_valid);
     bool update_swarm_frame();
     bool update_local_swarm_transform();
     bool get_position_in_swarm_frame(
@@ -247,12 +272,14 @@ private:
     double reservation_lead_time_s_{DEFAULT_RESERVATION_LEAD_TIME_S};
     double reservation_step_s_{DEFAULT_RESERVATION_STEP_S};
     double reservation_horizon_s_{DEFAULT_RESERVATION_HORIZON_S};
+    bool peer_deconfliction_enabled_{true};
     ego_swarm::PlannerFeatureFlags planner_feature_flags_{};
 
     ego_swarm::PlannerConfig planner_config_{};
     std::unique_ptr<ego_swarm::ITrajectoryPlanner> selected_planner_{};
     ego_swarm::ContinuousSafetyValidator safety_validator_{};
     ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
+    ego_swarm::PeerDeconflictionPlanner peer_deconfliction_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};
     ego_swarm::SwarmFrame swarm_frame_{};
     ego_swarm::GeoCoordinate frame_origin_{};
@@ -280,6 +307,9 @@ private:
     bool has_active_plan_{false};
     bool emergency_brake_active_{false};
     bool waiting_for_replan_{false};
+    bool peer_deconfliction_active_{false};
+    int peer_deconfliction_owner_id_{0};
+    std::vector<int> peer_deconfliction_conflict_peer_ids_{};
     double waiting_retry_time_s_{0.0};
     bool has_terminal_hold_{false};
     taiphoon_agent::msg::AgentState own_state_{};
