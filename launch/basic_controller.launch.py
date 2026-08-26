@@ -315,7 +315,7 @@ def generate_launch_description():
             description="Local Goal 側向繞行額外追蹤裕度（公尺）"),
         DeclareLaunchArgument(
             "local_goal_replan_ratio",
-            default_value="0.70",
+            default_value="0.30",
             description="Local Goal progress-based replan 比例"),
         DeclareLaunchArgument(
             "minimum_replan_interval_s",
