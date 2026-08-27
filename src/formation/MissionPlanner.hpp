@@ -7,9 +7,9 @@
  * 取代 FormationNode，新增同儕發現機制：
  * 1. 動態掃描 ROS2 node 名稱發現線上同儕 Agent（避免 topic 殘留）
  * 2. 訂閱同儕的 AgentState topic 取得位置
- * 3. 接收 /fmu_all_agent/command 編隊命令
+ * 3. 接收 /uav_all_agent/command 編隊命令
  * 4. 計算自身目標 NED 位置並發布至 /{namespace}/ned_target
- * 5. 以 /fmu<N>_agent 節點存在性 + state 時效判定同儕離線，
+ * 5. 以 /uav_<N>_agent 節點存在性 + state 時效判定同儕離線，
  *    動態重算 effective_self_index，支援任意 agent 離線重編隊
  * 6. 編隊質心以指令當下快照為固定參考，成員集合變化時重算；
  *    線上少於 2 台時自動取消編隊
@@ -50,7 +50,7 @@ constexpr float YAW_CHANGE_THRESHOLD_DEG = 1.0F;
 struct PeerLiveness
 {
     std::chrono::steady_clock::time_point last_state_arrival{};
-    bool node_present{false};      ///< /fmu<N>_agent 節點存在（graph 掃描）
+    bool node_present{false};      ///< /uav_<N>_agent 節點存在（graph 掃描）
     bool last_msg_online{false};   ///< 最近一筆 AgentState 的 online 旗標
 };
 
@@ -146,7 +146,7 @@ private:
     /**
      * @brief 從 agent_namespace 推算自身索引
      *
-     * "fmu1_agent" → 0, "fmu2_agent" → 1, ...
+     * "uav_1_agent" → 0, "uav_2_agent" → 1, ...
      */
     int compute_self_index() const;
 
@@ -157,7 +157,7 @@ private:
 
     // ==================== 參數 ====================
 
-    std::string agent_namespace_{"fmu1_agent"};
+    std::string agent_namespace_{"uav_1_agent"};
     double formation_update_rate_hz_{DEFAULT_FORMATION_RATE_HZ};
     double peer_scan_interval_s_{DEFAULT_PEER_SCAN_INTERVAL_S};
     double peer_timeout_s_{DEFAULT_PEER_TIMEOUT_S};

@@ -96,10 +96,10 @@ def launch_nodes(context, *args, **kwargs):
 
     nodes = []
     for i in agent_indices:
-        ns = "fmu{}".format(i)
+        ns = "uav_{}".format(i)
         agent_ns = agent_namespace_override if (
             single_agent_mode and agent_namespace_override) else \
-            "fmu{}_agent".format(i)
+            "uav_{}_agent".format(i)
 
         if not _acquire_agent_launch_lock(ns):
             print(

@@ -1,7 +1,7 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.8
-> **更新日期**：2026-08-13
+> **版本**：1.9
+> **更新日期**：2026-08-27
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
 > 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、Service、自訂訊息格式與命令協定，
@@ -31,7 +31,7 @@ GCS 命令 ──▶ EgoSwarmPlanner（Local Goal／FIXED_Z 時空路徑引導�
           ──▶ /{agent_namespace}/planning/trajectory ──▶ BasicController ──▶ PX4 TrajectorySetpoint
                   │       ▲
                   │       └── PointCloud2（局部障礙物）
-                  └── /fmu_all_agent/swarm/agent_trajectories（同儕 future occupancy）
+                  └── /uav_all_agent/swarm/agent_trajectories（同儕 future occupancy）
                       WGS84 → receiver-local NED／編隊槽位／同儕未來軌跡
 
 ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
@@ -63,7 +63,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 |------|-----|
 | **執行檔** | `basic_controller` |
 | **節點名稱** | `basic_controller_node` |
-| **命名空間** | `fmu{N}`（例如 `fmu1`） |
+| **命名空間** | `uav_{N}`（例如 `uav_1`） |
 | **描述** | 核心飛控橋接節點。連接 PX4 並提供 Agent 對外狀態。 |
 
 **內部組件**：
@@ -81,7 +81,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 |------|-----|
 | **執行檔** | `ego_swarm_planner` |
 | **節點名稱** | `ego_swarm_planner` |
-| **命名空間** | `fmu{N}` |
+| **命名空間** | `uav_{N}` |
 | **描述** | EGO-Swarm 任務與局部軌跡規劃。接收 GCS 任務意圖、WGS84 同儕軌跡、PointCloud2，並在本機 planner-local NED 輸出軌跡。 |
 | **參數** | 上述基礎參數，加上 `move_attitude_timeout_s`、`formation_slot_switch_penalty_m`、`formation_member_stable_scan_count`、planner backend／optimizer／reservation 參數 |
 
@@ -110,7 +110,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 
 | 參數 | 型別 | Node 預設值 | 說明 |
 |------|------|-------------|------|
-| `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_namespace` | `string` | `uav_1_agent` | Agent 對外命名空間 |
 | `agent_index` | `int` | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
 | `swarm_origin_agent_index` | `int` | `1` | 保留的相容參數；WGS84 軌跡交換時各 Agent 以自己的固定 Home 建立 local NED |
 | `peer_trajectory_timeout_s` | `double` | `2.0` | 同儕 `AgentTrajectory` 收到後可供 planner 使用的最長時間；逾時後標記為 stale |
@@ -167,7 +167,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 
 | 參數 | 型別 | Node 預設值 | 說明 |
 |------|------|-------------|------|
-| `agent_namespace` | `string` | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_namespace` | `string` | `uav_1_agent` | Agent 對外命名空間 |
 | `agent_index` | `int` | `1` | Agent 索引；供 synthetic sensor 訂閱自身 pose |
 | `swarm_origin_agent_index` | `int` | `1` | synthetic sensor 的固定 `swarm_ned` 原點 Agent |
 | `config_file` | `string` | 空字串 | YAML 場景檔；Launch 預設使用 `config/obstacles/default.yaml` |
@@ -186,7 +186,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 |------|-----|
 | **執行檔** | `agent_supervisor` |
 | **節點名稱** | `agent_supervisor` |
-| **命名空間** | `fmu{N}_agent`（例如 `fmu1_agent`） |
+| **命名空間** | `uav_{N}_agent`（例如 `uav_1_agent`） |
 | **描述** | Agent 容器生命週期管理節點，提供刻意模擬飛行電腦失效的 shutdown service。 |
 
 **對外介面**：
@@ -203,7 +203,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 PX4 實際觀測結果校正後的
 任務階段，不代表最近收到的命令意圖。位置資訊由既有的 `position_ned` 與
 `position_global` 提供，不另外複製 PX4 Position 欄位。`position_global` 唯一取自
-`/fmu{N}/fmu/out/vehicle_global_position`；AgentState 名目發布頻率至少為 10 Hz，若 PX4
+`/uav_{N}/fmu/out/vehicle_global_position`；AgentState 名目發布頻率至少為 10 Hz，若 PX4
 原始資料更新較慢，期間會重複最近一筆有效值，不進行插值。
 
 | 欄位 | 型別 | 說明 |
@@ -252,7 +252,7 @@ Agent 姿態訊息，由 `basic_controller_node` 發布。
 
 ### 3.3 FormationEpoch (`taiphoon_agent/msg/FormationEpoch`)
 
-由所有 Agent 透過 `/fmu_all_agent/swarm/formation_epochs` 交換 leaderless
+由所有 Agent 透過 `/uav_all_agent/swarm/formation_epochs` 交換 leaderless
 編隊的 WGS84 成員 snapshot、parent identity、proposal/adopted 狀態與 formation
 設定。Topic 使用 Reliable + Transient Local QoS；只有在 epoch 內所有 members
 都發布相同 `snapshot_hash` 的 `ADOPTED` 後，Agent 才啟用新 assignment。
@@ -348,7 +348,7 @@ EGO-Swarm Planner 狀態與安全指標。
 
 ## 4. Topic 完整清單
 
-### 4.1 PX4 飛控橋接 Topic（命名空間：`fmu{N}`）
+### 4.1 PX4 飛控橋接 Topic（命名空間：`uav_{N}`）
 
 這些 Topic 是 Taiphoon_Agent 與 PX4 SITL 之間的內部通訊。**GCS 通常不需直接操作**，但理解這些 Topic 有助於除錯。
 
@@ -362,7 +362,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | `fmu/out/vehicle_command_ack_v1` | 訂閱 ← PX4 | `px4_msgs/VehicleCommandAck` | best_effort (10) |
 | `fmu/out/vehicle_status_v4` | 訂閱 ← PX4 | `px4_msgs/VehicleStatus` | best_effort (10) |
 
-> **注意**：Topic 名稱為相對路徑，實際解析後會加上節點命名空間，例如 `/fmu1/fmu/in/offboard_control_mode`。
+> **注意**：Topic 名稱為相對路徑，實際解析後會加上節點命名空間，例如 `/uav_1/fmu/in/offboard_control_mode`。
 
 ### 4.2 Agent 對外 Topic（GCS 關注重點）
 
@@ -379,33 +379,33 @@ EGO-Swarm Planner 狀態與安全指標。
 
 | 無人機 | state Topic | attitude Topic |
 |--------|------------|----------------|
-| fmu1 | `/fmu1_agent/state` | `/fmu1_agent/attitude` |
-| fmu2 | `/fmu2_agent/state` | `/fmu2_agent/attitude` |
-| fmu3 | `/fmu3_agent/state` | `/fmu3_agent/attitude` |
-| fmu4 | `/fmu4_agent/state` | `/fmu4_agent/attitude` |
+| uav_1 | `/uav_1_agent/state` | `/uav_1_agent/attitude` |
+| uav_2 | `/uav_2_agent/state` | `/uav_2_agent/attitude` |
+| uav_3 | `/uav_3_agent/state` | `/uav_3_agent/attitude` |
+| uav_4 | `/uav_4_agent/state` | `/uav_4_agent/attitude` |
 
 #### 4.2.2 命令下達（GCS → Agent）
 
 | Topic | 說明 | 型別 | QoS |
 |-------|------|------|-----|
 | `/{agent_namespace}/command` | 發送命令給**指定** Agent | `std_msgs/String` | reliable (10) |
-| `/fmu_all_agent/command` | 廣播命令給**所有** Agent | `std_msgs/String` | reliable (10) |
+| `/uav_all_agent/command` | 廣播命令給**所有** Agent | `std_msgs/String` | reliable (10) |
 
 > **GCS 設計建議**：
 > - 使用 `/{agent_namespace}/command` 對單一無人機下達移動、模式切換命令。
-> - 使用 `/fmu_all_agent/command` 發送編隊命令（FORMATION_*）或全體同步命令（如全體 RTL）。
+> - 使用 `/uav_all_agent/command` 發送編隊命令（FORMATION_*）或全體同步命令（如全體 RTL）。
 > - 命令格式詳見 [第 6 節](#6-命令協定-command-protocol)。
 
 #### 4.2.3 內部控制流（Agent 內部通訊，GCS 可監控）
 
 | Topic 模板 | 說明 | 型別 | QoS |
 |------------|------|------|-----|
-| `/fmu_all_agent/swarm/agent_trajectories` | 各 Agent 發布的 EGO-Swarm 未來軌跡，供同儕規劃建立 occupancy 與避碰使用；不作為本機 BasicController 控制輸入 | `taiphoon_agent/AgentTrajectory` | reliable (pub) / best_effort (sub), depth 10 |
+| `/uav_all_agent/swarm/agent_trajectories` | 各 Agent 發布的 EGO-Swarm 未來軌跡，供同儕規劃建立 occupancy 與避碰使用；不作為本機 BasicController 控制輸入 | `taiphoon_agent/AgentTrajectory` | reliable (pub) / best_effort (sub), depth 10 |
 | `/{agent_namespace}/perception/obstacles` | 本機局部障礙物 PointCloud2 | `sensor_msgs/msg/PointCloud2` | best_effort (pub/sub), depth 10 |
 | `/{agent_namespace}/planning/mission_intent` | 本機任務意圖文字命令，供 EGO-Swarm Planner 設定目標 | `std_msgs/msg/String` | reliable (10) |
 | `/{agent_namespace}/planning/status` | 本機 EGO-Swarm 規劃狀態與診斷 | `taiphoon_agent/PlannerStatus` | reliable (10) |
 | `/{agent_namespace}/planning/trajectory` | 本機 EGO-Swarm 規劃結果，供本機 BasicController 取樣並發布 PX4 setpoint | `taiphoon_agent/AgentTrajectory` | reliable (10) |
-| `/fmu_all_agent/swarm/formation_epochs` | Leaderless 編隊 epoch、WGS84 snapshot 與 ADOPTED heartbeat | `taiphoon_agent/FormationEpoch` | reliable + transient_local (10) |
+| `/uav_all_agent/swarm/formation_epochs` | Leaderless 編隊 epoch、WGS84 snapshot 與 ADOPTED heartbeat | `taiphoon_agent/FormationEpoch` | reliable + transient_local (10) |
 | `/{agent_namespace}/ned_target` | 舊 NED 目標介面；EGO-Swarm 取代後僅作相容或純邏輯測試用途 | `taiphoon_agent/NedTarget` | 既有介面 |
 | `/{agent_namespace}/waypoints` | 舊 waypoint 介面；EGO-Swarm 取代後僅作純邏輯測試用途，不能視為 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | 既有介面 |
 
@@ -421,16 +421,16 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/planning/mission_intent` | 接收本機任務意圖 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/command` | 接收本機 `MOVE_*`、`MOVE_POINT` 與 `FORMATION_CANCEL`，轉換為 EGO-Swarm 目標；模式、起飛與 YAW 仍由 BasicController 處理 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/attitude` | 取得命令收到當下的機頭 yaw，固定水平 MOVE 的 local NED 目標 |
-| `ego_swarm_planner`（訂閱） | `/fmu_all_agent/command` | 接收全體編隊與同步命令 |
-| `ego_swarm_planner`（訂閱／發布） | `/fmu_all_agent/swarm/formation_epochs` | 交換 proposal/adopted、共同 WGS84 snapshot 與編隊 heartbeat |
-| `ego_swarm_planner`（訂閱） | `/fmu_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
-| `ego_swarm_planner`（發布） | `/fmu_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
+| `ego_swarm_planner`（訂閱） | `/uav_all_agent/command` | 接收全體編隊與同步命令 |
+| `ego_swarm_planner`（訂閱／發布） | `/uav_all_agent/swarm/formation_epochs` | 交換 proposal/adopted、共同 WGS84 snapshot 與編隊 heartbeat |
+| `ego_swarm_planner`（訂閱） | `/uav_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
+| `ego_swarm_planner`（發布） | `/uav_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
 | `ego_swarm_planner`（發布） | `/{agent_namespace}/planning/status`、`/{agent_namespace}/planning/trajectory` | 發布本機規劃狀態與軌跡 |
 | `obstacle_cloud_simulator`（發布） | `/{agent_namespace}/perception/obstacles` | 發布 PointCloud2 障礙物資料 |
 | `basic_controller_node`（訂閱） | `/{agent_namespace}/planning/trajectory` | 取樣本機 EGO-Swarm 軌跡並發布 PX4 setpoint |
 
 > **同儕資料來源**：AgentState 維持 GCS 與 Agent 的目前狀態介面；EGO-Swarm 的
-> 未來軌跡透過 `/fmu_all_agent/swarm/agent_trajectories` 交換。EGO planner 每 3 秒
+> 未來軌跡透過 `/uav_all_agent/swarm/agent_trajectories` 交換。EGO planner 每 3 秒
 > 掃描同儕 Agent，並以各 Agent 的 state Topic 建立同儕訂閱。
 >
 > 待命或沒有任務時，planner 仍會在 global topic 發布 `terminal_hold=true` heartbeat
@@ -438,8 +438,8 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 > BasicController 在 HOVER／TAKEOFF 後鎖定的本機 setpoint。移動中、煞車中及任務終點
 > 的本機執行軌跡才會同時進入 local topic。
 >
-> 機群之間一律只訂閱 `/fmu<N>_agent/state` 等 Agent 對外 topic，
-> 不直接訂閱其他無人機的 PX4 原生 topic（`/fmu<N>/fmu/out/*`）。
+> 機群之間一律只訂閱 `/uav_<N>_agent/state` 等 Agent 對外 topic，
+> 不直接訂閱其他無人機的 PX4 原生 topic（`/uav_<N>/fmu/out/*`）。
 
 ### 4.2.5 EGO-Swarm 編隊與避碰契約
 
@@ -455,7 +455,7 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   `planner_ned`，再交給 B-spline、動力學限制與同儕避碰。GPS-only 可以正常執行編隊；
   PX4 odometry 與 attitude 仍由 BasicController 用於即時軌跡追蹤。
 - 單機 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 以保存的 mission goal position
-  累加，水平位移使用保存的 target yaw。全體 `/fmu_all_agent/command` 的同名命令只在
+  累加，水平位移使用保存的 target yaw。全體 `/uav_all_agent/command` 的同名命令只在
   FormationEpoch 啟用時有效。位移沿固定 NED 軸定義，各 Agent 在自身 `planner_ned`
   套用相同向量後，以 WGS84 FormationEpoch 交換 center；未在編隊時拒絕。
 - 全體 `MOVE_POINT x y z yaw` 保留既有行為：收到命令的 Agent 以自身 `planner_ned`
@@ -506,39 +506,39 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - `request.data` 必須為 `true`；`false` 不會觸發終止。
 - 接受請求後，服務回應先送出，接著以 SIGTERM 觸發 PID 1 的立即退出，刻意模擬飛行電腦失效。
 - 此服務不檢查飛行狀態、不執行 RTL 或 LAND；後續行為完全由 PX4 failsafe 決定。
-- 不提供也不允許 `/fmu_all_agent/shutdown` 廣播；shutdown 必須指定單一 Agent namespace。
+- 不提供也不允許 `/uav_all_agent/shutdown` 廣播；shutdown 必須指定單一 Agent namespace。
 - 若 Compose 服務使用 `restart: no`，PID 1 終止後容器會保持停止，不會自動重新啟動。若使用自動重啟策略，容器可能重新啟動，服務也會再次出現，將無法保持失效狀態。
 
 **呼叫範例**：
 
 ```bash
-ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+ros2 service call /uav_1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
 ```
 
 **驗證服務與容器狀態**：
 
 ```bash
 # 在 Agent 容器內確認服務存在與型別
-ros2 service list | grep -F /fmu1_agent/shutdown
-ros2 service type /fmu1_agent/shutdown
+ros2 service list | grep -F /uav_1_agent/shutdown
+ros2 service type /uav_1_agent/shutdown
 ```
 
 ```bash
 # 在 Agent 容器內呼叫；回應送出後容器 PID 1 應立即終止
-ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+ros2 service call /uav_1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
 ```
 
 ```bash
 # 回到宿主機確認容器狀態與退出碼
-docker compose ps fmu1_agent
-docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+docker compose ps uav_1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' uav_1_agent
 ```
 
 ## 6. 命令協定 (Command Protocol)
 
 ### 6.1 傳輸格式
 
-- **Topic**：`/{agent_namespace}/command` 或 `/fmu_all_agent/command`
+- **Topic**：`/{agent_namespace}/command` 或 `/uav_all_agent/command`
 - **型別**：`std_msgs/msg/String`
 - **編碼**：純文字 ASCII，不區分大小寫
 - **格式**：`<COMMAND> [param1] [param2] [param3] [param4]`
@@ -575,7 +575,7 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `DISARM` | 無 | 上鎖 |
 | `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛 |
 
-#### 編隊命令（僅透過 `/fmu_all_agent/command` 廣播）
+#### 編隊命令（僅透過 `/uav_all_agent/command` 廣播）
 
 | 命令字串 | 參數 | 說明 |
 |----------|------|------|
@@ -605,35 +605,47 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 ### 6.3 命令使用範例
 
 ```bash
-# 讓 fmu1 起飛至 5 公尺
-ros2 topic pub /fmu1_agent/command std_msgs/msg/String "data: 'TAKEOFF 5'"
+# 讓 uav_1 起飛至 5 公尺
+ros2 topic pub /uav_1_agent/command std_msgs/msg/String "data: 'TAKEOFF 5'"
 
 # 讓所有無人機返航
-ros2 topic pub /fmu_all_agent/command std_msgs/msg/String "data: 'MODE_RTL'"
+ros2 topic pub /uav_all_agent/command std_msgs/msg/String "data: 'MODE_RTL'"
 
 # 環形編隊（半徑 10 公尺，高度 20 公尺）
-ros2 topic pub /fmu_all_agent/command std_msgs/msg/String \
+ros2 topic pub /uav_all_agent/command std_msgs/msg/String \
   "data: 'FORMATION_CIRCLE 10 20'"
 
-# fmu2 向前移動 3 公尺
-ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
+# uav_2 向前移動 3 公尺
+ros2 topic pub /uav_2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 ```
 
 ---
 
 ## 7. 命名空間規則
 
+PX4 透過 `UXRCE_DDS_NS_IDX` 產生索引式 namespace。SITL 與實機部署都必須使用
+相同的 1-based UAV 索引：`UXRCE_DDS_NS_IDX=1` 對應 `/uav_1`，
+`UXRCE_DDS_NS_IDX=2` 對應 `/uav_2`。因此 PX4 的相對 `fmu/...` topic 解析後分別為
+`/uav_1/fmu/...` 與 `/uav_2/fmu/...`；Agent 對外 topic 則分別使用
+`/uav_1_agent/...` 與 `/uav_2_agent/...`。
+
+SITL launcher 以 `PX4_PARAM_UXRCE_DDS_NS_IDX=N` 將此參數傳入 PX4。對尚未內建
+`UXRCE_DDS_NS_IDX` 的舊版 PX4 SITL image，launcher 另以相同結果的
+`PX4_UXRCE_DDS_NS=uav_N` 作為相容 fallback，確保實際 topic 仍為 `/uav_N/fmu/...`；
+具備新參數的 PX4 則由 `UXRCE_DDS_NS_IDX` 決定同一個 namespace。`fmu` 僅保留作為
+PX4 uXRCE-DDS topic 的固定路徑元件，不代表 UAV 的實例識別碼。
+
 | 命名空間 | 用途 | 範例 |
 |----------|------|------|
-| `fmu{N}` | 節點命名空間，對應 PX4 實例 | `fmu1`, `fmu2`, `fmu3` |
-| `fmu{N}_agent` | Agent 對外 Topic 前綴 | `fmu1_agent`, `fmu2_agent` |
-| `fmu_all_agent` | 全體 Agent 廣播 Topic | `/fmu_all_agent/command` |
+| `uav_{N}` | 節點命名空間，對應 PX4 實例 | `uav_1`, `uav_2`, `uav_3` |
+| `uav_{N}_agent` | Agent 對外 Topic 前綴 | `uav_1_agent`, `uav_2_agent` |
+| `uav_all_agent` | 全體 Agent 廣播 Topic | `/uav_all_agent/command` |
 
 **規則**：
-- 一個 Taiphoon_Agent 只控制一台 PX4（`fmu{N}`）。
+- 一個 Taiphoon_Agent 只控制一台 PX4（`uav_{N}`）。
 - 所有 Agent 對外 Topic 使用 `/{agent_namespace}/...` 前綴。
-- 廣播命令固定使用 `/fmu_all_agent/command`。
-- Shutdown service 僅使用 `/{agent_namespace}/shutdown`，不提供 `/fmu_all_agent/shutdown`。
+- 廣播命令固定使用 `/uav_all_agent/command`。
+- Shutdown service 僅使用 `/{agent_namespace}/shutdown`，不提供 `/uav_all_agent/shutdown`。
 
 ---
 
@@ -646,7 +658,7 @@ ros2 topic pub /fmu2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
 | 命令 Topic (`/command`) | reliable | volatile | 10 |
 | Shutdown Service (`/shutdown`) | reliable | volatile | 10 |
 | 控制流 Topic (`/ned_target`, `/waypoints`) | reliable (pub) / best_effort (sub) | volatile | 10 |
-| `/fmu_all_agent/swarm/agent_trajectories` | reliable (pub) / best_effort (sub) | volatile | 10 |
+| `/uav_all_agent/swarm/agent_trajectories` | reliable (pub) / best_effort (sub) | volatile | 10 |
 | `/{agent_namespace}/perception/obstacles` | best_effort | volatile | 10 |
 | `/{agent_namespace}/planning/status`、`/planning/trajectory` | reliable | volatile | 10 |
 

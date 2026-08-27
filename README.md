@@ -28,13 +28,13 @@ docker pull px4io/px4-sitl:latest
 docker network create Taiphoon_Net
 
 # 4. 啟動開發容器
-docker compose up -d fmu1_agent
+docker compose up -d uav_1_agent
 
 # 5. 啟動模擬器
 bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4
 
 # 6. 編譯 Taiphoon_Agent
-docker compose exec fmu1_agent bash -c \
+docker compose exec uav_1_agent bash -c \
   "cd /home/taiphoon/Taiphoon_Agent && \
    colcon build --symlink-install --packages-select taiphoon_agent"
 
@@ -65,7 +65,7 @@ bash AutoTest/scripts/quick_takeoff.sh
 所有 ROS2 指令在 Taiphoon_Agent 容器內執行。建議先進入容器再執行指令：
 
 ```bash
-docker compose exec fmu1_agent bash
+docker compose exec uav_1_agent bash
 ```
 
 進入後需先載入環境（每次開啟新終端都需要）：
@@ -99,7 +99,7 @@ EGO 路徑規劃 SITL 驗證（需要已準備 `taiphoon-agent:dev` 與
 # 單機：BasicController 回歸、直線、固定障礙繞行、封閉範圍 HOLD／Brake
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario single
 
-# fmu1：無障礙與 North 半寬 2 m 的 East wall，沿 +East 移動 30 m
+# uav_1：無障礙與 North 半寬 2 m 的 East wall，沿 +East 移動 30 m
 bash AutoTest/scripts/ego_route_planning_sitl_validation.sh --scenario east
 
 # 雙機：moving peer 交叉路徑與 3 m 中心距離
@@ -133,14 +133,16 @@ SITL 誤差）。不以固定 sleep 代替起飛完成判斷。
 SITL launcher 預設以 8m 水平間距啟動，為飛控定位與控制誤差保留安全
 裕度；這不會改寫 planner 的 `peer_collision_min_distance_m`。
 
-每台無人機對應兩個容器：`drone{N}`（PX4 SITL）與 `drone{N}-uxrce-dds-agent`（uXRCE-DDS Agent）。命名空間 `fmu{N}`、MAV_SYS_ID 與通訊埠由 `--count` 自動遞增。
+每台無人機對應一個 PX4 SITL 容器 `drone{N}` 與一個 Agent 容器 `uav_{N}_agent`。
+PX4 透過 `UXRCE_DDS_NS_IDX=N` 使用 `/uav_{N}` namespace，MAV_SYS_ID 與通訊埠由
+`--count` 自動遞增；因此 PX4 topic 會是 `/uav_{N}/fmu/...`。
 
 ### 2. 啟動 Taiphoon_Agent（容器內）
 
 先進入容器再載入環境，然後 Launch：
 
 ```bash
-docker compose exec fmu1_agent bash
+docker compose exec uav_1_agent bash
 
 # 在容器內：
 source /opt/ros/humble/setup.bash
@@ -173,18 +175,18 @@ EGO-Swarm 目標執行鏈中，每台無人機包含：
 SITL 若要讓四台 Agent 都自動啟動 `obstacle_cloud_simulator`，在宿主機執行：
 
 ```bash
-FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
-FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
-FMU3_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
-FMU4_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_3_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_4_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
 docker compose up -d
 ```
 
-也可以只開啟指定 Agent，例如只啟動 fmu1 與 fmu2：
+也可以只開啟指定 Agent，例如只啟動 uav_1 與 uav_2：
 
 ```bash
-FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
-FMU2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_2_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
 docker compose up -d
 ```
 
@@ -193,17 +195,17 @@ PointCloud2，讓 `planning/status.map_valid` 成為 `true`。需要實際 YAML 
 模擬時，可個別覆寫，例如：
 
 ```bash
-FMU1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
-FMU1_OBSTACLE_CLOUD_MODE=synthetic_sensor \
-docker compose up -d fmu1_agent
+UAV_1_ENABLE_OBSTACLE_CLOUD_SIMULATOR=true \
+UAV_1_OBSTACLE_CLOUD_MODE=synthetic_sensor \
+docker compose up -d uav_1_agent
 ```
 
-這些 `FMU{N}_...` 變數也可以放在專案根目錄的 `.env`，之後直接執行
+這些 `UAV_{N}_...` 變數也可以放在專案根目錄的 `.env`，之後直接執行
 `docker compose up -d`。修改開關後需要重新執行 `docker compose up -d`，讓 Compose
 重新建立受影響的 Agent 容器；啟動後可用下列指令確認：
 
 ```bash
-docker compose exec fmu1_agent bash -c \
+docker compose exec uav_1_agent bash -c \
   "source /opt/ros/humble/setup.bash && \
    source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
    source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
@@ -214,13 +216,13 @@ docker compose exec fmu1_agent bash -c \
 
 ```bash
 # 切換至 Offboard 模式
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'
 
 # 切換至 Hold 模式（定點懸停）
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: HOLD'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: HOLD'
 
 # 切換至 Land 模式（立即降落）
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_LAND'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MODE_LAND'
 ```
 
 `TAKEOFF` 會在命令接受時鎖定當下的 NED X/Y 與目標高度；`HOLD` 會鎖定命令接受時的
@@ -229,14 +231,14 @@ NED 三軸位置。後續 odometry 更新只用於觀測，不會把即時估測
 全體廣播（所有 Agent 同時執行）：
 
 ```bash
-ros2 topic pub --once /fmu_all_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'
+ros2 topic pub --once /uav_all_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'
 ```
 
 ### 4. 解鎖指令
 
 ```bash
 # 建議發送 5 次以確保指令送達
-ros2 topic pub --times 5 /fmu1_agent/command std_msgs/msg/String 'data: ARM'
+ros2 topic pub --times 5 /uav_1_agent/command std_msgs/msg/String 'data: ARM'
 ```
 
 > 注意：需先在 Offboard 模式下發送 OffboardControlMode 心跳，PX4 才允許解鎖。
@@ -244,32 +246,32 @@ ros2 topic pub --times 5 /fmu1_agent/command std_msgs/msg/String 'data: ARM'
 ### 5. 上鎖指令
 
 ```bash
-ros2 topic pub --times 5 /fmu1_agent/command std_msgs/msg/String 'data: DISARM'
+ros2 topic pub --times 5 /uav_1_agent/command std_msgs/msg/String 'data: DISARM'
 ```
 
 ### 6. 移動指令
 
 ```bash
 # 向前移動 5 公尺
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_FORWARD 5'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_FORWARD 5'
 
 # 向後 3 公尺
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_BACKWARD 3'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_BACKWARD 3'
 
 # 向左 3 公尺
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_LEFT 3'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_LEFT 3'
 
 # 向右 3 公尺
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_RIGHT 3'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_RIGHT 3'
 
 # 向上 5 公尺
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_UP 5'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_UP 5'
 
 # 向下 2 公尺（最低不低於 1m）
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MOVE_DOWN 2'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MOVE_DOWN 2'
 
 # 順時針旋轉 90 度
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: YAW 90'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: YAW 90'
 ```
 
 > 移動指令基於 NED 座標系（x=前、y=右、z=下），從當前位置出發。
@@ -278,7 +280,7 @@ ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: YAW 90'
 ### 7. 返航指令
 
 ```bash
-ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_RTL'
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MODE_RTL'
 ```
 
 > RTL（Return to Launch）會讓無人機自動返回起飛點並降落。
@@ -291,10 +293,10 @@ ros2 topic pub --once /fmu1_agent/command std_msgs/msg/String 'data: MODE_RTL'
 `agent_supervisor` 提供單一 Agent 的 shutdown service，可刻意模擬飛行電腦失效：
 
 ```bash
-ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
+ros2 service call /uav_1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
 ```
 
-> **高風險操作**：`data` 必須為 `true`。服務接受請求並送出回應後，會以 SIGTERM 觸發 Agent 容器 PID 1 立即退出；不檢查飛行狀態、不執行 RTL/LAND，也不提供 `/fmu_all_agent/shutdown` 廣播。後續行為完全由 PX4 failsafe 決定。
+> **高風險操作**：`data` 必須為 `true`。服務接受請求並送出回應後，會以 SIGTERM 觸發 Agent 容器 PID 1 立即退出；不檢查飛行狀態、不執行 RTL/LAND，也不提供 `/uav_all_agent/shutdown` 廣播。後續行為完全由 PX4 failsafe 決定。
 
 若 Compose 服務設定為 `restart: no`，PID 1 終止後容器會保持停止，不會自動重新啟動；若使用自動重啟策略，容器可能重新啟動，無法保持失效狀態。
 
@@ -302,20 +304,20 @@ ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"
 
 ```bash
 # 在 Agent 容器內確認 service
-ros2 service list | grep -F /fmu1_agent/shutdown
-ros2 service type /fmu1_agent/shutdown
+ros2 service list | grep -F /uav_1_agent/shutdown
+ros2 service type /uav_1_agent/shutdown
 ```
 
 ```bash
 # 確認完成後，在另一個終端執行；回應送出後容器會終止
-docker compose exec fmu1_agent bash -c \
-  'ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
+docker compose exec uav_1_agent bash -c \
+  'ros2 service call /uav_1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
 ```
 
 ```bash
 # 回到宿主機的另一個終端執行
-docker compose ps fmu1_agent
-docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+docker compose ps uav_1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' uav_1_agent
 ```
 
 ---
@@ -326,33 +328,33 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 
 ```bash
 # 1. OFFBOARD 模式
-docker exec fmu1_agent bash -c "
+docker exec uav_1_agent bash -c "
   ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
-    /fmu_all_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'"
+    /uav_all_agent/command std_msgs/msg/String 'data: MODE_OFFBOARD'"
 
 sleep 3
 
 # 2. 解鎖
-docker exec fmu1_agent bash -c "
+docker exec uav_1_agent bash -c "
   ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
-    /fmu_all_agent/command std_msgs/msg/String 'data: ARM'"
+    /uav_all_agent/command std_msgs/msg/String 'data: ARM'"
 
 sleep 2
 
 # 3. 起飛 8m
-docker exec fmu1_agent bash -c "
+docker exec uav_1_agent bash -c "
   ros2 topic pub --wait-matching-subscriptions 3 --times 3 --rate 1 \
-    /fmu_all_agent/command std_msgs/msg/String 'data: TAKEOFF 8.0'"
+    /uav_all_agent/command std_msgs/msg/String 'data: TAKEOFF 8.0'"
 
 # 4. 左右移動
-docker exec fmu1_agent bash -c "
+docker exec uav_1_agent bash -c "
   ros2 topic pub --wait-matching-subscriptions 3 --once \
-    /fmu_all_agent/command std_msgs/msg/String 'data: MOVE_LEFT 5.0'"
+    /uav_all_agent/command std_msgs/msg/String 'data: MOVE_LEFT 5.0'"
 
 # 5. 上下移動
-docker exec fmu1_agent bash -c "
+docker exec uav_1_agent bash -c "
   ros2 topic pub --wait-matching-subscriptions 3 --once \
-    /fmu_all_agent/command std_msgs/msg/String 'data: MOVE_UP 5'"
+    /uav_all_agent/command std_msgs/msg/String 'data: MOVE_UP 5'"
 ```
 
 > 也可直接執行一鍵腳本：`bash AutoTest/scripts/quick_takeoff.sh`
@@ -365,17 +367,17 @@ docker exec fmu1_agent bash -c "
 
 ```bash
 # 位置、速度、加速度、姿態等控制，使用 NED 坐標系
-/fmu1/fmu/in/trajectory_setpoint
+/uav_1/fmu/in/trajectory_setpoint
 
 # 設定姿態，使用 FRD 坐標系
-/fmu3/fmu/in/vehicle_rates_setpoint
+/uav_3/fmu/in/vehicle_rates_setpoint
 
 # 設定姿態四元數
-/fmu3/fmu/in/vehicle_attitude_setpoint_v1
+/uav_3/fmu/in/vehicle_attitude_setpoint_v1
 ```
 
 > 這些是 PX4 uXRCE-DDS 橋接後的內部 topic，直接控制飛控行為。
-> 建議先透過 Agent 命令層（`/fmu{N}_agent/command`）操作，確有必要時再使用直接控制。
+> 建議先透過 Agent 命令層（`/uav_{N}_agent/command`）操作，確有必要時再使用直接控制。
 
 ---
 
@@ -384,7 +386,7 @@ docker exec fmu1_agent bash -c "
 編隊功能由 **ego_swarm_planner** 實作。每台無人機以 WGS84 交換位置，再在自己的
 固定 Home 建立 receiver-local NED，使用共同 FormationEpoch 計算自身的虛擬編隊槽位，
 再由 EGO-Swarm 局部規劃器產生包含障礙物與同儕避碰的未來軌跡。
-既有 `/fmu_all_agent/command` 編隊命令協定保持不變。
+既有 `/uav_all_agent/command` 編隊命令協定保持不變。
 
 ### 啟動多機編隊環境
 
@@ -397,7 +399,7 @@ bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_N
 
 ```bash
 # 終端 2：啟動 Taiphoon_Agent（目標為 4 組 BasicController + ego_swarm_planner）
-docker compose exec fmu1_agent bash
+docker compose exec uav_1_agent bash
 # 在容器內：
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -407,7 +409,7 @@ ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=4
 
 ```bash
 # 終端 3：進入容器，手動下達指令
-docker compose exec fmu1_agent bash
+docker compose exec uav_1_agent bash
 # 在容器內：
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -420,22 +422,22 @@ source /home/taiphoon/Taiphoon_Agent/install/setup.bash
 
 ```bash
 # 1. 解鎖（發送 5 次確保送達）
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: ARM'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: ARM'
 
 # 2. 起飛至 15m
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: TAKEOFF 15'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: TAKEOFF 15'
 
 # 3. 環形編隊（半徑 10m，高度 10m）
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMATION_CIRCLE 10 10'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: FORMATION_CIRCLE 10 10'
 
 # 4. 水平直列編隊（間距 5m，高度 10m）
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMATION_HORI_LINEAR 5 10'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: FORMATION_HORI_LINEAR 5 10'
 
 # 5. 垂直直列編隊（間距 5m）
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMATION_VERT_LINEAR 5'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: FORMATION_VERT_LINEAR 5'
 
 # 6. 取消編隊
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMATION_CANCEL'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: FORMATION_CANCEL'
 ```
 
 ### 編隊行為說明
@@ -591,7 +593,7 @@ best_effort QoS depth 10。
 | `FORMATION_VERT_LINEAR <間距>` | `param_value`: 間距 (m) | 垂直直列，沿 NED Z 軸排列 |
 | `FORMATION_CANCEL` | 無參數 | 取消編隊，停止發布 NED 目標 |
 
-全體 `/fmu_all_agent/command` 的 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 只在編隊
+全體 `/uav_all_agent/command` 的 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 只在編隊
 啟用時有效，方向固定為 `+North/-North/+East/-East/-Down/+Down`；各 Agent 在自己的
 `planner_ned` 套用同一個、與原點無關的位移，再以 WGS84 FormationEpoch 交換 center。
 全體 `MOVE_POINT` 仍保留既有絕對 NED 行為：每個收到命令的 Agent 會用自身
@@ -602,12 +604,12 @@ best_effort QoS depth 10。
 
 ```bash
 # 環形編隊（半徑 20m，高度 30m）
-docker compose exec fmu1_agent bash -c \
-  "ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String \
+docker compose exec uav_1_agent bash -c \
+  "ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String \
    'data: FORMATION_CIRCLE 20 30'"
 ```
 
-> 編隊命令必須透過 **`/fmu_all_agent/command`** 廣播；Planner 會以 Epoch 去重，
+> 編隊命令必須透過 **`/uav_all_agent/command`** 廣播；Planner 會以 Epoch 去重，
 > 相同 config 與成員 snapshot 的重複命令不會建立新 epoch；單機 MOVE 或取消編隊後重送
 > 相同編隊命令會重新啟用既有 Epoch，保留 center 與 slot assignment。
 
@@ -628,7 +630,7 @@ docker compose exec fmu1_agent bash -c \
 `/{agent_namespace}/planning/trajectory` 是 EGO-Swarm 規劃結果的目標 Topic，供
 `BasicController` 以 analytic B-spline derivative 取樣 p/v/a 後發布 PX4
 `TrajectorySetpoint`。舊的
-`/fmu{N}_agent/ned_target` 僅保留相容或純邏輯測試用途：
+`/uav_{N}_agent/ned_target` 僅保留相容或純邏輯測試用途：
 
 EGO-Swarm Planner 另訂閱下列本機任務意圖 Topic：
 
@@ -651,7 +653,7 @@ BasicController 仍鎖定最後控制點，不會改用漂移中的即時 odomet
 
 ```bash
 # 手動發布 NED 目標（Debug）
-ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
+ros2 topic pub --once /uav_1_agent/ned_target taiphoon_agent/msg/NedTarget \
   '{x: 10.0, y: 5.0, z: -15.0, yaw: 90.0}'
 ```
 
@@ -674,7 +676,7 @@ ros2 topic pub --once /fmu1_agent/ned_target taiphoon_agent/msg/NedTarget \
 取樣、動力學限制與同儕避碰。完成任務的 Agent 會持續發布
 `terminal_hold=true` 的固定終點軌跡 heartbeat，直到超過 peer timeout，讓其他
 Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 global
-`/fmu_all_agent/swarm/agent_trajectories`，不會送入本機
+`/uav_all_agent/swarm/agent_trajectories`，不會送入本機
 `/{agent_namespace}/planning/trajectory`；只有本機需要執行的移動、煞車與任務終點 hold
 才會交給 BasicController 取樣成 PX4 `TrajectorySetpoint`。
 
@@ -691,7 +693,7 @@ Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 gl
 | `startup_delay_s` | double | 0.0 | 啟動後延遲自動 Offboard 的秒數（多機依 `(i-1) * 2.0` 錯開） |
 | `auto_start_sequence` | bool | true | 連線後是否自動切換至 Offboard 模式 |
 | `target_system` | int | 1 | PX4 MAVLink 系統 ID |
-| `agent_namespace` | string | fmu1 | Agent 命令命名空間 |
+| `agent_namespace` | string | uav_1_agent | Agent 命令命名空間 |
 | `state_publish_rate_hz` | double | 10.0 | AgentState／AgentAttitude 名目發布頻率（Hz）；非法值或低於 10 時固定使用 10 Hz |
 | `collision_safety_margin_m` | double | 3.0 | 舊觀測式防撞參數；EGO-Swarm 取代後不作為新的規劃契約 |
 | `collision_peer_timeout_s` | double | 2.0 | 舊觀測式防撞參數；EGO-Swarm 取代後不作為新的規劃契約 |
@@ -700,7 +702,7 @@ Agent 仍把該終點視為佔位障礙。這類待命 heartbeat 只發布到 gl
 
 | 參數 | 類型 | 預設值 | 說明 |
 |------|------|--------|------|
-| `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_namespace` | string | `uav_1_agent` | Agent 對外命名空間 |
 | `agent_index` | int | `1` | Agent 索引；小於等於 0 時由 Node 推算 |
 | `swarm_origin_agent_index` | int | `1` | 保留的相容參數；WGS84 軌跡交換時各 Agent 以自己的固定 Home 建立 local NED |
 | `peer_trajectory_timeout_s` | double | `2.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
@@ -770,7 +772,7 @@ peer/map freshness、同儕 separation 與 obstacle clearance；移動軌跡逾�
 
 | 參數 | 類型 | Node 預設值 | 說明 |
 |------|------|-------------|------|
-| `agent_namespace` | string | `fmu1_agent` | Agent 對外命名空間 |
+| `agent_namespace` | string | `uav_1_agent` | Agent 對外命名空間 |
 | `config_file` | string | 空字串 | YAML 場景檔；Launch 預設為 `config/obstacles/default.yaml` |
 | `publish_rate_hz` | double | `15.0` | PointCloud2 發布頻率 |
 | `agent_index` | int | `1` | Agent 索引；供 synthetic sensor 訂閱自身 pose |
@@ -791,7 +793,7 @@ map 才是 `fresh + valid + empty`。因此啟動 obstacle simulator 時，無�
 範例：停用自動 Offboard 並設定起飛高度 5m：
 
 ```bash
-docker compose exec fmu1_agent bash -c "
+docker compose exec uav_1_agent bash -c "
   source /opt/ros/humble/setup.bash
   source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
   source /home/taiphoon/Taiphoon_Agent/install/setup.bash
@@ -806,25 +808,18 @@ docker compose exec fmu1_agent bash -c "
 
 ```
 macOS 宿主
-  ├── taiphoon_agent_dev (host 網路)     ← 開發/編譯/ROS2 指令
-  │     ├── BasicController[N]            ← 唯一 PX4 TrajectorySetpoint 輸出端
-  │     ├── EgoSwarmPlanner[N]            ← 編隊、障礙物與同儕軌跡規劃
-  │     └── ObstacleCloudSimulator        ← YAML PointCloud2 模擬（需要時啟動）
-  │
   └── Taiphoon_Net (bridge 172.18.x.x)
-        ├── drone1-uxrce-dds-agent (uXRCE-DDS Agent)  ← PX4 ↔ ROS2 橋接
-        ├── drone1       (PX4 SITL)         ← 飛控模擬
-        ├── drone2-uxrce-dds-agent
-        ├── drone2
+        ├── uav_1_agent (Agent + uXRCE-DDS 橋接)  ← PX4 ↔ ROS2 與任務節點
+        ├── uav_2_agent (Agent + uXRCE-DDS 橋接)
+        ├── drone1       (PX4 SITL，UXRCE_DDS_NS_IDX=1)
+        ├── drone2       (PX4 SITL，UXRCE_DDS_NS_IDX=2)
         └── ...
 ```
 
 | 容器 | 映像 | 網路 | 說明 |
 |------|------|------|------|
-| `taiphoon_agent_dev` | `taiphoon-agent:dev` | host | ROS2 + 開發環境 |
-| `drone{N}` | `px4io/px4-sitl:latest` | Taiphoon_Net | PX4 SITL（SIH 模擬） |
-| `drone{N}-uxrce-dds-agent` | `taiphoon/uxrce-agent:latest` | Taiphoon_Net | uXRCE-DDS 通訊橋接 |
-| `uxrce_agent_hw` | `taiphoon/uxrce-agent:latest` | host | 實機 uXRCE-DDS 常駐（`--profile hw`） |
+| `uav_{N}_agent` | `taiphoon-agent:dev` | Taiphoon_Net | Agent、uXRCE-DDS 橋接、ROS2 任務節點 |
+| `drone{N}` | `px4io/px4-sitl:latest` | Taiphoon_Net | PX4 SITL（SIH 模擬），使用 `/uav_{N}/fmu/...` |
 
 ---
 
@@ -883,7 +878,7 @@ IDLE -> OFFBOARD_INIT -> OFFBOARD_ACTIVE -> ARMED -> TAKEOFF -> HOVER
 **單行編譯（推薦）**：
 
 ```bash
-docker compose exec fmu1_agent bash -c \
+docker compose exec uav_1_agent bash -c \
   "cd /home/taiphoon/Taiphoon_Agent && \
    colcon build --symlink-install --packages-select taiphoon_agent"
 ```
@@ -893,7 +888,7 @@ docker compose exec fmu1_agent bash -c \
 **互動式編譯**（進入容器逐步執行）：
 
 ```bash
-docker compose exec fmu1_agent bash
+docker compose exec uav_1_agent bash
 
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
@@ -925,7 +920,7 @@ ls -la install/share/taiphoon_agent/launch/basic_controller.launch.py
 | Launch 時找不到自訂訊息 | 未 source px4_msgs workspace | 執行 `source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash` |
 | `ros2 topic echo` 無法解析 NedTarget | 未 source 自訂訊息 workspace | 同上，需先 source install/setup.bash |
 | 無人機無法切換 Offboard | 心跳未建立 | 檢查 `auto_start_sequence` 參數是否為 true |
-| 無人機不起飛 | 高度或位置命令異常 | 檢查 `/fmu{N}_agent/planning/status` 與 `/fmu{N}_agent/planning/trajectory` |
+| 無人機不起飛 | 高度或位置命令異常 | 檢查 `/uav_{N}_agent/planning/status` 與 `/uav_{N}_agent/planning/trajectory` |
 | 編隊不啟動 | `ego_swarm_planner` 未啟動或本機 local NED Home 尚未建立 | 確認 Node 是否存在、GPS 是否有效 |
 | 模擬器無法啟動 | 網路或 Docker 權限問題 | 確認 `Taiphoon_Net` 已建立且 Docker 有足夠資源 |
 
@@ -936,23 +931,23 @@ ls -la install/share/taiphoon_agent/launch/basic_controller.launch.py
 ros2 topic list
 
 # 檢視特定 namespace 的里程計
-ros2 topic echo /fmu1/fmu/out/vehicle_odometry
+ros2 topic echo /uav_1/fmu/out/vehicle_odometry
 
 # 檢視 Agent 狀態（GPS / 電池 / 飛行模式）
-ros2 topic echo /fmu1_agent/state
+ros2 topic echo /uav_1_agent/state
 
 # 量測 AgentState 發布頻率（名目頻率至少 10 Hz）
-ros2 topic hz /fmu1_agent/state
+ros2 topic hz /uav_1_agent/state
 
 # 檢視 position_global 的 PX4 原始來源
-ros2 topic echo /fmu1/fmu/out/vehicle_global_position
+ros2 topic echo /uav_1/fmu/out/vehicle_global_position
 
 # 檢視 EGO-Swarm 規劃結果
-ros2 topic echo /fmu1_agent/planning/trajectory taiphoon_agent/msg/AgentTrajectory
+ros2 topic echo /uav_1_agent/planning/trajectory taiphoon_agent/msg/AgentTrajectory
 
 # 檢視 PointCloud2 障礙物
-ros2 topic echo /fmu1_agent/perception/obstacles
+ros2 topic echo /uav_1_agent/perception/obstacles
 
 # 舊 NED 目標（僅相容／純邏輯測試）
-ros2 topic echo /fmu1_agent/ned_target
+ros2 topic echo /uav_1_agent/ned_target
 ```

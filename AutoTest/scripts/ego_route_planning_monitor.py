@@ -78,21 +78,21 @@ class RoutePlanningMonitor(Node):
         for agent_id in self.agent_ids:
             self.create_subscription(
                 AgentState,
-                f"/fmu{agent_id}_agent/state",
+                f"/uav_{agent_id}_agent/state",
                 lambda msg, current_id=agent_id: self.state_cb(msg, current_id),
                 20,
             )
             self.create_subscription(
                 PlannerStatus,
-                f"/fmu{agent_id}_agent/planning/status",
+                f"/uav_{agent_id}_agent/planning/status",
                 lambda msg, current_id=agent_id: self.status_cb(msg, current_id),
                 20,
             )
         self.create_subscription(
-            AgentAttitude, "/fmu1_agent/attitude", self.attitude_cb, 20)
+            AgentAttitude, "/uav_1_agent/attitude", self.attitude_cb, 20)
         self.create_subscription(
             AgentTrajectory,
-            "/fmu_all_agent/swarm/agent_trajectories",
+            "/uav_all_agent/swarm/agent_trajectories",
             self.trajectory_cb,
             20,
         )

@@ -186,7 +186,7 @@ private:
     double target_altitude_m_{DEFAULT_TARGET_ALTITUDE_M};
     double hover_duration_s_{DEFAULT_HOVER_DURATION_S};
     int target_system_{1};
-    std::string agent_namespace_{"fmu1_agent"};
+    std::string agent_namespace_{"uav_1_agent"};
     double state_publish_rate_hz_{DEFAULT_STATE_PUBLISH_RATE_HZ};
     double position_deviation_threshold_m_{DEFAULT_POSITION_DEVIATION_THRESHOLD_M};
 

@@ -19,7 +19,7 @@
 - 所有參數必須用 `declare_parameter` 宣告並指定預設值（L2-19）；初始化失敗必須記錄錯誤並中斷啟動流程。
 - Publisher / Subscriber 必須以 `shared_ptr` 成員持有（L1-12），回呼命名以 `_cb` 結尾（L2-17）。
 - 訂閱 PX4 資料（odometry / GPS / battery）必須檢查「已收到第一筆資料」旗標後才使用，避免以未初始化資料驅動控制。
-- 節點命名空間與 topic 命名遵守根目錄 AGENTS.md 的 `/fmu{N}_agent/...` 規則；新增 topic 需同步 `docs/taiphoon-agent-interface.md`。
+- 節點命名空間與 topic 命名遵守根目錄 AGENTS.md 的 `/uav_{N}_agent/...` 規則；新增 topic 需同步 `docs/taiphoon-agent-interface.md`。
 
 ## 變更與驗證
 

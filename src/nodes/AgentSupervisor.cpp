@@ -32,7 +32,7 @@ AgentSupervisor::AgentSupervisor(
     : rclcpp::Node("agent_supervisor", node_options),
       terminate_callback_(std::move(terminate_callback))
 {
-    this->declare_parameter<std::string>("agent_namespace", "fmu1_agent");
+    this->declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     agent_namespace_ = this->get_parameter("agent_namespace").as_string();
 
     if (!terminate_callback_)

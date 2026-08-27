@@ -39,7 +39,7 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 
 ### quick_takeoff.sh
 
-透過 `docker exec fmu1_agent` 依序發布三個命令至 `/fmu_all_agent/command`（`std_msgs/msg/String`）：
+透過 `docker exec uav_1_agent` 依序發布三個命令至 `/uav_all_agent/command`（`std_msgs/msg/String`）：
 
 1. `MODE_OFFBOARD` → 進入 Offboard 模式
 2. `ARM` → 解鎖
@@ -54,7 +54,7 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 | `--count N` | 無人機數量 | 4 |
 | `--net NAME` | Docker 網路名稱 | `Taiphoon_Net` |
 | `--rmw TYPE` | `fastrtps` 或 `cyclonedds` | `fastrtps` |
-| `--agent NAME` | Agent 容器名稱（僅用於提示檢查指令） | `fmu1_agent` |
+| `--agent NAME` | Agent 容器名稱（僅用於提示檢查指令） | `uav_1_agent` |
 | `--initial-spacing-m M` | PX4 起始水平間距；必須大於 `peer_collision_min_distance_m` 的預設 3m | `8.0` |
 
 執行前會自動清理舊的 `drone*` 容器。啟動完成後會印出各機 QGC 連線 port 與檢查 ROS2 topics 的指令。
@@ -65,7 +65,7 @@ bash AutoTest/scripts/px4-sitl-launcher/stop_all.sh
 
 ### stop_all.sh
 
-停止並移除所有名稱以 `drone` 開頭的容器，不影響 `fmu{N}_agent` 容器。
+停止並移除所有名稱以 `drone` 開頭的容器，不影響 `uav_{N}_agent` 容器。
 
 
 ## 禁止事項

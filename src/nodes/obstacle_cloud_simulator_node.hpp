@@ -44,7 +44,7 @@ private:
     void publish_cloud_cb();
     int compute_agent_index() const;
 
-    std::string agent_namespace_{"fmu1_agent"};
+    std::string agent_namespace_{"uav_1_agent"};
     std::string config_file_{};
     int agent_index_{1};
     int swarm_origin_agent_index_{1};

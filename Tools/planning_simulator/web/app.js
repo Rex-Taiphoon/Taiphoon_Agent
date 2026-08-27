@@ -143,7 +143,7 @@ function renderPeers() {
     item.className = "dynamic-item";
     const title = document.createElement("div");
     title.className = "dynamic-item-header";
-    title.innerHTML = `<strong>fmu${peer.agent_id} / ${peer.mode === "hold" ? "懸停" : "移動"}</strong>`;
+    title.innerHTML = `<strong>uav_${peer.agent_id} / ${peer.mode === "hold" ? "懸停" : "移動"}</strong>`;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "移除";

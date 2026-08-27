@@ -403,7 +403,7 @@ TEST(FormationCalculatorTest, PeerStaleBoundary)
 
 TEST(FormationCalculatorTest, ComputeReferenceCentroidGpsCorrected)
 {
-    // 四機 HOME 東向錯位 0/3/6/9m；自身 = fmu1（local 原點 = 自身 HOME）
+    // 四機 HOME 東向錯位 0/3/6/9m；自身 = uav_1（local 原點 = 自身 HOME）
     std::array<float, 3> own_ned = {0.0F, 0.0F, -8.0F};
     std::array<float, 3> own_global = {
         static_cast<float>(TEST_BASE_LAT),

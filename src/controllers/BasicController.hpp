@@ -107,7 +107,7 @@ public:
      * @brief 建構子
      *
      * @param node ROS2 節點指標 (必須不為 nullptr)
-     * @param target_system PX4 MAVLink 系統 ID (fmu1=1, fmu2=2, ...)
+     * @param target_system PX4 MAVLink 系統 ID (uav_1=1, uav_2=2, ...)
      */
     explicit BasicController(rclcpp::Node* node,
                              uint8_t target_system = DEFAULT_TARGET_SYSTEM);
@@ -647,7 +647,7 @@ private:
     rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr
         vehicle_land_detected_sub_;
 
-    /// PX4 MAVLink 系統 ID (fmu1=1, fmu2=2, ...)
+    /// PX4 MAVLink 系統 ID (uav_1=1, uav_2=2, ...)
     uint8_t target_system_{DEFAULT_TARGET_SYSTEM};
 
     /// 目前高度 (公尺)

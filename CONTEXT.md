@@ -9,7 +9,7 @@ Taiphoon_Agent 以 Docker 容器為部署單元部署於任務電腦（如樹莓
 _Avoid_：節點、程序、controller
 
 **Agent 容器 (Agent Container)**：
-Docker 容器為 Agent 的部署邊界，一個容器對應一台飛控。容器內含 uXRCE-DDS 橋接 daemon 與所有 Taiphoon_Agent ROS2 節點。容器命名遵循 `fmu{N}_agent` 慣例（如 `fmu1_agent`），與 ROS2 topic namespace 一致。
+Docker 容器為 Agent 的部署邊界，一個容器對應一台飛控。容器內含 uXRCE-DDS 橋接 daemon 與所有 Taiphoon_Agent ROS2 節點。容器命名遵循 `uav_{N}_agent` 慣例（如 `uav_1_agent`），與 Agent ROS2 topic namespace 一致。
 _Avoid_：service instance、pod
 
 **uXRCE-DDS 橋接 (uXRCE-DDS Bridge)**：
@@ -33,7 +33,7 @@ _Avoid_：集中式全機隊控制器、直接發布 PX4 setpoint
 _Avoid_：`swarm_ned`、共同 NED、全機群共用原點
 
 **同儕未來軌跡 (Peer Future Trajectory)**：
-Agent 透過 `/fmu_all_agent/swarm/agent_trajectories` 廣播的時間化 B-spline 軌跡。短暫缺少新資料時，沿用最後一份有效軌跡，不因資料年齡自動擴張安全半徑；中心距離門檻仍由任務參數決定。
+Agent 透過 `/uav_all_agent/swarm/agent_trajectories` 廣播的時間化 B-spline 軌跡。短暫缺少新資料時，沿用最後一份有效軌跡，不因資料年齡自動擴張安全半徑；中心距離門檻仍由任務參數決定。
 _Avoid_：只代表目前位置的 AgentState
 
 **局部障礙物地圖 (Local Obstacle Map)**：
@@ -43,11 +43,11 @@ _Avoid_：只代表目前位置的 AgentState
 GCS 或其他 Agent 命令轉換後的高階目標，例如移動點、取消編隊或編隊幾何。任務意圖只輸入 EGO-Swarm 規劃器，不直接寫入 PX4 控制 topic。
 
 **Agent 狀態 (Agent State)**：
-每個 Agent 對外發布的自身狀態資訊，包含 NED 位置、姿態、飛行模式、電量等。透過 `/fmu{N}_agent/state` topic 以 10Hz 發布。不同於 PX4 內部 odometry——這是 Agent 層級的抽象，隔離飛控實作細節。
+每個 Agent 對外發布的自身狀態資訊，包含 NED 位置、姿態、飛行模式、電量等。透過 `/uav_{N}_agent/state` topic 以 10Hz 發布。不同於 PX4 內部 odometry——這是 Agent 層級的抽象，隔離飛控實作細節。
 _Avoid_：telemetry、PX4 state
 
 **同儕發現 (Peer Discovery)**：
-Agent 會定期掃描 ROS2 網路中所有 `/fmu*_agent/state` topic，動態建立或移除對其他 Agent 的訂閱，無需靜態設定檔。Agent 消失後不保留在活動同儕集合，再次出現時可重新加入。
+Agent 會定期掃描 ROS2 網路中所有 `/uav_<N>_agent/state` topic，動態建立或移除對其他 Agent 的訂閱，無需靜態設定檔。Agent 消失後不保留在活動同儕集合，再次出現時可重新加入。
 _Avoid_：手動配置、靜態拓撲
 
 **編隊 (Formation)**：

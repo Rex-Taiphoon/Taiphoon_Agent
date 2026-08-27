@@ -248,7 +248,7 @@ private:
     std::string obstacle_map_status_reason(double now_s) const;
     int compute_self_index() const;
 
-    std::string agent_namespace_{"fmu1_agent"};
+    std::string agent_namespace_{"uav_1_agent"};
     int agent_index_{1};
     /// 舊 launch 相容參數的快取；planner origin 固定使用本 Agent Home。
     int legacy_swarm_origin_agent_index_{1};

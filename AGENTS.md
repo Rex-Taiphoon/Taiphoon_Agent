@@ -56,9 +56,9 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 ## Topic & interface conventions
 
 - 外部可見的 ROS2 topic 應盡量精簡，優先降低網路與頻寬負擔；非必要資訊請留在內部命名空間。
-- 若飛控命名空間為 `/fmu1`：
-  - 對外 Agent topic 一律使用 `/fmu1_agent/...`。
-  - 所有 Agent 共用控制命令使用 `/fmu_all_agent/...`。
+- 若飛控命名空間為 `/uav_{N}`：
+  - 對外 Agent topic 一律使用 `/uav_{N}_agent/...`。
+  - 所有 Agent 共用控制命令使用 `/uav_all_agent/...`。
 - Taiphoon_Agent 產生的 Node 與 Topic 必須同步記錄在 `docs/taiphoon-agent-interface.md`，
   並保持最新狀態（新增／刪除任何 Node/Topic 時都要更新）。
 
@@ -99,26 +99,26 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 
 請先啟動環境：
 ```bash
-docker compose up -d fmu1_agent
+docker compose up -d uav_1_agent
 ```
 
 ### 建置驗證
 在執行任何測試之前，必須先完成 workspace 建置：
 ```bash
-docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon build"
+docker compose exec uav_1_agent bash -c "source /opt/ros/humble/setup.bash && colcon build"
 ```
 
 ### 單元測試（Unit Tests）
 修改單一套件後，請執行該套件的測試：
 ```bash
-docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test --packages-select taiphoon_agent"
-docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
+docker compose exec uav_1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test --packages-select taiphoon_agent"
+docker compose exec uav_1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
 ```
 
 僅在修改共用介面或核心模組時，才執行完整測試：
 ```bash
-docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
-docker compose exec fmu1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --all"
+docker compose exec uav_1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --verbose"
+docker compose exec uav_1_agent bash -c "source /opt/ros/humble/setup.bash && colcon test-result --all"
 ```
 
 ### 多機模擬驗證的快速啟動方法

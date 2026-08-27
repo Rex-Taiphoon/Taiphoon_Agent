@@ -7,6 +7,8 @@
 
 #include "formation/MissionPlanner.hpp"
 
+#include "utils/AgentNaming.hpp"
+
 #include <cmath>
 #include <sstream>
 #include <algorithm>
@@ -27,7 +29,7 @@ MissionPlanner::MissionPlanner()
     : rclcpp::Node("mission_planner")
 {
     // 宣告 ROS2 參數
-    this->declare_parameter<std::string>("agent_namespace", "fmu1_agent");
+    this->declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     this->declare_parameter<double>("formation_update_rate_hz",
                                     DEFAULT_FORMATION_RATE_HZ);
     this->declare_parameter<double>("peer_scan_interval_s",
@@ -94,7 +96,7 @@ bool MissionPlanner::initialize_command_subscriber()
 {
     all_agent_command_sub_ =
         this->create_subscription<std_msgs::msg::String>(
-            "/fmu_all_agent/command",
+            utils::agent_naming::make_all_agent_topic("command"),
             rclcpp::QoS(10).best_effort(),
             std::bind(&MissionPlanner::all_agent_command_cb,
                       this, std::placeholders::_1));
@@ -102,7 +104,7 @@ bool MissionPlanner::initialize_command_subscriber()
     if (all_agent_command_sub_ == nullptr)
     {
         RCLCPP_ERROR(this->get_logger(),
-                     "Failed to subscribe to /fmu_all_agent/command");
+                     "Failed to subscribe to /uav_all_agent/command");
         return false;
     }
     return true;
@@ -129,25 +131,9 @@ bool MissionPlanner::initialize_ned_target_publisher()
 
 int MissionPlanner::compute_self_index() const
 {
-    // "fmu1_agent" → 0, "fmu2_agent" → 1, ...
-    // 從結尾反查下底線位置，找出 fmu 後的數字
-    size_t underscore_pos = agent_namespace_.find('_');
-    if (underscore_pos == std::string::npos ||
-        agent_namespace_.substr(0, 3) != "fmu")
-    {
-        return 0;
-    }
-
-    try
-    {
-        std::string num_str = agent_namespace_.substr(3, underscore_pos - 3);
-        int idx = std::stoi(num_str) - 1;
-        return (idx >= 0) ? idx : 0;
-    }
-    catch (...)
-    {
-        return 0;
-    }
+    const int parsed_index = utils::agent_naming::parse_agent_namespace_index(
+        agent_namespace_);
+    return parsed_index > 0 ? parsed_index - 1 : 0;
 }
 
 // =============================================================================
@@ -162,8 +148,8 @@ void MissionPlanner::initial_peer_discovery()
 
 void MissionPlanner::scan_peers_cb()
 {
-    // 使用 node 名稱進行同儕發現：agent 節點（/fmu<N>_agent/... 主模式、
-    // /fmu<N>/basic_controller_node 相容模式）存在性即為離線判定依據
+    // 使用 node 名稱進行同儕發現：agent 節點（/uav_<N>_agent/... 主模式、
+    // /uav_<N>/basic_controller_node 相容模式）存在性即為離線判定依據
     auto node_names = this->get_node_names();
 
     // 過濾出 agent 節點索引 (不含自身)
@@ -186,8 +172,8 @@ void MissionPlanner::scan_peers_cb()
             continue;
         }
 
-        // 訂閱 AgentState topic：/fmu<N>_agent/state
-        std::string topic = "/fmu" + std::to_string(idx) + "_agent/state";
+        // 訂閱 AgentState topic：/uav_<N>_agent/state
+        const std::string topic = utils::agent_naming::make_agent_state_topic(idx);
 
         auto sub = this->create_subscription<taiphoon_agent::msg::AgentState>(
             topic,
@@ -221,7 +207,7 @@ void MissionPlanner::update_peer_liveness(
         if (!present && entry.second.node_present)
         {
             RCLCPP_INFO(this->get_logger(),
-                        "Agent %d went offline (fmu%d_agent node not found)",
+                        "Agent %d went offline (uav_%d_agent node not found)",
                         entry.first, entry.first);
         }
         entry.second.node_present = present;

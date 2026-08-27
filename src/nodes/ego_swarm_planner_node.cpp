@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
+#include "utils/AgentNaming.hpp"
 #include "utils/CommandTypes.hpp"
 
 namespace taiphoon
@@ -169,7 +170,7 @@ uint32_t formation_epoch_hash(const taiphoon_agent::msg::FormationEpoch& epoch)
 EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     : rclcpp::Node("ego_swarm_planner")
 {
-    declare_parameter<std::string>("agent_namespace", "fmu1_agent");
+    declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
     declare_parameter<double>("planning_rate_hz", DEFAULT_EGO_PLANNER_RATE_HZ);
@@ -569,7 +570,8 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         std::bind(&EgoSwarmPlannerNode::agent_command_cb, this,
                   std::placeholders::_1));
     all_command_sub_ = create_subscription<std_msgs::msg::String>(
-        "/fmu_all_agent/command", rclcpp::QoS(10),
+        utils::agent_naming::make_all_agent_topic("command"),
+        rclcpp::QoS(10),
         std::bind(&EgoSwarmPlannerNode::all_agent_command_cb, this,
                   std::placeholders::_1));
     obstacle_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -578,12 +580,13 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         std::bind(&EgoSwarmPlannerNode::obstacle_cb, this,
                   std::placeholders::_1));
     trajectory_sub_ = create_subscription<taiphoon_agent::msg::AgentTrajectory>(
-        "/fmu_all_agent/swarm/agent_trajectories",
+        utils::agent_naming::make_all_agent_topic(
+            "swarm/agent_trajectories"),
         rclcpp::QoS(10).best_effort(),
-                  std::bind(&EgoSwarmPlannerNode::trajectory_cb, this,
+        std::bind(&EgoSwarmPlannerNode::trajectory_cb, this,
                   std::placeholders::_1));
     formation_epoch_sub_ = create_subscription<taiphoon_agent::msg::FormationEpoch>(
-        "/fmu_all_agent/swarm/formation_epochs",
+        utils::agent_naming::make_all_agent_topic("swarm/formation_epochs"),
         rclcpp::QoS(10).reliable().transient_local(),
         std::bind(&EgoSwarmPlannerNode::formation_epoch_cb, this,
                   std::placeholders::_1));
@@ -599,7 +602,8 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
 bool EgoSwarmPlannerNode::initialize_publishers()
 {
     trajectory_pub_ = create_publisher<taiphoon_agent::msg::AgentTrajectory>(
-        "/fmu_all_agent/swarm/agent_trajectories", rclcpp::QoS(10));
+        utils::agent_naming::make_all_agent_topic(
+            "swarm/agent_trajectories"), rclcpp::QoS(10));
     local_trajectory_pub_ =
         create_publisher<taiphoon_agent::msg::AgentTrajectory>(
             "/" + agent_namespace_ + "/planning/trajectory",
@@ -607,7 +611,7 @@ bool EgoSwarmPlannerNode::initialize_publishers()
     status_pub_ = create_publisher<taiphoon_agent::msg::PlannerStatus>(
             "/" + agent_namespace_ + "/planning/status", rclcpp::QoS(10));
     formation_epoch_pub_ = create_publisher<taiphoon_agent::msg::FormationEpoch>(
-        "/fmu_all_agent/swarm/formation_epochs",
+        utils::agent_naming::make_all_agent_topic("swarm/formation_epochs"),
         rclcpp::QoS(10).reliable().transient_local());
 
     return trajectory_pub_ != nullptr && local_trajectory_pub_ != nullptr &&
@@ -3000,7 +3004,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
 void EgoSwarmPlannerNode::scan_peers_cb()
 {
     // rclcpp 的 get_node_names() 只回傳 basename；PeerMatcher 需要完整
-    // namespace 才能判斷 /fmu<N>/basic_controller_node 是否在線。
+    // namespace 才能判斷 /uav_<N>/basic_controller_node 是否在線。
     std::vector<std::string> fully_qualified_node_names;
     for (const auto& entry :
          get_node_graph_interface()->get_node_names_and_namespaces())
@@ -3028,8 +3032,8 @@ void EgoSwarmPlannerNode::scan_peers_cb()
         {
             continue;
         }
-        const std::string topic = "/fmu" + std::to_string(index) +
-            "_agent/state";
+        const std::string topic =
+            utils::agent_naming::make_agent_state_topic(index);
         auto subscription = create_subscription<taiphoon_agent::msg::AgentState>(
             topic, rclcpp::QoS(10).best_effort(),
             [this, index](
@@ -3951,23 +3955,16 @@ void EgoSwarmPlannerNode::publish_status(
 
 int EgoSwarmPlannerNode::compute_self_index() const
 {
-    const std::size_t underscore = agent_namespace_.find('_');
-    if (underscore == std::string::npos ||
-        agent_namespace_.substr(0, 3) != "fmu")
+    const int parsed_index = utils::agent_naming::parse_agent_namespace_index(
+        agent_namespace_);
+    if (parsed_index < 1)
     {
+        RCLCPP_WARN(get_logger(),
+                    "Cannot parse positive UAV index from namespace '%s'",
+                    agent_namespace_.c_str());
         return 1;
     }
-    try
-    {
-        return std::max(1, std::stoi(agent_namespace_.substr(
-            3, underscore - 3)));
-    }
-    catch (const std::exception& error)
-    {
-        RCLCPP_WARN(get_logger(), "Cannot parse agent index: %s",
-                    error.what());
-        return 1;
-    }
+    return parsed_index;
 }
 
 }  // namespace nodes

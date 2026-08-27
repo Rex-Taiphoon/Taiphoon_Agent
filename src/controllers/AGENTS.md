@@ -9,7 +9,7 @@
 | 檔案 | 角色 |
 |------|------|
 | `BasicController.hpp/.cpp` | 實作 `core::IBasicFlightController`，透過 PX4 Offboard 控制無人機；內含飛行狀態機 `FlightState` |
-| `AgentCommandHandler.hpp/.cpp` | 訂閱 `/{agent_namespace}/command` 與 `/fmu_all_agent/command`，解析命令字串後以 callback 交回節點執行 |
+| `AgentCommandHandler.hpp/.cpp` | 訂閱 `/{agent_namespace}/command` 與 `/uav_all_agent/command`，解析命令字串後以 callback 交回節點執行 |
 
 ## 核心原則
 

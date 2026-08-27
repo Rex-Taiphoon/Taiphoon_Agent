@@ -41,7 +41,7 @@ class TakeoffAltitudeWaiter(Node):
         for agent_id in self.agent_ids:
             self.create_subscription(
                 AgentState,
-                f"/fmu{agent_id}_agent/state",
+                f"/uav_{agent_id}_agent/state",
                 lambda msg, current_id=agent_id: self.state_cb(
                     msg, current_id),
                 20,

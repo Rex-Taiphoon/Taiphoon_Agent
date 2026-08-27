@@ -36,7 +36,7 @@ BasicControllerNode::BasicControllerNode()
     this->declare_parameter<double>("target_altitude_m", DEFAULT_TARGET_ALTITUDE_M);
     this->declare_parameter<double>("hover_duration_s", DEFAULT_HOVER_DURATION_S);
     this->declare_parameter<int>("target_system", 1);
-    this->declare_parameter<std::string>("agent_namespace", "fmu1");
+    this->declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     this->declare_parameter<double>("state_publish_rate_hz", DEFAULT_STATE_PUBLISH_RATE_HZ);
     this->declare_parameter<double>("position_deviation_threshold_m",
                                     DEFAULT_POSITION_DEVIATION_THRESHOLD_M);
@@ -186,8 +186,8 @@ bool BasicControllerNode::initialize_odometry_subscriber()
 
 bool BasicControllerNode::initialize_gps_subscriber()
 {
-    // 節點 namespace 為 /fmu{N}，此相對名稱解析成
-    // /fmu{N}/fmu/out/vehicle_global_position。
+    // 節點 namespace 為 /uav_<N>，此相對名稱解析成
+    // /uav_<N>/fmu/out/vehicle_global_position。
     gps_sub_ =
         this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
             VEHICLE_GLOBAL_POSITION_TOPIC,

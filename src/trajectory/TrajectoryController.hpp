@@ -105,7 +105,7 @@ private:
 
     // ==================== 參數 ====================
 
-    std::string agent_namespace_{"fmu1_agent"};
+    std::string agent_namespace_{"uav_1_agent"};
     double trajectory_update_rate_hz_{DEFAULT_TRAJECTORY_RATE_HZ};
     double waypoint_spacing_m_{DEFAULT_WAYPOINT_SPACING_M};
     double flight_speed_mps_{DEFAULT_FLIGHT_SPEED_MPS};

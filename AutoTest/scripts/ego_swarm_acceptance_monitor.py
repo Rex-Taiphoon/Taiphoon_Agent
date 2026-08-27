@@ -78,27 +78,27 @@ class AcceptanceMonitor(Node):
         for agent_id in self.agent_ids:
             self.create_subscription(
                 AgentState,
-                f"/fmu{agent_id}_agent/state",
+                f"/uav_{agent_id}_agent/state",
                 lambda msg, current_id=agent_id: self.state_cb(msg, current_id),
                 20,
             )
             self.create_subscription(
                 PlannerStatus,
-                f"/fmu{agent_id}_agent/planning/status",
+                f"/uav_{agent_id}_agent/planning/status",
                 lambda msg, current_id=agent_id: self.status_cb(msg, current_id),
                 20,
             )
         self.create_subscription(
             AgentTrajectory,
-            "/fmu_all_agent/swarm/agent_trajectories",
+            "/uav_all_agent/swarm/agent_trajectories",
             self.trajectory_cb,
             20,
         )
 
         self.create_subscription(
-            String, "/fmu1_agent/command", self.agent_command_cb, 20)
+            String, "/uav_1_agent/command", self.agent_command_cb, 20)
         self.create_subscription(
-            String, "/fmu_all_agent/command", self.all_command_cb, 20)
+            String, "/uav_all_agent/command", self.all_command_cb, 20)
         self.create_timer(0.1, self.timer_cb)
 
     @staticmethod

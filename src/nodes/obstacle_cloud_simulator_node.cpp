@@ -7,6 +7,8 @@
 
 #include "nodes/obstacle_cloud_simulator_node.hpp"
 
+#include "utils/AgentNaming.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -128,7 +130,7 @@ ego_swarm::GeoCoordinate to_geo(
 ObstacleCloudSimulatorNode::ObstacleCloudSimulatorNode()
     : rclcpp::Node("obstacle_cloud_simulator")
 {
-    declare_parameter<std::string>("agent_namespace", "fmu1_agent");
+    declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     declare_parameter<std::string>("config_file", "");
     declare_parameter<int>("agent_index", 1);
     declare_parameter<int>("swarm_origin_agent_index", 1);
@@ -345,8 +347,8 @@ bool ObstacleCloudSimulatorNode::initialize_pose_subscribers()
 
     if (agent_index_ != swarm_origin_agent_index_)
     {
-        const std::string origin_topic = "/fmu" +
-            std::to_string(swarm_origin_agent_index_) + "_agent/state";
+        const std::string origin_topic = utils::agent_naming::make_agent_state_topic(
+            swarm_origin_agent_index_);
         origin_state_sub_ = create_subscription<
             taiphoon_agent::msg::AgentState>(
                 origin_topic, rclcpp::QoS(10).best_effort(),
@@ -501,23 +503,16 @@ void ObstacleCloudSimulatorNode::publish_cloud_cb()
 
 int ObstacleCloudSimulatorNode::compute_agent_index() const
 {
-    const std::size_t underscore = agent_namespace_.find('_');
-    if (underscore == std::string::npos ||
-        agent_namespace_.substr(0, 3) != "fmu")
+    const int parsed_index = utils::agent_naming::parse_agent_namespace_index(
+        agent_namespace_);
+    if (parsed_index < 1)
     {
+        RCLCPP_WARN(get_logger(),
+                    "Cannot parse positive UAV index from namespace '%s'",
+                    agent_namespace_.c_str());
         return 1;
     }
-    try
-    {
-        return std::max(1, std::stoi(agent_namespace_.substr(
-            3, underscore - 3)));
-    }
-    catch (const std::exception& error)
-    {
-        RCLCPP_WARN(get_logger(), "Cannot parse agent index: %s",
-                    error.what());
-        return 1;
-    }
+    return parsed_index;
 }
 
 }  // namespace nodes

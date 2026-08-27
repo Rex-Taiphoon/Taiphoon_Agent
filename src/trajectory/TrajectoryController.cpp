@@ -7,6 +7,8 @@
 
 #include "trajectory/TrajectoryController.hpp"
 
+#include "utils/AgentNaming.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -25,7 +27,7 @@ namespace nodes
 TrajectoryController::TrajectoryController()
     : rclcpp::Node("trajectory_controller")
 {
-    this->declare_parameter<std::string>("agent_namespace", "fmu1_agent");
+    this->declare_parameter<std::string>("agent_namespace", "uav_1_agent");
     this->declare_parameter<double>("trajectory_update_rate_hz",
                                     DEFAULT_TRAJECTORY_RATE_HZ);
     this->declare_parameter<double>("waypoint_spacing_m",
@@ -178,25 +180,9 @@ bool TrajectoryController::initialize_publishers()
 
 int TrajectoryController::compute_self_index() const
 {
-    size_t underscore_pos = agent_namespace_.find('_');
-    if (underscore_pos == std::string::npos ||
-        agent_namespace_.substr(0, 3) != "fmu")
-    {
-        return 0;
-    }
-    try
-    {
-        std::string num_str = agent_namespace_.substr(3, underscore_pos - 3);
-        int idx = std::stoi(num_str) - 1;
-        return (idx >= 0) ? idx : 0;
-    }
-    catch (const std::exception& error)
-    {
-        RCLCPP_WARN(this->get_logger(),
-                    "Failed to parse agent index from '%s': %s",
-                    agent_namespace_.c_str(), error.what());
-        return 0;
-    }
+    const int parsed_index = utils::agent_naming::parse_agent_namespace_index(
+        agent_namespace_);
+    return parsed_index > 0 ? parsed_index - 1 : 0;
 }
 
 // =============================================================================
@@ -220,8 +206,8 @@ void TrajectoryController::scan_peers_cb()
             continue;
         }
 
-        const std::string topic = "/fmu" + std::to_string(agent_index) +
-            "_agent/state";
+        const std::string topic = utils::agent_naming::make_agent_state_topic(
+            agent_index);
         auto sub = this->create_subscription<taiphoon_agent::msg::AgentState>(
             topic,
             rclcpp::QoS(10).best_effort(),

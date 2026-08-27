@@ -1,4 +1,4 @@
-# fmu1 +East 30 m 繞障驗收場景；使用舊障礙物 swarm_ned 場景 frame。
+# uav_1 +East 30 m 繞障驗收場景；使用舊障礙物 swarm_ned 場景 frame。
 frame_id: swarm_ned
 mode: ground_truth
 sample_spacing_m: 0.5

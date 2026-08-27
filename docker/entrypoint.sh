@@ -19,7 +19,7 @@ PX4_UROS_WS="${PX4_UROS_WS:-/home/taiphoon/px4_ros_uxrce_dds_ws}"
 TAIPHOON_WS="${TAIPHOON_WS:-/home/taiphoon/Taiphoon_Agent}"
 UXRCE_PORT="${UXRCE_PORT:-8888}"
 TARGET_SYSTEM="${TARGET_SYSTEM:-1}"
-AGENT_NAMESPACE="${AGENT_NAMESPACE:-fmu1_agent}"
+AGENT_NAMESPACE="${AGENT_NAMESPACE:-uav_1_agent}"
 
 # ---- EGO-Swarm 部署參數（僅傳入 Node 已宣告參數）----
 EGO_SWARM_PLANNING_RATE_HZ="${EGO_SWARM_PLANNING_RATE_HZ:-10.0}"
@@ -50,8 +50,6 @@ OBSTACLE_CLOUD_NOISE_STD_M="${OBSTACLE_CLOUD_NOISE_STD_M:-0.02}"
 OBSTACLE_CLOUD_DROPOUT_RATIO="${OBSTACLE_CLOUD_DROPOUT_RATIO:-0.05}"
 OBSTACLE_CLOUD_SAMPLE_SPACING_M="${OBSTACLE_CLOUD_SAMPLE_SPACING_M:-0.5}"
 
-# 從 namespace 提取 fmu{N} 部分作為 ROS2 namespace
-FMU_NS="${AGENT_NAMESPACE%_agent}"
 BUILD_LOCK_FILE="${TAIPHOON_WS}/log/.taiphoon_agent_build.lock"
 
 # PID 1 必須自行處理 SIGTERM；否則容器內的 Bash 可能只忽略訊號，

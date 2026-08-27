@@ -9,7 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 NETWORK_NAME="Taiphoon_Net"
-AGENT_CONTAINER="fmu1_agent"
+AGENT_CONTAINER="uav_1_agent"
 AGENT_STARTED=0
 
 cleanup()
@@ -83,39 +83,39 @@ class BasicControllerValidator(Node):
 
         self.create_subscription(
             OffboardControlMode,
-            "/fmu1/fmu/in/offboard_control_mode",
+            "/uav_1/fmu/in/offboard_control_mode",
             self._heartbeat_cb,
             px4_input_qos,
         )
         self.create_subscription(
             TrajectorySetpoint,
-            "/fmu1/fmu/in/trajectory_setpoint",
+            "/uav_1/fmu/in/trajectory_setpoint",
             self._setpoint_cb,
             px4_input_qos,
         )
         self.create_subscription(
             AgentState,
-            "/fmu1_agent/state",
+            "/uav_1_agent/state",
             self._state_cb,
             20,
         )
         self.create_subscription(
             PlannerStatus,
-            "/fmu1_agent/planning/status",
+            "/uav_1_agent/planning/status",
             self._planner_status_cb,
             20,
         )
         self.create_subscription(
             AgentTrajectory,
-            "/fmu1_agent/planning/trajectory",
+            "/uav_1_agent/planning/trajectory",
             self._local_trajectory_cb,
             20,
         )
         self.command_pub = self.create_publisher(
-            String, "/fmu_all_agent/command", 10
+            String, "/uav_all_agent/command", 10
         )
         self.local_command_pub = self.create_publisher(
-            String, "/fmu1_agent/command", 10
+            String, "/uav_1_agent/command", 10
         )
 
     def _heartbeat_cb(self, _message):

@@ -44,19 +44,19 @@ ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=4
 
 ```bash
 ros2 run taiphoon_agent basic_controller --ros-args \
-    -r __ns:=/fmu1 \
+    -r __ns:=/uav_1 \
     -p target_altitude_m:=3.0 \
     -p hover_duration_s:=3.0
 
 ros2 run taiphoon_agent formation_node --ros-args \
-    -r __ns:=/fmu1 \
+    -r __ns:=/uav_1 \
     -p drone_count:=4.0 \
-    -p agent_namespace:=fmu1_agent
+    -p agent_namespace:=uav_1_agent
 ```
 
 ## 支援的高階命令
 
-以下命令可透過 `/fmu{N}_agent/command`（單機）或 `/fmu_all_agent/command`（全體廣播）發送。
+以下命令可透過 `/uav_{N}_agent/command`（單機）或 `/uav_all_agent/command`（全體廣播）發送。
 
 ### 基本飛行命令（BasicController 處理）
 
@@ -78,7 +78,7 @@ ros2 run taiphoon_agent formation_node --ros-args \
 | `YAW` | `YAW [角度]` | 順時針旋轉指定角度（度），相對目前方向 |
 | `MOVE_POINT` | `MOVE_POINT x y z yaw` | 移動至指定 NED 絕對位置（x/y/z/yaw） |
 
-### 編隊命令（FormationNode 處理，僅限 `/fmu_all_agent/command`）
+### 編隊命令（FormationNode 處理，僅限 `/uav_all_agent/command`）
 
 | 命令 | 完整格式 | 說明 |
 |------|----------|------|
@@ -104,28 +104,28 @@ ros2 run taiphoon_agent formation_node --ros-args \
 `std_srvs/srv/SetBool`。`request.data` 必須為 `true`；服務回應送出後會立即終止 Agent
 容器 PID 1（SIGTERM 觸發立即退出），刻意模擬飛行電腦失效。
 
-此操作不檢查飛行狀態、不執行 RTL/LAND，也不允許 `/fmu_all_agent/shutdown` 廣播。後續行為
+此操作不檢查飛行狀態、不執行 RTL/LAND，也不允許 `/uav_all_agent/shutdown` 廣播。後續行為
 完全由 PX4 failsafe 決定。
 
 ```bash
 # 在 Agent 容器內確認 service
-ros2 service list | grep -F /fmu1_agent/shutdown
-ros2 service type /fmu1_agent/shutdown
+ros2 service list | grep -F /uav_1_agent/shutdown
+ros2 service type /uav_1_agent/shutdown
 ```
 
 確認完成後，在另一個終端執行；回應送出後容器會終止：
 
 ```bash
-docker compose exec fmu1_agent bash -c \
-  'ros2 service call /fmu1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
+docker compose exec uav_1_agent bash -c \
+  'ros2 service call /uav_1_agent/shutdown std_srvs/srv/SetBool "{data: true}"'
 ```
 
 若 Compose 服務設定為 `restart: no`，PID 1 終止後容器會保持停止；若設定自動重啟策略，
 容器可能重新啟動，無法保持失效狀態。回到宿主機的另一個終端確認容器狀態：
 
 ```bash
-docker compose ps fmu1_agent
-docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' fmu1_agent
+docker compose ps uav_1_agent
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}}' uav_1_agent
 ```
 
 ## 依賴套件
@@ -168,7 +168,7 @@ ros2 run taiphoon_agent basic_controller --ros-args \
 ```bash
 ros2 run taiphoon_agent formation_node --ros-args \
     -p drone_count:=4.0 \
-    -p agent_namespace:=fmu1_agent \
+    -p agent_namespace:=uav_1_agent \
     -p formation_update_rate_hz:=5.0
 ```
 
@@ -185,10 +185,10 @@ ros2 run taiphoon_agent formation_node --ros-args \
 
 1. 啟動 Launch 後，每台無人機各自執行 BasicController 自動 Offboard → Arm → Takeoff
 2. 所有無人機起飛至目標高度後懸停
-3. 透過 `/fmu_all_agent/command` 發送 `FORMATION_CIRCLE R H`，
+3. 透過 `/uav_all_agent/command` 發送 `FORMATION_CIRCLE R H`，
    所有 FormationNode 同時收到命令，各自計算目標位置
-4. 若某無人機離線（`/fmu<N>_agent` 節點消失，或超過 2 秒未收到其
-   `/fmu<N>_agent/state`），MissionPlanner 自動從編隊中排除，重新計算質心快照與角度分配
+4. 若某無人機離線（`/uav_<N>_agent` 節點消失，或超過 2 秒未收到其
+   `/uav_<N>_agent/state`），MissionPlanner 自動從編隊中排除，重新計算質心快照與角度分配
 5. 若線上機體少於 2 台，編隊自動取消並原地懸停（不自動恢復）
 6. 透過 `FORMATION_CANCEL` 取消編隊，各機恢復懸停
 
@@ -199,28 +199,28 @@ ros2 run taiphoon_agent formation_node --ros-args \
 bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4 --net Taiphoon_Net
 
 # 終端 2：啟動 Taiphoon_Agent
-docker compose exec taiphoon-agt bash
+docker compose exec uav_1_agent bash
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
 source /home/taiphoon/Taiphoon_Agent/install/setup.bash
 ros2 launch taiphoon_agent basic_controller.launch.py drone_count:=4
 
 # 終端 3：編隊指令
-docker compose exec taiphoon-agt bash
+docker compose exec uav_1_agent bash
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
 source /home/taiphoon/Taiphoon_Agent/install/setup.bash
 
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: ARM'
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: TAKEOFF 15'
-ros2 topic pub --times 5 /fmu_all_agent/command std_msgs/msg/String 'data: FORMATION_CIRCLE 10 10'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: ARM'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: TAKEOFF 15'
+ros2 topic pub --times 5 /uav_all_agent/command std_msgs/msg/String 'data: FORMATION_CIRCLE 10 10'
 ```
 
 ## 日誌檢視
 
 ```bash
 # 檢視 NED 目標（formation_node 輸出）
-ros2 topic echo /fmu1_agent/ned_target
+ros2 topic echo /uav_1_agent/ned_target
 
 # 檢視所有 topic
 ros2 topic list
@@ -234,9 +234,9 @@ ros2 topic list
 - 多機模式下注意 `startup_delay_s` 是否造成延遲
 
 ### 問題：無人機不起飛
-- 確認 `/fmu/in/trajectory_setpoint` 有正確的 Z 軸設定
+- 確認 `/uav_{N}/fmu/in/trajectory_setpoint` 有正確的 Z 軸設定
 - 確認 PX4 參數 `COM_RCL_EXCEPT` 設為 4（允許 Offboard）
-- 使用 `ros2 topic echo /fmu{N}/fmu/out/vehicle_status` 確認狀態
+- 使用 `ros2 topic echo /uav_{N}/fmu/out/vehicle_status` 確認狀態
 
 ### 問題：Launch 後找不到節點
 - 確認已 source 所有必要 workspace：
@@ -248,11 +248,11 @@ ros2 topic list
 
 ### 問題：編隊未生效
 - 確認 `drone_count > 1`（FormationNode 只在多機模式下啟動）
-- 確認命令透過 `/fmu_all_agent/command` 而非單機 topic 發送
-- 確認所有無人機的里程計 topic `/fmu{N}/fmu/out/vehicle_odometry` 有資料
+- 確認命令透過 `/uav_all_agent/command` 而非單機 topic 發送
+- 確認所有無人機的里程計 topic `/uav_{N}/fmu/out/vehicle_odometry` 有資料
 
 ### 問題：無人機離線後編隊未更新
-- MissionPlanner 以 `/fmu<N>_agent` 節點存在性判定離線，並以 `peer_timeout_s`
+- MissionPlanner 以 `/uav_<N>_agent` 節點存在性判定離線，並以 `peer_timeout_s`
   （預設 2 秒）state 靜默作為加速器；確認節點消失或逾時後應出現
   "Agent N marked offline" 日誌
 - 若線上機體少於 2 台，編隊會自動取消，日誌出現 "Formation cancelled (online < 2)"

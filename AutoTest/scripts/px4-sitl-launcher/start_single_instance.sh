@@ -13,7 +13,7 @@ INSTANCE=""
 NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 FOREGROUND=false
-AGENT_CONTAINER="fmu1_agent"
+AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
 
 while [[ $# -gt 0 ]]; do
@@ -43,7 +43,7 @@ esac
 
 PORT=$((8888 + INSTANCE))
 NS_INDEX=$((INSTANCE + 1))
-NAMESPACE="fmu${NS_INDEX}"
+NAMESPACE="uav_${NS_INDEX}"
 MAVLINK_PORT=$((18570 + INSTANCE))
 SYS_ID=$((INSTANCE + 1))
 
@@ -79,6 +79,9 @@ PX4_DOCKER_OPTS=(
     --name="$DRONE_NAME"
     -p "${MAVLINK_PORT}:${MAVLINK_PORT}/udp"
     -e PX4_UXRCE_DDS_PORT="$PORT"
+    # 新版 PX4 以 UXRCE_DDS_NS_IDX 決定 namespace；舊版 SITL image 尚未
+    # 內建該參數時，使用同值的直接 namespace fallback，確保模擬器輸出一致。
+    -e PX4_PARAM_UXRCE_DDS_NS_IDX="$NS_INDEX"
     -e PX4_UXRCE_DDS_NS="$NAMESPACE"
     -e PX4_SIM_MODEL=sihsim_quadx
     -e PX4_NET_INTERFACE=eth0

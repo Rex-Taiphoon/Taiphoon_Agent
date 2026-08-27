@@ -5,8 +5,8 @@
  * @date 2026-07-22
  *
  * 訂閱主題：
- *   - /fmu1_agent/command  (特定 Agent 命令)
- *   - /fmu_all_agent/command (全體 Agent 命令)
+ *   - /uav_1_agent/command  (特定 Agent 命令)
+ *   - /uav_all_agent/command (全體 Agent 命令)
  *
  * 支援命令請參閱 CommandTypes.hpp
  */
@@ -49,7 +49,7 @@ public:
      * @brief 建構子
      *
      * @param node ROS2 節點指標 (不得為 nullptr)
-     * @param agent_namespace Agent 的命名空間 (例如 "fmu1")
+     * @param agent_namespace Agent 的命名空間 (例如 "uav_1_agent")
      */
     explicit AgentCommandHandler(
         rclcpp::Node* node,
@@ -91,7 +91,7 @@ private:
     /**
      * @brief 訂閱全體 Agent 命令主題的回呼
      *
-     * 監聽 /fmu_all_agent/command 主題
+     * 監聽 /uav_all_agent/command 主題
      *
      * @param msg 接收到的字串訊息
      */
@@ -114,13 +114,13 @@ private:
     /// ROS2 節點指標
     rclcpp::Node* node_;
 
-    /// 此 Agent 的命名空間 (例如 "fmu1")
+    /// 此 Agent 的命名空間 (例如 "uav_1_agent")
     std::string agent_namespace_;
 
     /// 訂閱特定 Agent 命令的主題 (/<agent_namespace>/command)
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr agent_command_sub_;
 
-    /// 訂閱全體 Agent 命令的主題 (/fmu_all_agent/command)
+    /// 訂閱全體 Agent 命令的主題 (/uav_all_agent/command)
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr all_agent_command_sub_;
 
     /// 命令執行回呼

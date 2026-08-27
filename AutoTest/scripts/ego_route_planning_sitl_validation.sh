@@ -24,9 +24,9 @@ usage()
       --scenario single|east|dual|four_move|swarm|all [--skip-basic]
 
 single：BasicController 回歸、無障礙直線、固定障礙繞行、封閉搜尋範圍。
-east：fmu1 起飛至 8 m 後沿 +East 移動 30 m 的無障礙與 East wall 場景。
+east：uav_1 起飛至 8 m 後沿 +East 移動 30 m 的無障礙與 East wall 場景。
 dual：兩台以交叉 MOVE_POINT 驗證 moving peer 的時間避碰。
-four_move：四台起飛後維持西向東 8 m 間距，僅 fmu1 執行 +East MOVE_RIGHT 30 m。
+four_move：四台起飛後維持西向東 8 m 間距，僅 uav_1 執行 +East MOVE_RIGHT 30 m。
 swarm：四台 `FORMATION_CIRCLE 10 10` 固定高度、幾何半徑與 terminal hold。
 EOF
 }
@@ -91,33 +91,61 @@ start_agents()
     local count="$1"
     local obstacle_mode="${2:-explicit_empty}"
     local obstacle_config="${3:-/home/taiphoon/Taiphoon_Agent/config/obstacles/default.yaml}"
-    export FMU1_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
-    export FMU2_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
-    export FMU3_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
-    export FMU4_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
-    export FMU1_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
-    export FMU2_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
-    export FMU3_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
-    export FMU4_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
+    export UAV_1_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
+    export UAV_2_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
+    export UAV_3_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
+    export UAV_4_OBSTACLE_CLOUD_MODE="${obstacle_mode}"
+    export UAV_1_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
+    export UAV_2_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
+    export UAV_3_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
+    export UAV_4_OBSTACLE_CLOUD_CONFIG="${obstacle_config}"
     docker compose down >/dev/null 2>&1 || true
     if [[ "${count}" -eq 1 ]]; then
-        docker compose up -d fmu1_agent
+        docker compose up -d uav_1_agent
     elif [[ "${count}" -eq 2 ]]; then
-        docker compose up -d fmu1_agent fmu2_agent
+        docker compose up -d uav_1_agent uav_2_agent
     else
         docker compose up -d
     fi
     AGENT_STARTED=1
+    wait_for_agent_nodes "${count}"
     bash "${SCRIPT_DIR}/px4-sitl-launcher/launch_all.sh" \
         --count "${count}" --net "${NETWORK_NAME}" --rmw cyclonedds
     sleep 10
+}
+
+wait_for_agent_nodes()
+{
+    local count="$1"
+    local deadline=$((SECONDS + 180))
+    echo "=== 等待 ${count} 個 Agent planner node ready ==="
+    while (( SECONDS < deadline )); do
+        local all_ready=1
+        local agent_id
+        for agent_id in $(seq 1 "${count}"); do
+            if ! docker exec -i uav_1_agent bash -lc \
+                "source /opt/ros/humble/setup.bash && \
+                 ros2 node list" 2>/dev/null | \
+                grep -F "/uav_${agent_id}/ego_swarm_planner" >/dev/null; then
+                all_ready=0
+                break
+            fi
+        done
+        if [[ "${all_ready}" -eq 1 ]]; then
+            echo "=== Agent planner node 全部 ready ==="
+            return 0
+        fi
+        sleep 2
+    done
+    echo "錯誤：180 秒內未等到所有 Agent planner node ready" >&2
+    return 1
 }
 
 publish_command()
 {
     local topic="$1"
     local command="$2"
-    docker exec -i fmu1_agent bash -lc \
+    docker exec -i uav_1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && ros2 topic pub \
         --wait-matching-subscriptions 1 --once ${topic} \
         std_msgs/msg/String \"data: '${command}'\"" >/dev/null
@@ -127,7 +155,7 @@ run_monitor()
 {
     local count="$1"
     shift
-    docker exec -i fmu1_agent bash -lc \
+    docker exec -i uav_1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && \
          source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
          source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
@@ -139,7 +167,7 @@ wait_for_takeoff_altitude()
 {
     local count="$1"
     local altitude_m="${2:-${TAKEOFF_ALTITUDE_M}}"
-    docker exec -i fmu1_agent bash -lc \
+    docker exec -i uav_1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && \
          source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
          source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
@@ -176,7 +204,7 @@ run_single()
         --max-lateral-m 1.0 &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_FORWARD 12"
+    publish_command /uav_1_agent/command "MOVE_FORWARD 12"
     wait "${monitor_pid}"
 
     echo "=== 單機固定障礙繞行 ==="
@@ -188,7 +216,7 @@ run_single()
         --require-lateral-m 0.5 &
     monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_FORWARD 16"
+    publish_command /uav_1_agent/command "MOVE_FORWARD 16"
     wait "${monitor_pid}"
 
     echo "=== 單機封閉搜尋範圍：必須 HOLD／Brake，不得穿牆 ==="
@@ -200,7 +228,7 @@ run_single()
         --expect-failure &
     monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_FORWARD 20"
+    publish_command /uav_1_agent/command "MOVE_FORWARD 20"
     wait "${monitor_pid}"
 }
 
@@ -214,16 +242,16 @@ run_dual()
         --minimum-distance-m 3.0 &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "YAW 34"
-    publish_command /fmu2_agent/command "YAW -34"
-    publish_command /fmu1_agent/command "MOVE_FORWARD 14.5"
-    publish_command /fmu2_agent/command "MOVE_FORWARD 14.5"
+    publish_command /uav_1_agent/command "YAW 34"
+    publish_command /uav_2_agent/command "YAW -34"
+    publish_command /uav_1_agent/command "MOVE_FORWARD 14.5"
+    publish_command /uav_2_agent/command "MOVE_FORWARD 14.5"
     wait "${monitor_pid}"
 }
 
 run_east()
 {
-    echo "=== Scenario B：fmu1 無障礙 +East 30 m ==="
+    echo "=== Scenario B：uav_1 無障礙 +East 30 m ==="
     start_agents 1 explicit_empty
     takeoff_and_wait 1 "${TAKEOFF_ALTITUDE_M}"
     run_monitor 1 --timeout-s 20 --metric-warmup-s 0 \
@@ -233,10 +261,10 @@ run_east()
         --require-initial-heading-north &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
+    publish_command /uav_1_agent/command "MOVE_RIGHT 30"
     wait "${monitor_pid}"
 
-    echo "=== Scenario C：fmu1 East wall +East 30 m ==="
+    echo "=== Scenario C：uav_1 East wall +East 30 m ==="
     start_agents 1 ground_truth \
         /home/taiphoon/Taiphoon_Agent/config/obstacles/east_wall.yaml
     takeoff_and_wait 1 "${TAKEOFF_ALTITUDE_M}"
@@ -249,13 +277,13 @@ run_east()
         --require-initial-heading-north &
     monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
+    publish_command /uav_1_agent/command "MOVE_RIGHT 30"
     wait "${monitor_pid}"
 }
 
 run_four_move()
 {
-    echo "=== Scenario D：四機西向東排列，僅 fmu1 +East MOVE_RIGHT 30 m ==="
+    echo "=== Scenario D：四機西向東排列，僅 uav_1 +East MOVE_RIGHT 30 m ==="
     start_agents 4 explicit_empty
     takeoff_and_wait 4 "${TAKEOFF_ALTITUDE_M}"
     run_monitor 4 --moving-agents 1 --timeout-s 120 \
@@ -265,7 +293,7 @@ run_four_move()
         --expected-control-points 10 --require-initial-heading-north &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu1_agent/command "MOVE_RIGHT 30"
+    publish_command /uav_1_agent/command "MOVE_RIGHT 30"
     wait "${monitor_pid}"
 }
 
@@ -278,9 +306,9 @@ wait_for_formation_converged()
         local agent_id
         for agent_id in $(seq 1 "${count}"); do
             local reason
-            reason=$(docker exec -i fmu1_agent bash -lc \
+            reason=$(docker exec -i uav_1_agent bash -lc \
                 "source /opt/ros/humble/setup.bash && ros2 topic echo \
-                 --once /fmu${agent_id}_agent/planning/status" 2>/dev/null || true)
+                 --once /uav_${agent_id}_agent/planning/status" 2>/dev/null || true)
             if ! grep -q "formation_converged; terminal hold active" <<<"${reason}"; then
                 all_ready=0
                 break
@@ -303,7 +331,7 @@ run_swarm()
     echo "=== Scenario A：四機完整環形編隊固定高度 ==="
     start_agents 4 explicit_empty
     takeoff_and_wait 4 "${FORMATION_ALTITUDE_M}"
-    docker exec -i fmu1_agent bash -lc \
+    docker exec -i uav_1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && \
          source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
          source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
@@ -311,9 +339,9 @@ run_swarm()
          --mode 2 --agents 4 --timeout-s 90 --minimum-distance-m 3.0" &
     local monitor_pid=$!
     sleep 1
-    publish_command /fmu_all_agent/command "FORMATION_CIRCLE 10 10"
+    publish_command /uav_all_agent/command "FORMATION_CIRCLE 10 10"
     wait_for_formation_converged 4
-    publish_command /fmu_all_agent/command "FORMATION_CANCEL"
+    publish_command /uav_all_agent/command "FORMATION_CANCEL"
     wait "${monitor_pid}"
 }
 

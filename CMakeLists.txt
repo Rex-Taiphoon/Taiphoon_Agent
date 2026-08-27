@@ -227,6 +227,14 @@ if(BUILD_TESTING)
     test/peer_matcher_test.cpp
   )
 
+  ament_add_gtest(test_agent_naming
+    test/agent_naming_test.cpp
+  )
+
+  target_include_directories(test_agent_naming PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   target_include_directories(test_peer_matcher PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )

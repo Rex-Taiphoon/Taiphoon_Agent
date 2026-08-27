@@ -7,6 +7,8 @@
 
 #include "controllers/AgentCommandHandler.hpp"
 
+#include "utils/AgentNaming.hpp"
+
 namespace taiphoon
 {
 namespace controllers
@@ -101,8 +103,8 @@ bool AgentCommandHandler::create_agent_command_subscriber()
 
 bool AgentCommandHandler::create_all_agent_command_subscriber()
 {
-    // 全體 Agent 命令主題固定為 /fmu_all_agent/command
-    const std::string all_cmd_topic = "/fmu_all_agent/command";
+    const std::string all_cmd_topic =
+        utils::agent_naming::make_all_agent_topic("command");
 
     all_agent_command_sub_ =
         node_->create_subscription<std_msgs::msg::String>(

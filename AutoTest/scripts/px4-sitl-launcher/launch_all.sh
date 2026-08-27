@@ -12,7 +12,7 @@
 #   --count N      無人機數量（預設 3）
 #   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
-#   --agent NAME   Agent 容器名稱（預設 taiphoon_agent_dev）
+#   --agent NAME   Agent 容器名稱（預設 uav_1_agent）
 #   --initial-spacing-m M  PX4 起始水平間距（預設 8.0，必須大於 3.0）
 # =============================================================================
 
@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COUNT=4
 NETWORK="Taiphoon_Net"
 RMW="fastrtps"
-AGENT_CONTAINER="fmu1_agent"
+AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
 
 # ---- 解析參數 ----
@@ -93,7 +93,7 @@ for ((i=0; i<COUNT; i++)); do
         --index "$i" \
         --net "$NETWORK" \
         --rmw "$RMW" \
-        --agent "fmu$((i+1))_agent" \
+        --agent "uav_$((i+1))_agent" \
         --initial-spacing-m "$INITIAL_SPACING_M"
     sleep 2
 done
@@ -113,4 +113,4 @@ for ((i=0; i<COUNT; i++)); do
 done
 echo ""
 echo "檢查 ROS2 topics (在 Agent 容器內)："
-echo "  docker exec ${AGENT_CONTAINER} bash -c \"source /opt/ros/humble/setup.bash && ros2 topic list | grep fmu\""
+echo "  docker exec ${AGENT_CONTAINER} bash -c \"source /opt/ros/humble/setup.bash && ros2 topic list | grep uav\""
