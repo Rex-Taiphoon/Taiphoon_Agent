@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>taiphoon_agent</name>
-  <version>0.1.0</version>
+  <version>1.2.1</version>
   <description>Taiphoon Agent - UAV autonomous flight control hub with formation control</description>
   <maintainer email="taiphoon@taiphoon.dev">Taiphoon Agent Team</maintainer>
   <license>Proprietary</license>
