@@ -27,11 +27,12 @@ docker pull px4io/px4-sitl:latest
 # 3. 建立網路
 docker network create Taiphoon_Net
 
-# 4. 啟動開發容器
-docker compose up -d uav_1_agent
+# 4. 啟動 SITL 用 Taiphoon Agent 容器
+docker compose up -d
 
-# 5. 啟動模擬器
-bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 4
+# 5. 啟動模擬器（Taiphoon_Net + CycloneDDS）
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh \
+  --count 4 --net Taiphoon_Net --rmw cyclonedds
 
 # 6. 編譯 Taiphoon_Agent
 docker compose exec uav_1_agent bash -c \
@@ -42,11 +43,32 @@ docker compose exec uav_1_agent bash -c \
 bash AutoTest/scripts/quick_takeoff.sh
 ```
 
-> **實機模式**：加上 `--profile hw` 啟動 uXRCE-DDS Agent 常駐服務。
->
-> ```bash
-> docker compose --profile hw up -d
-> ```
+> SITL 使用 `docker compose up -d`，實機使用下方的 `docker run`。
+
+## 實機啟動（Raspberry Pi）
+
+請先將 `config/cyclonedds.xml` 放置於樹莓派的
+`/home/taiphoon/Taiphoon_Agent/config/cyclonedds.xml`，再執行：
+
+```bash
+docker run -d \
+  --pull never \
+  --name fmu1_agent \
+  --hostname fmu1-agent \
+  --user taiphoon \
+  --workdir /home/taiphoon/Taiphoon_Agent \
+  --network host \
+  -p 8888:8888/udp \
+  --restart=no \
+  -it \
+  --entrypoint /home/taiphoon/entrypoint.sh \
+  -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+  -e CYCLONEDDS_URI=file:///home/taiphoon/cyclonedds.xml \
+  -v /home/taiphoon/Taiphoon_Agent/config/cyclonedds.xml:/home/taiphoon/cyclonedds.xml:ro \
+  rextaiphoon/taiphoon-agent:1.2.1
+```
+
+CycloneDDS 會使用 `wlan0`，並將 `192.168.0.20` 設為 discovery peer。
 
 ## 系統需求
 

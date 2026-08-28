@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <!-- Agent 使用樹莓派實體 Wi-Fi 網卡。 -->
+      <NetworkInterfaceAddress>wlan0</NetworkInterfaceAddress>
+
+      <!-- 保留本機及 LAN multicast，避免影響 Agent 內部 discovery。 -->
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+
+    <Discovery>
+      <!-- Agent 有多個 ROS 2 程序，不可全部固定使用相同 index。 -->
+      <ParticipantIndex>auto</ParticipantIndex>
+
+      <!-- 掃描 participant index 0～20 對應的標準 RTPS port。 -->
+      <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
+
+      <Peers>
+        <!-- macOS 實體 LAN 位址，不是 Docker VM 的 192.168.65.x。 -->
+        <Peer Address="192.168.0.20"/>
+      </Peers>
+    </Discovery>
+
+    <Tracing>
+      <!-- 初次整合時輸出設定及 discovery 資訊。 -->
+      <Verbosity>fine</Verbosity>
+      <OutputFile>stderr</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>
