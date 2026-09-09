@@ -15,6 +15,10 @@ RMW="fastrtps"
 FOREGROUND=false
 AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
+HOME_LAT="25.03996592258936"
+HOME_LON="121.51195163336611"
+HAS_HOME_LAT=false
+HAS_HOME_LON=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -24,11 +28,29 @@ while [[ $# -gt 0 ]]; do
         --fg) FOREGROUND=true; shift ;;
         --agent) AGENT_CONTAINER="$2"; shift 2 ;;
         --initial-spacing-m) INITIAL_SPACING_M="$2"; shift 2 ;;
+        --home-lat) HOME_LAT="$2"; HAS_HOME_LAT=true; shift 2 ;;
+        --home-lon) HOME_LON="$2"; HAS_HOME_LON=true; shift 2 ;;
         *) echo "未知參數：$1"; exit 1 ;;
     esac
 done
 
 [ -z "$INSTANCE" ] && { echo "錯誤：請提供實例編號（--index 0）"; exit 1; }
+if [ "$HAS_HOME_LAT" != "$HAS_HOME_LON" ]; then
+    echo "錯誤：--home-lat 與 --home-lon 必須一起使用"
+    exit 1
+fi
+
+NUMBER_PATTERN='^-?([0-9]+([.][0-9]*)?|[.][0-9]+)$'
+if ! [[ "$HOME_LAT" =~ $NUMBER_PATTERN ]] ||
+    ! awk -v value="$HOME_LAT" 'BEGIN { exit !(value > -90.0 && value < 90.0) }'; then
+    echo "錯誤：--home-lat 必須是大於 -90 且小於 90 的數值"
+    exit 1
+fi
+if ! [[ "$HOME_LON" =~ $NUMBER_PATTERN ]] ||
+    ! awk -v value="$HOME_LON" 'BEGIN { exit !(value >= -180.0 && value <= 180.0) }'; then
+    echo "錯誤：--home-lon 必須是 -180 到 180 之間的數值"
+    exit 1
+fi
 if ! [[ "$INITIAL_SPACING_M" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
     [ "$(printf '%s\n' "$INITIAL_SPACING_M" | awk '$1 <= 3.0 {print 1}')" = "1" ]; then
     echo "錯誤：--initial-spacing-m 必須大於 3.0 公尺"
@@ -47,16 +69,17 @@ NAMESPACE="uav_${NS_INDEX}"
 MAVLINK_PORT=$((18570 + INSTANCE))
 SYS_ID=$((INSTANCE + 1))
 
-read HOME_LAT HOME_LON <<< $(python3 -c "
+read -r INSTANCE_HOME_LAT INSTANCE_HOME_LON < <(python3 -c "
 import math, sys
-base_lat = 25.03996592258936
-base_lon = 121.51195163336611
+base_lat = float(sys.argv[3])
+base_lon = float(sys.argv[4])
 instance = int(sys.argv[1])
 spacing_m = float(sys.argv[2])
 lon_per_m = 1.0 / (111320.0 * math.cos(math.radians(base_lat)))
 offset = instance * spacing_m * lon_per_m
-print(f'{base_lat} {base_lon + offset}')
-" $INSTANCE $INITIAL_SPACING_M)
+longitude = (base_lon + offset + 180.0) % 360.0 - 180.0
+print(f'{base_lat} {longitude}')
+" "$INSTANCE" "$INITIAL_SPACING_M" "$HOME_LAT" "$HOME_LON")
 
 DRONE_NAME="drone${NS_INDEX}"
 
@@ -89,8 +112,8 @@ PX4_DOCKER_OPTS=(
     -e PX4_PARAM_COM_RC_IN_MODE=4
     -e PX4_PARAM_COM_ARM_MIS_REQ=0
     -e PX4_PARAM_MAV_0_BROADCAST=1
-    -e PX4_HOME_LAT="$HOME_LAT"
-    -e PX4_HOME_LON="$HOME_LON"
+    -e PX4_HOME_LAT="$INSTANCE_HOME_LAT"
+    -e PX4_HOME_LON="$INSTANCE_HOME_LON"
 )
 
 # PX4 entrypoint: 將 uXRCE-DDS client 指向 Agent 容器

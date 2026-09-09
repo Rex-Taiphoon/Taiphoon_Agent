@@ -150,10 +150,22 @@ SITL 誤差）。不以固定 sleep 代替起飛完成判斷。
 | `--count N` | 無人機數量 | 4 |
 | `--net NAME` | Docker 網路名稱 | Taiphoon_Net |
 | `--rmw TYPE` | DDS 中介軟體（fastrtps / cyclonedds） | fastrtps |
-| `--initial-spacing-m M` | PX4 起始水平間距；必須大於預設 3m peer safety 門檻 | 5.0 |
+| `--initial-spacing-m M` | PX4 起始水平間距；必須大於預設 3m peer safety 門檻 | 8.0 |
+| `--home-lat LAT` | 第一台 PX4 的起始緯度，需與 `--home-lon` 一起使用 | 25.03996592258936 |
+| `--home-lon LON` | 第一台 PX4 的起始經度，需與 `--home-lat` 一起使用 | 121.51195163336611 |
 
 SITL launcher 預設以 8m 水平間距啟動，為飛控定位與控制誤差保留安全
 裕度；這不會改寫 planner 的 `peer_collision_min_distance_m`。
+未提供起始位置參數時會沿用上述預設經緯度；提供時，`--home-lat` 與
+`--home-lon` 必須一起使用。第一台位於指定座標，其餘無人機沿用水平間距向東排列。
+
+```bash
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh \
+  --count 4 \
+  --rmw cyclonedds \
+  --home-lat 25.0330 \
+  --home-lon 121.5654
+```
 
 每台無人機對應一個 PX4 SITL 容器 `drone{N}` 與一個 Agent 容器 `uav_{N}_agent`。
 PX4 透過 `UXRCE_DDS_NS_IDX=N` 使用 `/uav_{N}` namespace，MAV_SYS_ID 與通訊埠由

@@ -6,14 +6,17 @@
 # 使用前請先啟動 Agent 容器：docker compose up -d
 #
 # 使用方式：
-#   bash launch_all.sh --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]
+#   bash launch_all.sh --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds] \
+#       [--home-lat LAT --home-lon LON]
 #
 # 參數：
-#   --count N      無人機數量（預設 3）
+#   --count N      無人機數量（預設 4）
 #   --net NETWORK  Docker 網路名稱（預設 Taiphoon_Net）
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
 #   --agent NAME   Agent 容器名稱（預設 uav_1_agent）
 #   --initial-spacing-m M  PX4 起始水平間距（預設 8.0，必須大於 3.0）
+#   --home-lat LAT          第一台 PX4 的起始緯度，需與 --home-lon 一起使用
+#   --home-lon LON          第一台 PX4 的起始經度，需與 --home-lat 一起使用
 # =============================================================================
 
 set -e
@@ -26,6 +29,8 @@ NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
+HOME_LAT=""
+HOME_LON=""
 
 # ---- 解析參數 ----
 while [[ $# -gt 0 ]]; do
@@ -50,13 +55,46 @@ while [[ $# -gt 0 ]]; do
             INITIAL_SPACING_M="$2"
             shift 2
             ;;
+        --home-lat)
+            HOME_LAT="$2"
+            shift 2
+            ;;
+        --home-lon)
+            HOME_LON="$2"
+            shift 2
+            ;;
         *)
             echo "未知參數：$1"
-            echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds] [--initial-spacing-m 8.0]"
+            echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
+            echo "          [--initial-spacing-m 8.0] [--home-lat LAT --home-lon LON]"
             exit 1
             ;;
     esac
 done
+
+if { [ -n "$HOME_LAT" ] && [ -z "$HOME_LON" ]; } ||
+    { [ -z "$HOME_LAT" ] && [ -n "$HOME_LON" ]; }; then
+    echo "錯誤：--home-lat 與 --home-lon 必須一起使用"
+    exit 1
+fi
+
+NUMBER_PATTERN='^-?([0-9]+([.][0-9]*)?|[.][0-9]+)$'
+if [ -n "$HOME_LAT" ]; then
+    if ! [[ "$HOME_LAT" =~ $NUMBER_PATTERN ]] ||
+        ! awk -v value="$HOME_LAT" 'BEGIN { exit !(value > -90.0 && value < 90.0) }'; then
+        echo "錯誤：--home-lat 必須是大於 -90 且小於 90 的數值"
+        exit 1
+    fi
+    if ! [[ "$HOME_LON" =~ $NUMBER_PATTERN ]] ||
+        ! awk -v value="$HOME_LON" 'BEGIN { exit !(value >= -180.0 && value <= 180.0) }'; then
+        echo "錯誤：--home-lon 必須是 -180 到 180 之間的數值"
+        exit 1
+    fi
+fi
+POSITION_ARGS=()
+if [ -n "$HOME_LAT" ]; then
+    POSITION_ARGS=(--home-lat "$HOME_LAT" --home-lon "$HOME_LON")
+fi
 
 # ---- 轉換 RMW 簡稱 ----
 case "$RMW" in
@@ -94,7 +132,8 @@ for ((i=0; i<COUNT; i++)); do
         --net "$NETWORK" \
         --rmw "$RMW" \
         --agent "uav_$((i+1))_agent" \
-        --initial-spacing-m "$INITIAL_SPACING_M"
+        --initial-spacing-m "$INITIAL_SPACING_M" \
+        "${POSITION_ARGS[@]}"
     sleep 2
 done
 
