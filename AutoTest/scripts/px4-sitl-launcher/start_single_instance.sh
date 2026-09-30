@@ -19,6 +19,7 @@ HOME_LAT="25.03996592258936"
 HOME_LON="121.51195163336611"
 HAS_HOME_LAT=false
 HAS_HOME_LON=false
+GCS_HOST=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,11 +31,16 @@ while [[ $# -gt 0 ]]; do
         --initial-spacing-m) INITIAL_SPACING_M="$2"; shift 2 ;;
         --home-lat) HOME_LAT="$2"; HAS_HOME_LAT=true; shift 2 ;;
         --home-lon) HOME_LON="$2"; HAS_HOME_LON=true; shift 2 ;;
+        --gcs-host) GCS_HOST="$2"; shift 2 ;;
         *) echo "未知參數：$1"; exit 1 ;;
     esac
 done
 
 [ -z "$INSTANCE" ] && { echo "錯誤：請提供實例編號（--index 0）"; exit 1; }
+if [ -n "$GCS_HOST" ] && ! python3 -c 'import ipaddress, sys; ipaddress.IPv4Address(sys.argv[1])' "$GCS_HOST" >/dev/null 2>&1; then
+    echo "錯誤：--gcs-host 必須是合法的 IPv4 位址"
+    exit 1
+fi
 if [ "$HAS_HOME_LAT" != "$HAS_HOME_LON" ]; then
     echo "錯誤：--home-lat 與 --home-lon 必須一起使用"
     exit 1
@@ -114,6 +120,7 @@ PX4_DOCKER_OPTS=(
     -e PX4_PARAM_MAV_0_BROADCAST=1
     -e PX4_HOME_LAT="$INSTANCE_HOME_LAT"
     -e PX4_HOME_LON="$INSTANCE_HOME_LON"
+    -e PX4_GCS_HOST="$GCS_HOST"
 )
 
 # PX4 entrypoint: 將 uXRCE-DDS client 指向 Agent 容器
@@ -128,6 +135,11 @@ PX4_ENTRYPOINT_CMD="
     HOST_IP=\$(getent ahostsv4 host.docker.internal | awk '/STREAM/ {print \$1; exit}')
     if [ -n \"\$HOST_IP\" ]; then
         sed -i \"s/mavlink start -x -u/mavlink start -x -t \$HOST_IP -u/g\" /opt/px4/etc/init.d-posix/px4-rc.mavlink
+    fi
+    if [ -n \"\$PX4_GCS_HOST\" ]; then
+        # 僅覆寫 GCS link；保留既有 API、payload、gimbal 與 SIH link。
+        sed -i \"/mavlink start .*udp_gcs_port_local/s/ -t [^ ]*//; /mavlink start .*udp_gcs_port_local/s/mavlink start /mavlink start -t \$PX4_GCS_HOST /\" /opt/px4/etc/init.d-posix/px4-rc.mavlink
+        echo \"[entrypoint] QGC: \$PX4_GCS_HOST:14550\"
     fi
     exec /opt/px4/bin/px4 -d -i ${INSTANCE}
 "
@@ -147,4 +159,4 @@ else
 fi
 
 echo "  [${DRONE_NAME}] uxrce_port=${PORT}, mavlink_port=${MAVLINK_PORT}, sys_id=${SYS_ID}, ns=${NAMESPACE}"
-echo "  [${DRONE_NAME}] QGC 連線：udp://localhost:${MAVLINK_PORT}"
+echo "  [${DRONE_NAME}] QGC：local UDP ${MAVLINK_PORT} -> ${GCS_HOST:-host.docker.internal}:14550"

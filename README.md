@@ -16,32 +16,67 @@
 
 ## 快速開始（Docker）
 
+以下指令在 Linux／WSL2 的專案根目錄執行。ROS2 與 colcon 指令均在容器內執行。
+
 ```bash
-# 1. 建構映像
-docker build -f docker/Dockerfile.uxrce-agent -t taiphoon/uxrce-agent:latest .
-docker compose build
+# 1. 建構共用開發映像（AI Agent 執行前需取得使用者授權）
+docker build --target taiphoon-dev -t taiphoon-agent:dev .
 
-# 2. 拉取 PX4 SITL 映像
+# 2. 拉取 PX4 SITL 映像並準備網路
 docker pull px4io/px4-sitl:latest
+docker network inspect Taiphoon_Net >/dev/null 2>&1 || docker network create Taiphoon_Net
 
-# 3. 建立網路
-docker network create Taiphoon_Net
+# 3. Compose 需要可用的 SSH_AUTH_SOCK；沒有 ssh-agent 時建立空的 agent
+if [ -z "${SSH_AUTH_SOCK:-}" ] || [ ! -S "$SSH_AUTH_SOCK" ]; then
+  eval "$(ssh-agent -s)"
+fi
 
-# 4. 啟動 SITL 用 Taiphoon Agent 容器
-docker compose up -d
+# 4. 首次啟動、共享目錄尚無 install/ 時，先建置 bind mount 的 workspace
+#    bind mount 會遮蔽映像內的 install/；AgentSupervisor 需要先取得套件
+if [ ! -f install/setup.bash ]; then
+  docker compose run --rm --no-deps --entrypoint /bin/bash uav_1_agent \
+    -c 'source /opt/ros/humble/setup.bash && source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && colcon build --symlink-install --executor sequential'
+fi
 
-# 5. 啟動模擬器（Taiphoon_Net + CycloneDDS）
+# 5. 啟動四個 Agent；entrypoint 會序列化建置並啟動 ROS2 節點
+docker compose up -d --no-build --pull never
+
+# 6. 啟動模擬器（Taiphoon_Net + CycloneDDS）
 bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh \
   --count 4 --net Taiphoon_Net --rmw cyclonedds
 
-# 6. 編譯 Taiphoon_Agent
+# 7. 在容器內檢查連線與狀態，不發送飛行命令
+docker compose exec uav_1_agent bash -c 'ros2 node list'
 docker compose exec uav_1_agent bash -c \
-  "cd /home/taiphoon/Taiphoon_Agent && \
-   colcon build --symlink-install --packages-select taiphoon_agent"
-
-# 7. 快速起飛（使用 CycloneDDS）
-bash AutoTest/scripts/quick_takeoff.sh
+  'timeout 15 ros2 topic echo /uav_1_agent/state taiphoon_agent/msg/AgentState --once'
 ```
+
+需要起飛驗證時，應在所有 Agent／PX4 節點完成啟動、PX4 狀態有效且至少等待
+10 秒後，再執行 `bash AutoTest/scripts/quick_takeoff.sh`。僅驗證啟動與連線時不執行起飛。
+
+Shell 腳本由 `.gitattributes` 固定使用 LF 換行，避免 Windows checkout 後 WSL 無法執行 shebang。
+使用 WSL 內的 Docker Engine 時，映像、cache 與容器資料存放於 WSL 虛擬磁碟；
+若不希望占用 C 槽，建構前需確認該發行版磁碟已位於其他磁碟。
+本次環境的 Ubuntu-22.04 磁碟位於 `D:\WSL\Ubuntu-22.04\ext4.vhdx`。
+
+原生 WSL Docker 若將 `host.docker.internal` 解析到過期位址，Windows QGC
+可能收不到 SITL。可透過 `--gcs-host` 明確指定 Windows 的 WSL 網卡 IPv4：
+
+```bash
+# 此例為本次 WSL NAT 環境；WSL 重啟後請重新確認 Windows 位址
+bash AutoTest/scripts/px4-sitl-launcher/launch_all.sh \
+  --count 4 --rmw cyclonedds --gcs-host 172.25.160.1
+```
+
+QGC 使用 UDP 14550 自動連線。`--gcs-host` 僅設定 GCS MAVLink link，
+不變更 ROS2／uXRCE-DDS 或其他 MAVLink link；省略時沿用既有 DNS 路徑。
+啟動腳本會清理並重新建立 SITL 容器，不應在飛行中使用此指令。
+
+WSL 與 Windows 校時來源若有衝突，時間跳動會使 PX4 freshness／Offboard
+檢查失敗。本次環境在使用者授權下，將執行中的 clocksource 改為
+`hyperv_clocksource_tsc_page`、暫停 `systemd-timesyncd` 並同步 Windows 時間後，
+通過四機起飛與環形編隊驗證；目前保留此配置。這些調整只適用於當次 WSL
+執行階段，重啟 WSL 後需重新檢查時間與狀態有效性。
 
 > SITL 使用 `docker compose up -d`，實機使用下方的 `docker run`。
 
@@ -153,6 +188,7 @@ SITL 誤差）。不以固定 sleep 代替起飛完成判斷。
 | `--initial-spacing-m M` | PX4 起始水平間距；必須大於預設 3m peer safety 門檻 | 8.0 |
 | `--home-lat LAT` | 第一台 PX4 的起始緯度，需與 `--home-lon` 一起使用 | 25.03996592258936 |
 | `--home-lon LON` | 第一台 PX4 的起始經度，需與 `--home-lat` 一起使用 | 121.51195163336611 |
+| `--gcs-host IPV4` | QGC 的目的 IPv4；目的 UDP 埠為 14550 | host.docker.internal |
 
 SITL launcher 預設以 8m 水平間距啟動，為飛控定位與控制誤差保留安全
 裕度；這不會改寫 planner 的 `peer_collision_min_distance_m`。

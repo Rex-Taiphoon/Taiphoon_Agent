@@ -17,6 +17,7 @@
 #   --initial-spacing-m M  PX4 起始水平間距（預設 8.0，必須大於 3.0）
 #   --home-lat LAT          第一台 PX4 的起始緯度，需與 --home-lon 一起使用
 #   --home-lon LON          第一台 PX4 的起始經度，需與 --home-lat 一起使用
+#   --gcs-host IPV4         QGC 目的 IPv4；省略時沿用 host.docker.internal
 # =============================================================================
 
 set -e
@@ -31,6 +32,7 @@ AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
 HOME_LAT=""
 HOME_LON=""
+GCS_HOST=""
 
 # ---- 解析參數 ----
 while [[ $# -gt 0 ]]; do
@@ -63,14 +65,24 @@ while [[ $# -gt 0 ]]; do
             HOME_LON="$2"
             shift 2
             ;;
+        --gcs-host)
+            GCS_HOST="$2"
+            shift 2
+            ;;
         *)
             echo "未知參數：$1"
             echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
             echo "          [--initial-spacing-m 8.0] [--home-lat LAT --home-lon LON]"
+            echo "          [--gcs-host IPV4]"
             exit 1
             ;;
     esac
 done
+
+if [ -n "$GCS_HOST" ] && ! python3 -c 'import ipaddress, sys; ipaddress.IPv4Address(sys.argv[1])' "$GCS_HOST" >/dev/null 2>&1; then
+    echo "錯誤：--gcs-host 必須是合法的 IPv4 位址"
+    exit 1
+fi
 
 if { [ -n "$HOME_LAT" ] && [ -z "$HOME_LON" ]; } ||
     { [ -z "$HOME_LAT" ] && [ -n "$HOME_LON" ]; }; then
@@ -94,6 +106,10 @@ fi
 POSITION_ARGS=()
 if [ -n "$HOME_LAT" ]; then
     POSITION_ARGS=(--home-lat "$HOME_LAT" --home-lon "$HOME_LON")
+fi
+GCS_ARGS=()
+if [ -n "$GCS_HOST" ]; then
+    GCS_ARGS=(--gcs-host "$GCS_HOST")
 fi
 
 # ---- 轉換 RMW 簡稱 ----
@@ -133,6 +149,7 @@ for ((i=0; i<COUNT; i++)); do
         --rmw "$RMW" \
         --agent "uav_$((i+1))_agent" \
         --initial-spacing-m "$INITIAL_SPACING_M" \
+        "${GCS_ARGS[@]}" \
         "${POSITION_ARGS[@]}"
     sleep 2
 done
@@ -148,7 +165,7 @@ echo ""
 echo "QGC 連線 port："
 for ((i=0; i<COUNT; i++)); do
     MAVLINK_PORT=$((18570 + i))
-    echo "  drone$((i+1)): udp://localhost:${MAVLINK_PORT}"
+    echo "  drone$((i+1)): local UDP ${MAVLINK_PORT} -> QGC ${GCS_HOST:-host.docker.internal}:14550"
 done
 echo ""
 echo "檢查 ROS2 topics (在 Agent 容器內)："
