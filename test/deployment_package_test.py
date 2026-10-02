@@ -42,7 +42,7 @@ def main():
         directory = root / 'artifacts' / f'native-{platform}'
         directory.mkdir(parents=True)
         (directory / filename).write_bytes(b'native-launcher-fixture')
-    workflow = yaml.safe_load((source / '.github/workflows/agent-release.yml').read_text())
+    workflow = yaml.safe_load((source / '.github/workflows/agent-build.yml').read_text())
     steps = workflow['jobs']['package']['steps']
     command = next(step['run'] for step in steps if step.get('name', '').startswith('組裝各平台下載包'))
     environment = dict(os.environ, VERSION='v0.0.0-package-test')

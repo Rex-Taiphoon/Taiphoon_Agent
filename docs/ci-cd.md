@@ -11,6 +11,9 @@ Windows／macOS runner 編譯原生入口；不在 host 執行 ROS2 測試。
 建置步驟集中於 `.github/workflows/agent-build.yml`，CI 與 Release 共用它。
 一般 CI 傳入 `verification_only: true`，省略大型映像匯出與套件上傳。
 CI 僅使用唯讀 repository 權限；只有 Release 的 publish 工作有寫入權限。
+Docker 建置使用按 CPU 架構隔離的 GitHub layer cache；cache 不可用時仍完整建置與測試。
+cache 存取遵循 GitHub 的分支限制，版本標籤的首次建置可能仍需要重新編譯。
+兩個 Docker target 共用同一組 YAML anchor 建置參數，維護時只修改一處。
 不要為 PR 加入部署 token，也不要改用 `pull_request_target` 執行 PR 程式碼。
 
 ## 發布版本
@@ -56,3 +59,4 @@ GitHub repository 必須啟用 Actions 並允許 workflow 建立 Release，且�
 更新 PX4 訊息 commit 前，在 Docker 內重新建置與測試，並確認現場飛控版本相容。
 ARM64 runner 是原生建置；macOS 原生入口包含 Intel／Apple Silicon，但映像仍按下載包架構區分。
 GitHub 的可重用 workflow 規則參考 [官方文件](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)。
+Docker cache 設定參考 [官方文件](https://docs.docker.com/build/ci/github-actions/cache/)。

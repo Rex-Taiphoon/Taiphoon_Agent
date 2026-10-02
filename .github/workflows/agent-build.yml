@@ -19,6 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # 打包只下載指定產物，不需要額外的 Docker build record artifact。
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
   # 與目前已驗證的開發映像相同，不追蹤 px4_msgs 的浮動 main。
   PX4_MSGS_REF: 21556f8c9905e387da0fcfeb43e852332f20b807
 
@@ -61,20 +63,32 @@ jobs:
       ARCHITECTURE: ${{ matrix.architecture }}
     steps:
       - uses: actions/checkout@v4
-      - name: 建置可獨立執行的雙架構產物
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --target taiphoon-release-dev \
-            --build-arg COLCON_SYMLINK_INSTALL=false --build-arg PX4_MSGS_REF="$PX4_MSGS_REF" \
-            --build-arg BUILD_JOBS=2 --build-arg ROS_DEVELOPMENT_PACKAGE=ros-humble-ros-base \
-            --build-arg COLCON_BUILD_TYPE=Release \
-            -t "taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" .
-          docker build --target taiphoon-runtime \
-            --build-arg COLCON_SYMLINK_INSTALL=false --build-arg PX4_MSGS_REF="$PX4_MSGS_REF" \
-            --build-arg BUILD_JOBS=2 --build-arg ROS_DEVELOPMENT_PACKAGE=ros-humble-ros-base \
-            --build-arg COLCON_BUILD_TYPE=Release \
-            -t "taiphoon-agent:${VERSION}-runtime-${ARCHITECTURE}" .
+      - uses: docker/setup-buildx-action@v4
+      - name: 建置開發映像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: taiphoon-release-dev
+          load: true
+          tags: taiphoon-agent:${{ env.VERSION }}-dev-${{ matrix.architecture }}
+          build-args: &agent-build-args |
+            COLCON_SYMLINK_INSTALL=false
+            PX4_MSGS_REF=${{ env.PX4_MSGS_REF }}
+            BUILD_JOBS=2
+            ROS_DEVELOPMENT_PACKAGE=ros-humble-ros-base
+            COLCON_BUILD_TYPE=Release
+          cache-from: type=gha,version=2,scope=agent-${{ matrix.architecture }}
+          cache-to: type=gha,version=2,scope=agent-${{ matrix.architecture }},mode=max,ignore-error=true
+      - name: 建置執行映像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: taiphoon-runtime
+          load: true
+          tags: taiphoon-agent:${{ env.VERSION }}-runtime-${{ matrix.architecture }}
+          build-args: *agent-build-args
+          cache-from: type=gha,version=2,scope=agent-${{ matrix.architecture }}
+          cache-to: type=gha,version=2,scope=agent-${{ matrix.architecture }},mode=max,ignore-error=true
       - name: 容器內 workspace 與啟動工具測試
         shell: bash
         run: |

@@ -35,6 +35,11 @@
 
 ## 尚待 CI 與目標平台驗收
 
+第一輪 GitHub CI：Windows exe 與 macOS universal binary 編譯成功；ARM64 的新 dev／runtime
+映像建置成功，328 個 ROS2 測試全部通過，啟動工具的單元與程序整合測試通過。
+打包測試因 workflow 拆分後仍讀取舊位置而失敗，已改讀共用 `agent-build.yml`，
+Docker 內重跑三組 CTest 全數通過；完整 CI 重跑與 runtime 驗證仍待完成。
+
 - 新 runtime／dev Docker 映像建置、依賴完整性、ARM64 實際執行。
 - Windows 原生 exe 與 macOS universal binary 的原生編譯。
 - 正式映像大小、各平台包大小與 GitHub Release 上傳。
