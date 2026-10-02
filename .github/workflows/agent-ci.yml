@@ -1,0 +1,23 @@
+# @file agent-ci.yml
+# @brief 開發分支與 PR 共用 Release 建置驗證，避免兩份流程逐漸分歧
+# @author Taiphoon Agent Team
+# @date 2026-10-02
+name: Taiphoon Agent CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    uses: ./.github/workflows/agent-build.yml
+    with:
+      verification_only: true

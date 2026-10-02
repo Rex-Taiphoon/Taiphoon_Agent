@@ -65,9 +65,19 @@ RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/r
 # =============================================================================
 FROM taiphoon-ros2 AS taiphoon-builder
 
+# Release 關閉 symlink-install，避免 runtime 指向未複製的 source／build。
+ARG COLCON_SYMLINK_INSTALL=true
+ARG PX4_MSGS_REF=main
+ARG BUILD_JOBS=2
+ARG ROS_DEVELOPMENT_PACKAGE=ros-humble-desktop
+ARG COLCON_BUILD_TYPE=""
+ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
+ENV MAKEFLAGS=-j${BUILD_JOBS}
+
 # ---- 安裝 ROS2 Humble Desktop + 開發工具 ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-desktop ros-humble-rmw-cyclonedds-cpp \
+    ${ROS_DEVELOPMENT_PACKAGE} ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-ament-cmake-gtest python3-yaml \
     ros-dev-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -85,6 +95,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     net-tools \
     iputils-ping \
     htop \
+    procps \
     tmux \
     python3-pip \
     python3-dev \
@@ -110,9 +121,14 @@ ENV PX4_UROS_WS=/home/taiphoon/px4_ros_uxrce_dds_ws
 
 RUN mkdir -p ${PX4_UROS_WS}/src \
     && cd ${PX4_UROS_WS}/src \
-    && git clone --depth 1 https://github.com/PX4/px4_msgs.git \
+    && git clone https://github.com/PX4/px4_msgs.git \
+    && git -C px4_msgs checkout ${PX4_MSGS_REF} \
     && cd ${PX4_UROS_WS} \
-    && /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select px4_msgs" \
+    && /bin/bash -ec 'source /opt/ros/humble/setup.bash; \
+        install_args=(); \
+        if [ "${COLCON_SYMLINK_INSTALL}" = true ]; then install_args+=(--symlink-install); fi; \
+        colcon build "${install_args[@]}" --packages-select px4_msgs \
+        --cmake-args "-DCMAKE_BUILD_TYPE=${COLCON_BUILD_TYPE}"' \
     && echo "source ${PX4_UROS_WS}/install/setup.bash" >> /home/taiphoon/.bashrc \
     && echo "px4_msgs workspace built successfully"
 
@@ -138,7 +154,7 @@ RUN git clone --depth 1 --branch ${UXRCE_AGENT_VERSION} \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DCMAKE_PREFIX_PATH=/opt/ros/humble \
         -Dfoonathan_memory_DIR=/opt/ros/humble/lib/foonathan_memory/cmake" \
-    && make -j$(nproc) \
+    && make -j${BUILD_JOBS} \
     && echo "MicroXRCEAgent build complete"
 
 # ---- 安裝 MicroXRCEAgent (需 root) ----
@@ -159,7 +175,12 @@ ENV TAIPHOON_WS=/home/taiphoon/Taiphoon_Agent
 COPY --chown=taiphoon:taiphoon . ${TAIPHOON_WS}/
 
 RUN cd ${TAIPHOON_WS} \
-    && /bin/bash -c "source /opt/ros/humble/setup.bash && source ${PX4_UROS_WS}/install/setup.bash && colcon build --symlink-install" \
+    && /bin/bash -ec 'source /opt/ros/humble/setup.bash; \
+        source ${PX4_UROS_WS}/install/setup.bash; \
+        install_args=(); \
+        if [ "${COLCON_SYMLINK_INSTALL}" = true ]; then install_args+=(--symlink-install); fi; \
+        colcon build "${install_args[@]}" --executor sequential \
+        --cmake-args "-DCMAKE_BUILD_TYPE=${COLCON_BUILD_TYPE}"' \
     && echo "source ${TAIPHOON_WS}/install/setup.bash" >> /home/taiphoon/.bashrc \
     && echo "Taiphoon_Agent built successfully"
 
@@ -199,11 +220,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ros-base \
     ros-humble-rmw-fastrtps-cpp \
     ros-humble-rmw-cyclonedds-cpp \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- 建立 taiphoon 使用者 ----
 RUN useradd -m -s /bin/bash taiphoon \
-    && echo "taiphoon ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "taiphoon ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+    && usermod -a -G dialout taiphoon
 
 # ---- bashrc 環境設定 ----
 RUN echo "source /opt/ros/humble/setup.bash" >> /home/taiphoon/.bashrc \
@@ -255,8 +278,20 @@ ENV BASH_ENV=/etc/profile.d/ros2.sh
 USER taiphoon
 WORKDIR /home/taiphoon
 
-COPY --chown=taiphoon:taiphoon docker/entrypoint.sh /home/taiphoon/entrypoint.sh
-RUN chmod +x /home/taiphoon/entrypoint.sh
+COPY --chown=taiphoon:taiphoon docker/runtime-entrypoint.sh /home/taiphoon/runtime-entrypoint.sh
+COPY --chown=taiphoon:taiphoon docker/runtime-healthcheck.sh /home/taiphoon/runtime-healthcheck.sh
+RUN chmod +x /home/taiphoon/runtime-entrypoint.sh /home/taiphoon/runtime-healthcheck.sh
+HEALTHCHECK --interval=5s --timeout=3s --start-period=40s --retries=3 \
+    CMD /home/taiphoon/runtime-healthcheck.sh
+ENTRYPOINT ["/home/taiphoon/runtime-entrypoint.sh"]
+CMD []
 
-ENTRYPOINT ["/home/taiphoon/entrypoint.sh"]
-CMD ["bash"]
+# Release 的開發映像沿用工具鏈，但使用不自動編譯的受監控入口。
+FROM taiphoon-dev AS taiphoon-release-dev
+COPY --chown=taiphoon:taiphoon docker/runtime-entrypoint.sh /home/taiphoon/runtime-entrypoint.sh
+COPY --chown=taiphoon:taiphoon docker/runtime-healthcheck.sh /home/taiphoon/runtime-healthcheck.sh
+RUN chmod +x /home/taiphoon/runtime-entrypoint.sh /home/taiphoon/runtime-healthcheck.sh
+HEALTHCHECK --interval=5s --timeout=3s --start-period=40s --retries=3 \
+    CMD /home/taiphoon/runtime-healthcheck.sh
+ENTRYPOINT ["/home/taiphoon/runtime-entrypoint.sh"]
+CMD []

@@ -14,7 +14,57 @@
 
 ---
 
-## 快速開始（Docker）
+## 快速開始（跨平台 Release）
+
+此分支新增原生 `taiphoon_agent` 入口。發布工作完成後，從
+[GitHub Releases](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases) 下載一個符合平台的完整套件：
+
+| 平台 | 套件名稱後綴 | 解壓後啟動 |
+|---|---|---|
+| 樹莓派 64 位元 Ubuntu | `linux-arm64.tar.gz` | `./taiphoon_agent start` |
+| Intel／AMD Ubuntu | `linux-amd64.tar.gz` | `./taiphoon_agent start` |
+| Windows Intel／AMD | `windows-amd64.zip` | 雙擊 `taiphoon_agent.exe` 或 `./taiphoon_agent.exe start` |
+| macOS Apple Silicon | `macos-arm64.tar.gz` | 雙擊 `Start Taiphoon Agent.command` 或 `./taiphoon_agent start` |
+| macOS Intel | `macos-amd64.tar.gz` | 雙擊 `Start Taiphoon Agent.command` 或 `./taiphoon_agent start` |
+
+先安裝並啟動 Docker；Ubuntu 使用 Docker Engine 與 Compose plugin，Windows／macOS 使用
+Docker Desktop（Windows 啟用 WSL2／Linux 容器）。原生入口不需要 Python、CMake 或本機 ROS2。
+儲存庫為私有，套件直接內含對應架構的 runtime／dev 預編譯映像；使用者下載一包即可，
+首次啟動自動載入，後續使用本機映像。校驗由工具內部完成，不另外發布校驗檔。
+
+首次啟動引導選擇 `deploy`、`dev` 或 `sim`，保存後日常只需 `taiphoon_agent start`。
+部署只需要 Agent 編號與 UDP／serial 連線；dev 再指定原始碼目錄；sim 預設四台。
+UDP 飛控的 client 需連到 Agent 主機位址與 `8887 + Agent 編號` 的埠，system ID／namespace
+需與 Agent 編號一致。工具不會替使用者改寫飛控參數，也不自動 Arm／起飛。
+
+```text
+taiphoon_agent init       首次設定
+taiphoon_agent start      使用已保存設定啟動
+taiphoon_agent stop       停止自有服務，保留資料與 volume
+taiphoon_agent restart    明確停止並重新啟動
+taiphoon_agent status     程序健康與 PX4 狀態
+taiphoon_agent logs       最近日誌
+taiphoon_agent config     停止後修改設定
+taiphoon_agent build      dev 模式：容器內編譯
+taiphoon_agent test       dev 模式：先編譯再測試
+taiphoon_agent shell      dev 模式：進入容器
+```
+
+`bash install.sh`（Ubuntu／macOS）或 `./install.ps1`（Windows）可安裝至使用者目錄，
+讓 `taiphoon_agent` 在 PATH 中使用；也可以直接使用解壓後的原生工具。
+Docker Desktop 的 deploy／dev 需啟用 host networking，跨機 DDS 再提供本機 LAN IPv4 與必要 peers。
+sim 使用獨立 bridge network；ARM64 的 PX4 SITL 使用 AMD64 模擬，效能需在目標主機驗證。
+macOS 包尚未 Apple notarization；首次開啟依系統核准流程操作，不停用安全機制。
+請勿同時以新舊入口啟動相同飛控／Agent；舊開發 Compose 與 entrypoint 維持原流程。
+
+詳細操作見 [平台套件使用說明](Tools/agent_launcher/PACKAGE-README.md)，
+設計與驗證範圍見 [跨平台部署計畫](docs/deployment-cross-platform.md)。
+
+## 既有開發流程（Docker）
+
+每次分支提交與 PR 會自動執行跨平台 CI；推送 `vX.Y.Z`／`vX.Y.Z-rc.N` 版本標籤後，
+通過全部建置與測試才發布五個平台套件。建置流程共用，無須手動逐平台打包；
+版本、失敗重跑與維護位置請見 [CI/CD 維護指南](docs/ci-cd.md)。
 
 以下指令在 Linux／WSL2 的專案根目錄執行。ROS2 與 colcon 指令均在容器內執行。
 

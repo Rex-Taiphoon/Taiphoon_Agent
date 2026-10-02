@@ -1,0 +1,243 @@
+# @file agent-build.yml
+# @brief CI 與 Release 共用的跨平台建置驗證
+# @author Taiphoon Agent Team
+# @date 2026-10-02
+name: Taiphoon Agent Build
+on:
+  workflow_call:
+    inputs:
+      verification_only:
+        description: 只建置與測試，不匯出大型映像或發布
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-build-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  # 與目前已驗證的開發映像相同，不追蹤 px4_msgs 的浮動 main。
+  PX4_MSGS_REF: 21556f8c9905e387da0fcfeb43e852332f20b807
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - id: version
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            if ! [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+              echo "Release tag 必須是 vX.Y.Z 或 vX.Y.Z-rc.N" >&2
+              exit 1
+            fi
+            echo "value=$REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=v0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-22.04
+          - architecture: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.version.outputs.value }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 建置可獨立執行的雙架構產物
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --target taiphoon-release-dev \
+            --build-arg COLCON_SYMLINK_INSTALL=false --build-arg PX4_MSGS_REF="$PX4_MSGS_REF" \
+            --build-arg BUILD_JOBS=2 --build-arg ROS_DEVELOPMENT_PACKAGE=ros-humble-ros-base \
+            --build-arg COLCON_BUILD_TYPE=Release \
+            -t "taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" .
+          docker build --target taiphoon-runtime \
+            --build-arg COLCON_SYMLINK_INSTALL=false --build-arg PX4_MSGS_REF="$PX4_MSGS_REF" \
+            --build-arg BUILD_JOBS=2 --build-arg ROS_DEVELOPMENT_PACKAGE=ros-humble-ros-base \
+            --build-arg COLCON_BUILD_TYPE=Release \
+            -t "taiphoon-agent:${VERSION}-runtime-${ARCHITECTURE}" .
+      - name: 容器內 workspace 與啟動工具測試
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          chmod a+w output
+          docker run --rm --entrypoint /bin/bash \
+            --mount "type=bind,source=$PWD/output,target=/output" \
+            -e RELEASE_VERSION="$VERSION" \
+            "taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" -c '
+              # ROS2 Humble 的 setup.bash 會讀取未設定變數，不能啟用 nounset。
+              set -eo pipefail
+              trap '\''cp -r /home/taiphoon/Taiphoon_Agent/log /output/ros-logs'\'' EXIT
+              source /opt/ros/humble/setup.bash
+              source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
+              cd /home/taiphoon/Taiphoon_Agent
+              colcon build --executor sequential --packages-select taiphoon_agent
+              colcon test --packages-select taiphoon_agent
+              colcon test-result --verbose
+              cmake -S Tools/agent_launcher -B /tmp/launcher -DBUILD_TESTING=ON \
+                -DCMAKE_BUILD_TYPE=Release -DTAIPHOON_RELEASE_VERSION="$RELEASE_VERSION"
+              cmake --build /tmp/launcher --parallel 2
+              ctest --test-dir /tmp/launcher --output-on-failure
+              bash -n docker/runtime-entrypoint.sh docker/runtime-healthcheck.sh
+              sh -n docker/sitl-entrypoint.sh
+              cp /tmp/launcher/taiphoon_agent /output/taiphoon_agent
+            '
+      - name: runtime 無飛控啟動與健康檢查
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name runtime-check "taiphoon-agent:${VERSION}-runtime-${ARCHITECTURE}"
+          for attempt in $(seq 1 30); do
+            health=$(docker inspect --format '{{.State.Health.Status}}' runtime-check)
+            if [ "$health" = healthy ]; then break; fi
+            if [ "$health" = unhealthy ]; then docker logs runtime-check; exit 1; fi
+            sleep 2
+          done
+          if [ "$(docker inspect --format '{{.State.Health.Status}}' runtime-check)" != healthy ]; then
+            docker logs runtime-check
+            exit 1
+          fi
+          docker exec runtime-check bash -c '
+            source /opt/ros/humble/setup.bash
+            source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
+            source /home/taiphoon/Taiphoon_Agent/install/setup.bash
+            set +e
+            timeout 5 ros2 topic echo /uav_1_agent/state taiphoon_agent/msg/AgentState \
+              --no-daemon --once --field px4_state_valid > /tmp/px4-state.txt
+            result=$?
+            set -e
+            if [ "$result" -eq 0 ]; then
+              grep -Eq "False|false" /tmp/px4-state.txt
+            elif [ "$result" -ne 124 ]; then
+              exit 1
+            fi
+          '
+          docker stop --timeout 20 runtime-check
+      - name: 匯出映像與內部校驗資訊
+        if: ${{ !inputs.verification_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for kind in runtime dev; do
+            image="taiphoon-agent:${VERSION}-${kind}-${ARCHITECTURE}"
+            archive="output/taiphoon-agent-${kind}-linux-${ARCHITECTURE}.tar.gz"
+            docker save "$image" | gzip -1 > "$archive"
+            if [ "$(stat -c %s "$archive")" -ge 2147483648 ]; then
+              echo "映像超過 GitHub Release 單檔限制，禁止發布不完整產物" >&2
+              exit 1
+            fi
+            echo "${kind}_${ARCHITECTURE}_sha256=$(sha256sum "$archive" | cut -d ' ' -f1)" >> output/images.manifest
+            echo "${kind}_${ARCHITECTURE}_id=$(docker image inspect --format '{{.Id}}' "$image")" \
+              >> output/images.manifest
+          done
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.verification_only }}
+        with:
+          name: linux-${{ matrix.architecture }}
+          path: output/*
+          compression-level: 0
+          retention-days: 7
+
+      - name: 保留失敗診斷
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          docker ps -a > diagnostics/containers.txt
+          docker logs runtime-check > diagnostics/runtime.log 2>&1 || true
+          if [ -d output/ros-logs ]; then cp -r output/ros-logs diagnostics/; fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: diagnostics-linux-${{ matrix.architecture }}
+          path: diagnostics/
+          retention-days: 7
+
+  native:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-amd64
+            runner: windows-2022
+          - platform: macos-universal
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 建置 Windows 原生入口
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          cmake -S Tools/agent_launcher -B build/launcher -A x64 -DBUILD_TESTING=OFF `
+            "-DTAIPHOON_RELEASE_VERSION=$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/launcher --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory output | Out-Null
+          Copy-Item build/launcher/Release/taiphoon_agent.exe output/
+      - name: 建置 macOS Intel／Apple Silicon 共用入口
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          cmake -S Tools/agent_launcher -B build/launcher -DBUILD_TESTING=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -DTAIPHOON_RELEASE_VERSION="$VERSION"
+          cmake --build build/launcher --parallel 2
+          mkdir -p output
+          cp build/launcher/taiphoon_agent output/
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.verification_only }}
+        with:
+          name: native-${{ matrix.platform }}
+          path: output/*
+          retention-days: 7
+
+  package:
+    if: ${{ !inputs.verification_only }}
+    needs: [version, linux, native]
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 組裝各平台下載包；校驗資訊內含於工具包
+        shell: bash
+        run: |
+          python3 Tools/agent_launcher/package_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: release/*
+          compression-level: 0
+          retention-days: 7
