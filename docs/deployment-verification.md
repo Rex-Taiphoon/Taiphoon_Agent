@@ -33,16 +33,23 @@
 停止其他編譯後，只重跑失敗 suite 即成功；完整 Release 編譯後全部測試通過。
 未更改 planner 演算法、測試預期、時間預算或安全門檻。
 
-## 尚待 CI 與目標平台驗收
+## GitHub CI 與 Release 已完成
 
 第一輪 GitHub CI：Windows exe 與 macOS universal binary 編譯成功；ARM64 的新 dev／runtime
 映像建置成功，328 個 ROS2 測試全部通過，啟動工具的單元與程序整合測試通過。
 打包測試因 workflow 拆分後仍讀取舊位置而失敗，已改讀共用 `agent-build.yml`，
-Docker 內重跑三組 CTest 全數通過；完整 CI 重跑與 runtime 驗證仍待完成。
+Docker 內重跑三組 CTest 全數通過；完整 CI 重跑與 runtime 驗證亦已通過。
 
-- 新 runtime／dev Docker 映像建置、依賴完整性、ARM64 實際執行。
-- Windows 原生 exe 與 macOS universal binary 的原生編譯。
-- 正式映像大小、各平台包大小與 GitHub Release 上傳。
+- [完整 CI](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37003026441)：全部必要工作成功。
+- [版本發布流程](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37006614126)：全部工作成功。
+- AMD64／ARM64 各有 328 個 ROS2 測試通過，三組啟動與打包測試通過，runtime 無飛控啟動檢查成功。
+- Windows 實際產物為 x64 PE；macOS 實際產物含 Intel 與 Apple Silicon，皆包含正確版本字串。
+- [v1.3.0-rc.1](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.1)
+  已發布五個自包含平台包，大小約 814～844 MiB，所有資產狀態為 uploaded，沒有獨立校驗檔。
+- 版本標籤指向 `a6ff15e`；後續驗證文件更新不改動已發布的二進位檔。
+
+## 尚待目標平台驗收
+
 - 樹莓派實體 UART、PX4／DDS、感測器與 CPU／記憶體效能。
 - Docker Desktop host networking、LAN 公告位址與跨機 DDS。
 - Windows／macOS 的下載後啟動與作業系統核准流程；macOS 尚未 Apple notarization。

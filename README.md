@@ -16,7 +16,7 @@
 
 ## 快速開始（跨平台 Release）
 
-此分支新增原生 `taiphoon_agent` 入口。發布工作完成後，從
+使用原生 `taiphoon_agent` 入口，從
 [GitHub Releases](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases) 下載一個符合平台的完整套件：
 
 | 平台 | 套件名稱後綴 | 解壓後啟動 |
