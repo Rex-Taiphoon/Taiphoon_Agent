@@ -1,58 +1,45 @@
-# 跨平台部署驗證紀錄
+# 部署驗證紀錄
 
-日期：2026-10-02（Asia/Taipei）
+分支：`codex/cross-platform-agent-launcher`。角色：Docker／部署維護，含測試與文件責任。
+本輪目標：Ubuntu 22.04 ARM64／AMD64、Windows、Mac；零參數啟動、單／四機、Wi-Fi 與精簡文件。
+飛控／規劃／安全邏輯未修改，既有 `src/nodes/ego_swarm_planner_node.cpp` 工作區變更不納入發布。
 
-## 審查範圍
+## 本輪本機結果
 
-- 分支：`codex/cross-platform-agent-launcher`。
-- 基準：`6488cc4`；既有 `src/nodes/ego_swarm_planner_node.cpp` 未提交修改保持原狀，不納入部署提交。
-- 主角色：Docker／部署維護人員；協作責任包含架構、測試與文件審查。
-- 新增原生 C++ 入口、模式設定、映像載入、runtime entrypoint、Release CI 與五個平台下載包。
-- 沒有新增／修改 ROS2 Node、Topic 或訊息定義；飛行命令與安全門檻保持既有實作。
-
-## 已執行
-
-全部 ROS2 建置與測試在既有 `taiphoon-agent:dev` Docker 開發容器執行；沒有執行 Docker build。
-
-| 項目 | 實際結果 |
+| 驗證 | 結果與限制 |
 |---|---|
-| 目前工作區 workspace 編譯 | 成功 |
-| 目前工作區套件測試 | 328 tests，0 errors，0 failures，0 skipped |
-| HEAD 快照加部署變更，排除既有未提交修改 | 編譯成功 |
-| 乾淨快照 Release 編譯與套件測試 | 328 tests，0 errors，0 failures，0 skipped |
-| 原生 Linux C++ 入口 | 編譯成功 |
-| 設定、SHA256、模式、DDS、串列與 Windows argv 引用 | 通過 |
-| 零參數首次啟動、重複啟動、停止、設定變更、舊入口衝突與損毀映像 | 隔離程序替身測試通過 |
-| 真正 CI 打包步驟 | 五個自包含平台包通過內容驗證；沒有獨立校驗檔或映像下載檔 |
-| Ubuntu／macOS 安裝工具 | 中文與空白路徑、重複安裝、PATH 不重複設定通過 |
-| runtime 無飛控啟動 | 程序健康，PX4 狀態仍為等待／無效 |
-| 橋接程序終止 | runtime 回傳非零並停止自有程序 |
-| Shell 語法與 git diff 空白檢查 | 通過 |
+| Docker Desktop | Linux amd64 Engine 29.8.1；工具查標準 CLI 路徑，不依賴目前程序的舊 PATH |
+| workspace | 既有 Release dev 映像內建置成功；沒有在 host 執行 ROS2 或 Docker build |
+| 原生工具 | Linux C++ 與 Windows MSVC 編譯成功 |
+| 三組 CTest | 全部通過：設定／Compose／argv、CLI 生命週期、五個平台打包 |
+| Windows 真正 exe：1 組 local | PX4＋Agent 健康；Docker 內收到至少 3 筆有效、未解鎖、地面且時間前進的 state |
+| Windows 真正 exe：4 組 local | 四組全部健康，每台均通過唯讀狀態檢查；共用網路命名空間，8888～8891 分流 |
+| Windows 真正 exe：4 組 wifi | 自動公告本機 IPv4、映射 DDS 7410～7491；四台都收到有效狀態；尚未驗收外部 GCS |
+| Windows 真正 exe：單機 deploy | ID 7、飛控預設 192.168.1.14、UDP 8894；僅一個 Agent 健康，沒有模擬器；實體飛控尚未連接 |
+| 模式切換／停止 | stop → config → start 成功；正常停止測試服務，保留資料 |
+| 長 manifest | 線性解析 1000 個 layer digest；修正 Windows regex 堆疊耗盡，容許無關 Config 差異 |
+| 文件 | README 約 90 行；命令／ROS2 參數各有獨立參考，部署與 CI 操作集中整理 |
 
-未最佳化快照曾出現兩個 planner 時間預算案例逾時（約 38～40 ms），當時另有編譯工作。
-停止其他編譯後，只重跑失敗 suite 即成功；完整 Release 編譯後全部測試通過。
-未更改 planner 演算法、測試預期、時間預算或安全門檻。
+實際 Windows 啟動檢查使用本輪新編譯的測試版 launcher 與已發布的 rc.1 Agent 映像，
+只新增測試標籤與隔離設定，不替換既有映像。本輪 ROS2 本體沒有改動；新 Release 映像另由 CI 編譯驗證。
+全部 ROS2 觀測都在 Docker dev 容器執行；沒有 Arm、Takeoff 或飛行任務。
 
-## GitHub CI 與 Release 已完成
+## 跨平台 CI／Release
 
-第一輪 GitHub CI：Windows exe 與 macOS universal binary 編譯成功；ARM64 的新 dev／runtime
-映像建置成功，328 個 ROS2 測試全部通過，啟動工具的單元與程序整合測試通過。
-打包測試因 workflow 拆分後仍讀取舊位置而失敗，已改讀共用 `agent-build.yml`，
-Docker 內重跑三組 CTest 全數通過；完整 CI 重跑與 runtime 驗證亦已通過。
+`agent-build.yml` 會建置 Ubuntu 22.04 AMD64／ARM64、Windows x64、macOS Intel＋Apple Silicon，
+Linux 各執行套件測試與三組 CTest；AMD64 額外執行真正 CLI 的 1／4 組 PX4 模擬與停止。
+新版本預定 `v1.3.0-rc.2`，本段在實際完成後填入 run 與 Release 連結，不能以本機成功代替。
 
-- [完整 CI](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37003026441)：全部必要工作成功。
-- [版本發布流程](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37006614126)：全部工作成功。
-- AMD64／ARM64 各有 328 個 ROS2 測試通過，三組啟動與打包測試通過，runtime 無飛控啟動檢查成功。
-- Windows 實際產物為 x64 PE；macOS 實際產物含 Intel 與 Apple Silicon，皆包含正確版本字串。
-- [v1.3.0-rc.1](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.1)
-  已發布五個自包含平台包，大小約 814～844 MiB，所有資產狀態為 uploaded，沒有獨立校驗檔。
-- 版本標籤指向 `a6ff15e`；後續驗證文件更新不改動已發布的二進位檔。
+歷史版本：[rc.1 Release](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.1)
+與[建置 run](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37006614126) 全數完成，
+雙架構各 328 個 ROS2 測試、三組 CTest 通過；五個完整平台包已發布。
+Docker containerd 會為同一 archive 回傳不同 ID；相同檔案層應正常使用，不做完整 Config 一致性 Gate。
 
-## 尚待目標平台驗收
+## 尚待目標機驗收
 
-- 樹莓派實體 UART、PX4／DDS、感測器與 CPU／記憶體效能。
-- Docker Desktop host networking、LAN 公告位址與跨機 DDS。
-- Windows／macOS 的下載後啟動與作業系統核准流程；macOS 尚未 Apple notarization。
+- 樹莓派實體飛控／UART、Wi-Fi、感測器與效能；ARM64 SITL 需 Docker AMD64 CPU 模擬支援。
+- macOS 新 launcher 的下載開啟、Desktop／Wi-Fi 與 GCS；編譯不等同硬體驗收，套件尚未 Apple 公證。
+- 外部 GCS／防火牆／多網卡與飛控 firmware 的訊息相容性；healthy 不代表可以起飛。
 
-上述驗收不包含自動 Arm 或起飛。CI 任一必要建置／測試失敗不發布 Release。
-Release 發布需人類確認本次 Git commit／push 與 CI Docker build 授權；符合根目錄 AGENTS.md 的 Gate。
+較早的 GCS 運行測試另見 [flight-gcs-check](deployment-flight-gcs-check.md)，只屬該次環境的證據。
+日常操作見 [README](../README.md)；維護與發布見 [ci-cd.md](ci-cd.md)。

@@ -45,7 +45,8 @@ jobs:
           樹莓派 Ubuntu 選 linux-arm64；Windows 選 windows-amd64；Mac 依晶片選 macos-arm64 或 macos-amd64。
           需要先安裝 Docker；首次啟動會引導設定並自動載入套件內的預編譯 Agent 映像。
           校驗由工具自動完成，不需要另下載校驗檔。啟動不會自動 Arm 或起飛。
-          Docker Desktop 連接實機需先啟用 host networking；請參閱套件內 README。
+          sim 可啟動 1～4 組 PX4＋Agent；deploy 啟動一台，Wi-Fi 飛控預設為 192.168.1.14。
+          Docker Desktop 自動映射 UDP，不需要開啟 host networking；詳細操作見套件 README。
           樹莓派與 macOS 實機／DDS 驗收另由使用者完成。
           NOTES
           release_args=()

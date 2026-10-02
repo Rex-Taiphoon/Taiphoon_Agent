@@ -20,9 +20,62 @@ namespace
 {
 constexpr unsigned int SHA_BLOCK_BYTES = 64;
 constexpr unsigned int SHA_LENGTH_BYTES = 8;
-constexpr unsigned int MAX_AGENTS = 16;
+constexpr unsigned int MAX_AGENTS = 4;
 constexpr unsigned int MAX_SYSTEM_ID = 255;
 constexpr unsigned int MAX_DOMAIN_ID = 101;
+
+/** @brief 線性解析 digest 陣列，避免 Windows std::regex 對大型 manifest 耗盡堆疊。
+ * @param value Docker 的緊湊 JSON layer 陣列。
+ * @return 每個項目是否為有效 SHA256 digest。
+ */
+bool isLayerList(const std::string& value)
+{
+    constexpr std::size_t DIGEST_HEX_LENGTH = 64;
+    const std::string prefix = "\"sha256:";
+    if (value == "[]")
+    {
+        return true;
+    }
+    if (value.size() < 2 || value.front() != '[' || value.back() != ']')
+    {
+        return false;
+    }
+    std::size_t cursor = 1;
+    while (cursor < value.size() - 1)
+    {
+        if (value.compare(cursor, prefix.size(), prefix) != 0)
+        {
+            return false;
+        }
+        cursor += prefix.size();
+        if (cursor + DIGEST_HEX_LENGTH >= value.size() - 1)
+        {
+            return false;
+        }
+        for (std::size_t offset = 0; offset < DIGEST_HEX_LENGTH; ++offset)
+        {
+            const char character = value[cursor + offset];
+            if ((character < '0' || character > '9') && (character < 'a' || character > 'f'))
+            {
+                return false;
+            }
+        }
+        cursor += DIGEST_HEX_LENGTH;
+        if (value[cursor++] != '"')
+        {
+            return false;
+        }
+        if (cursor == value.size() - 1)
+        {
+            return true;
+        }
+        if (value[cursor++] != ',')
+        {
+            return false;
+        }
+    }
+    return false;
+}
 
 /** @brief 移除設定與程序輸出的外側空白。 */
 std::string trim(const std::string& value)
@@ -194,6 +247,33 @@ void writeText(const fs::path& path, const std::string& text)
     }
 }
 
+Settings withDefaultSettings(const Settings& settings)
+{
+    Settings complete = {{"mode", "deploy"}, {"agent_id", "1"}, {"count", "1"}, {"transport", "udp"},
+        {"serial_device", ""}, {"serial_baud", "921600"}, {"domain_id", "0"}, {"workspace", ""},
+        {"lan_address", "auto"}, {"dds_peers", ""}, {"scenario", "real"}, {"network", "wifi"},
+        {"flight_ip", "192.168.1.14"}};
+    for (const auto& entry : settings)
+    {
+        complete[entry.first] = entry.second;
+    }
+    if (settings.count("scenario") == 0 && complete.at("mode") == "sim")
+    {
+        complete["scenario"] = "sim";
+    }
+    if (settings.count("network") == 0 && isSimulation(complete))
+    {
+        complete["network"] = "local";
+    }
+    return complete;
+}
+
+bool isSimulation(const Settings& settings)
+{
+    return settings.at("mode") == "sim" || (settings.at("mode") == "dev"
+        && settings.count("scenario") != 0 && settings.at("scenario") == "sim");
+}
+
 void validateSettings(const Settings& settings)
 {
     static const std::vector<std::string> keys = {"mode", "agent_id", "count", "transport", "serial_device",
@@ -207,8 +287,7 @@ void validateSettings(const Settings& settings)
     }
     for (const auto& entry : settings)
     {
-        if (std::find(keys.begin(), keys.end(), entry.first) == keys.end()
-            || entry.second.find_first_of("\r\n\0", 0, 3) != std::string::npos)
+        if (entry.second.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         {
             throw std::runtime_error("不支援的設定欄位或內容：" + entry.first);
         }
@@ -237,11 +316,24 @@ void validateSettings(const Settings& settings)
     {
         throw std::runtime_error("開發模式需要原始碼工作目錄");
     }
-    if (!settings.at("lan_address").empty() && !isIpv4(settings.at("lan_address")))
+    if (!settings.at("lan_address").empty() && settings.at("lan_address") != "auto"
+        && !isIpv4(settings.at("lan_address")))
     {
         throw std::runtime_error("lan_address 必須是本機 LAN IPv4");
     }
     peers(settings.at("dds_peers"));
+    if (settings.count("network") != 0 && settings.at("network") != "local" && settings.at("network") != "wifi")
+    {
+        throw std::runtime_error("network 必須是 local 或 wifi");
+    }
+    if (settings.count("scenario") != 0 && settings.at("scenario") != "real" && settings.at("scenario") != "sim")
+    {
+        throw std::runtime_error("scenario 必須是 real 或 sim");
+    }
+    if (settings.count("flight_ip") != 0 && !isIpv4(settings.at("flight_ip")))
+    {
+        throw std::runtime_error("flight_ip 必須是飛控 IPv4");
+    }
 }
 
 std::string normalizeArchitecture(const std::string& architecture)
@@ -359,6 +451,11 @@ void validateManifest(const Settings& manifest)
             {
                 throw std::runtime_error("Release manifest 缺少有效映像校驗資料");
             }
+            const bool has_layers = manifest.count(prefix + "_layers") != 0;
+            if (has_layers && !isLayerList(manifest.at(prefix + "_layers")))
+            {
+                throw std::runtime_error("Release manifest 的映像內容描述不完整或非法");
+            }
         }
     }
 }
@@ -369,13 +466,13 @@ std::string renderCycloneDds(const Settings& settings)
     std::ostringstream xml;
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         << "<CycloneDDS xmlns=\"https://cdds.io/config\"><Domain Id=\"any\"><General>"
-        << "<NetworkInterfaceAddress>auto</NetworkInterfaceAddress><AllowMulticast>true</AllowMulticast>";
-    if (!settings.at("lan_address").empty() && settings.at("mode") != "sim")
+        << "<AllowMulticast>true</AllowMulticast>";
+    if (!settings.at("lan_address").empty() && settings.at("lan_address") != "auto")
     {
         xml << "<ExternalNetworkAddress>" << settings.at("lan_address") << "</ExternalNetworkAddress>";
     }
     xml << "</General><Discovery><ParticipantIndex>auto</ParticipantIndex>"
-        << "<MaxAutoParticipantIndex>40</MaxAutoParticipantIndex><Peers>";
+        << "<MaxAutoParticipantIndex>40</MaxAutoParticipantIndex><Peers><Peer Address=\"127.0.0.1\"/>";
     for (const auto& peer : peers(settings.at("dds_peers")))
     {
         xml << "<Peer Address=\"" << peer << "\"/>";
@@ -385,14 +482,20 @@ std::string renderCycloneDds(const Settings& settings)
 }
 
 std::string renderCompose(const Settings& settings, const std::string& image,
-    const std::string& architecture, const fs::path& home)
+    const std::string& architecture, const fs::path& home, bool is_desktop)
 {
     validateSettings(settings);
     normalizeArchitecture(architecture);
     constexpr unsigned int XRCE_BASE_PORT = 8887;
     const std::string mode = settings.at("mode");
-    const bool is_simulation = mode == "sim";
+    const bool is_simulation = isSimulation(settings);
     const bool is_development = mode == "dev";
+    const bool uses_bridge = is_simulation || is_desktop;
+    const bool uses_wifi = settings.count("network") == 0 ? !is_simulation : settings.at("network") == "wifi";
+    constexpr unsigned int DDS_BASE_PORT = 7400;
+    constexpr unsigned int DDS_DOMAIN_PORT_STEP = 250;
+    constexpr unsigned int DDS_UNICAST_OFFSET = 10;
+    constexpr unsigned int DDS_LAST_PARTICIPANT_PORT = 91;
     const unsigned int count = is_simulation ? number(settings, "count", MAX_AGENTS) : 1;
     std::ostringstream yaml;
     yaml << "# 由 taiphoon_agent 產生；進階 ROS2 參數請使用各服務的 environment。\nservices:\n";
@@ -401,10 +504,37 @@ std::string renderCompose(const Settings& settings, const std::string& image,
         const unsigned int id = is_simulation ? instance : number(settings, "agent_id", MAX_SYSTEM_ID);
         yaml << "  agent_" << instance << ":\n    image: " << yamlString(image)
             << "\n    pull_policy: never\n    restart: \"no\"\n"
-            << "    working_dir: /home/taiphoon/Taiphoon_Agent\n";
-        if (!is_simulation)
+            << "    working_dir: /home/taiphoon/Taiphoon_Agent\n"
+            << "    entrypoint: [/home/taiphoon/runtime-entrypoint.sh]\n";
+        if (!uses_bridge)
         {
             yaml << "    network_mode: host\n";
+        }
+        else if (is_simulation && instance > 1)
+        {
+            yaml << "    network_mode: service:agent_1\n"
+                << "    depends_on:\n      agent_1:\n        condition: service_started\n";
+        }
+        else
+        {
+            yaml << "    extra_hosts:\n      - host.docker.internal:host-gateway\n";
+            if (uses_wifi || !is_simulation)
+            {
+                yaml << "    ports:\n";
+                if (!is_simulation && settings.at("transport") == "udp")
+                {
+                    const auto port = std::to_string(XRCE_BASE_PORT + id);
+                    yaml << "      - " << yamlString(port + ":" + port + "/udp") << '\n';
+                }
+                if (uses_wifi)
+                {
+                    const auto base = DDS_BASE_PORT + DDS_DOMAIN_PORT_STEP
+                        * number(settings, "domain_id", MAX_DOMAIN_ID, 0);
+                    const auto range = std::to_string(base + DDS_UNICAST_OFFSET) + "-"
+                        + std::to_string(base + DDS_LAST_PARTICIPANT_PORT);
+                    yaml << "      - " << yamlString(range + ":" + range + "/udp") << '\n';
+                }
+            }
         }
         yaml << "    environment:\n      TARGET_SYSTEM: \"" << id << "\"\n"
             << "      AGENT_NAMESPACE: uav_" << id << "_agent\n"
@@ -442,8 +572,9 @@ std::string renderCompose(const Settings& settings, const std::string& image,
                 << "    depends_on:\n      agent_" << instance << ":\n        condition: service_healthy\n"
                 << "    entrypoint: [/bin/sh, /deployment/sitl-entrypoint.sh]\n"
                 << "    environment:\n      PX4_INSTANCE: \"" << instance - 1 << "\"\n"
-                << "      PX4_SYS_ID: \"" << instance << "\"\n      PX4_AGENT_HOST: agent_" << instance << "\n"
+                << "      PX4_SYS_ID: \"" << instance << "\"\n      PX4_AGENT_HOST: agent_1\n"
                 << "      PX4_AGENT_PORT: \"" << XRCE_BASE_PORT + instance << "\"\n"
+                << "      PX4_PARAM_UXRCE_DDS_DOM_ID: " << yamlString(settings.at("domain_id")) << "\n"
                 << "    extra_hosts:\n      - host.docker.internal:host-gateway\n"
                 << "    volumes:\n      - type: bind\n        source: "
                 << yamlString((home / "sitl-entrypoint.sh").u8string())

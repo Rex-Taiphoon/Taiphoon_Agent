@@ -11,9 +11,14 @@
 #include <stdexcept>
 #ifdef _WIN32
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #else
 #include <cerrno>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -23,6 +28,123 @@
 
 namespace taiphoon::deployment
 {
+namespace
+{
+/** @brief 確保路由查詢釋放 socket；Windows 同時管理 Winsock 初始化。 */
+class RouteSocket
+{
+public:
+#ifdef _WIN32
+    SOCKET value_ = INVALID_SOCKET;
+    bool is_initialized_ = false;
+    /** @brief 初始化 Winsock 與唯讀路由 socket。 */
+    RouteSocket()
+    {
+        WSADATA data{};
+        is_initialized_ = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+        if (is_initialized_)
+        {
+            value_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        }
+    }
+    /** @brief 釋放 socket 與本次 Winsock 參照。 */
+    ~RouteSocket()
+    {
+        if (value_ != INVALID_SOCKET)
+        {
+            closesocket(value_);
+        }
+        if (is_initialized_)
+        {
+            WSACleanup();
+        }
+    }
+    /** @brief 回報資源是否可用。 @return 是否已建立 socket。 */
+    bool isValid() const
+    {
+        return value_ != INVALID_SOCKET;
+    }
+#else
+    int value_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    /** @brief 釋放本次路由查詢 socket。 */
+    ~RouteSocket()
+    {
+        if (value_ >= 0)
+        {
+            close(value_);
+        }
+    }
+    /** @brief 回報資源是否可用。 @return 是否已建立 socket。 */
+    bool isValid() const
+    {
+        return value_ >= 0;
+    }
+#endif
+    RouteSocket(const RouteSocket&) = delete;
+    RouteSocket& operator=(const RouteSocket&) = delete;
+#ifndef _WIN32
+    /** @brief 建立 UDP socket，不連線或傳送資料。 */
+    RouteSocket() = default;
+#endif
+};
+}
+
+std::string localIpv4ForPeer(const std::string& peer)
+{
+    RouteSocket route;
+    if (!route.isValid())
+    {
+        return {};
+    }
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    constexpr unsigned short ROUTE_QUERY_PORT = 9; // UDP connect 只查路由，沒有 send。
+    destination.sin_port = htons(ROUTE_QUERY_PORT);
+    if (inet_pton(AF_INET, peer.c_str(), &destination.sin_addr) != 1
+        || connect(route.value_, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination)) != 0)
+    {
+        return {};
+    }
+    sockaddr_in local{};
+#ifdef _WIN32
+    int length = sizeof(local);
+#else
+    socklen_t length = sizeof(local);
+#endif
+    if (getsockname(route.value_, reinterpret_cast<sockaddr*>(&local), &length) != 0)
+    {
+        return {};
+    }
+    std::array<char, INET_ADDRSTRLEN> address{};
+    if (inet_ntop(AF_INET, &local.sin_addr, address.data(), address.size()) == nullptr)
+    {
+        return {};
+    }
+    return address.data();
+}
+
+fs::path findExecutable(const std::vector<fs::path>& directories, const std::string& name)
+{
+    for (const auto& directory : directories)
+    {
+        if (directory.empty())
+        {
+            continue;
+        }
+        std::error_code error;
+        const auto candidate = directory / name;
+        if (fs::is_regular_file(candidate, error))
+        {
+            const auto absolute = fs::absolute(candidate, error);
+            if (!error)
+            {
+                return absolute;
+            }
+        }
+    }
+    return {};
+}
+
 std::wstring quoteWindowsArgument(const std::wstring& value)
 {
     std::wstring result = L"\"";
@@ -82,6 +204,53 @@ std::wstring widen(const std::string& value)
         throw std::runtime_error("Windows 參數轉換失敗");
     }
     return result;
+}
+
+/** @brief Explorer 的 PATH 可能尚未更新；備援搜尋標準安裝位置。
+ * @return Docker CLI 的絕對 Unicode 路徑；缺少依賴時提供處理方式。
+ */
+fs::path windowsDockerExecutable()
+{
+    std::vector<fs::path> directories;
+    const wchar_t* path_value = _wgetenv(L"PATH");
+    const std::wstring search_path = path_value == nullptr ? L"" : path_value;
+    std::size_t begin = 0;
+    while (begin < search_path.size())
+    {
+        const auto end = search_path.find(L';', begin);
+        auto directory = search_path.substr(begin, end - begin);
+        if (directory.size() >= 2 && directory.front() == L'"' && directory.back() == L'"')
+        {
+            directory = directory.substr(1, directory.size() - 2);
+        }
+        directories.emplace_back(directory);
+        if (end == std::wstring::npos)
+        {
+            break;
+        }
+        begin = end + 1;
+    }
+    const wchar_t* program_files = _wgetenv(L"ProgramFiles");
+    if (program_files != nullptr && program_files[0] != L'\0')
+    {
+        directories.push_back(fs::path(program_files) / "Docker" / "Docker" / "resources" / "bin");
+    }
+    const wchar_t* local_data = _wgetenv(L"LOCALAPPDATA");
+    if (local_data != nullptr && local_data[0] != L'\0')
+    {
+        directories.push_back(fs::path(local_data) / "Programs" / "DockerDesktop" / "resources" / "bin");
+    }
+    const auto executable = findExecutable(directories, "docker.exe");
+    if (executable.empty())
+    {
+        throw std::runtime_error("找不到 Windows Docker CLI（docker.exe）。\n"
+            "請安裝並啟動 Docker Desktop，使用 WSL2／Linux 容器後再開啟本工具。\n"
+            "安裝說明：https://docs.docker.com/desktop/setup/install/windows-install/\n"
+            "僅在 WSL Ubuntu 安裝 Docker Engine 無法供 Windows exe 使用。\n"
+            "若已安裝於自訂位置，請將其 resources\\bin 加入 Windows PATH，再重新開啟本工具。\n"
+            "已保存的設定可以保留，不需要重新選擇模式。");
+    }
+    return executable;
 }
 }
 #else
@@ -149,14 +318,16 @@ ProcessResult run(const std::vector<std::string>& arguments, bool should_capture
     }
     ProcessResult result;
 #ifdef _WIN32
+    const auto executable = arguments.front() == "docker" ? windowsDockerExecutable() : fs::path{};
     std::wstring command;
-    for (const auto& argument : arguments)
+    for (std::size_t index = 0; index < arguments.size(); ++index)
     {
         if (!command.empty())
         {
             command += L' ';
         }
-        command += quoteWindowsArgument(widen(argument));
+        command += quoteWindowsArgument(index == 0 && !executable.empty()
+            ? executable.wstring() : widen(arguments[index]));
     }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -176,10 +347,12 @@ ProcessResult run(const std::vector<std::string>& arguments, bool should_capture
         startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     }
     PROCESS_INFORMATION information{};
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr,
+    if (!CreateProcessW(executable.empty() ? nullptr : executable.c_str(), command.data(), nullptr, nullptr,
         should_capture ? TRUE : FALSE, 0, nullptr, nullptr, &startup, &information))
     {
-        throw std::runtime_error("無法執行 " + arguments.front() + "；請檢查安裝與 PATH");
+        const auto error = GetLastError();
+        throw std::runtime_error("無法執行 " + arguments.front() + "（Windows 錯誤 "
+            + std::to_string(error) + "）；請檢查檔案是否完整，以及系統顯示的存取／安全性提示");
     }
     Handle process;
     Handle thread;
@@ -219,6 +392,38 @@ ProcessResult run(const std::vector<std::string>& arguments, bool should_capture
     }
     result.code = static_cast<int>(code);
 #else
+    std::vector<std::string> actual_arguments = arguments;
+#ifdef __APPLE__
+    if (arguments.front() == "docker")
+    {
+        std::vector<fs::path> directories;
+        const char* path_value = std::getenv("PATH");
+        const std::string search_path = path_value == nullptr ? "" : path_value;
+        std::size_t begin = 0;
+        while (begin < search_path.size())
+        {
+            const auto end = search_path.find(':', begin);
+            directories.push_back(fs::u8path(search_path.substr(begin, end - begin)));
+            if (end == std::string::npos)
+            {
+                break;
+            }
+            begin = end + 1;
+        }
+        const char* user_home = std::getenv("HOME");
+        if (user_home != nullptr)
+        {
+            directories.push_back(fs::u8path(user_home) / ".docker" / "bin");
+        }
+        directories.emplace_back("/Applications/Docker.app/Contents/Resources/bin");
+        directories.emplace_back("/usr/local/bin");
+        const auto executable = findExecutable(directories, "docker");
+        if (!executable.empty())
+        {
+            actual_arguments[0] = executable.u8string();
+        }
+    }
+#endif
     Pipe pipe_handles(should_capture);
     bool has_read_error = false;
     const pid_t child = fork();
@@ -238,7 +443,7 @@ ProcessResult run(const std::vector<std::string>& arguments, bool should_capture
             pipe_handles.closeWrite();
         }
         std::vector<char*> argv;
-        for (const auto& argument : arguments)
+        for (const auto& argument : actual_arguments)
         {
             argv.push_back(const_cast<char*>(argument.c_str()));
         }

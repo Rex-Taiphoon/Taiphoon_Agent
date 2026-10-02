@@ -37,6 +37,8 @@ def main():
             (directory / f'taiphoon-agent-{kind}-linux-{architecture}.tar.gz').write_bytes(data)
             metadata += f'{kind}_{architecture}_sha256={hashlib.sha256(data).hexdigest()}\n'
             metadata += f'{kind}_{architecture}_id=sha256:{"a" * 64}\n'
+            metadata += f'{kind}_{architecture}_config={{"Env":["ROS_DISTRO=humble"]}}\n'
+            metadata += f'{kind}_{architecture}_layers=["sha256:{"b" * 64}"]\n'
         (directory / 'images.manifest').write_text(metadata)
     for platform, filename in (('windows-amd64', 'taiphoon_agent.exe'), ('macos-universal', 'taiphoon_agent')):
         directory = root / 'artifacts' / f'native-{platform}'
@@ -60,6 +62,10 @@ def main():
                     assert f'images/taiphoon-agent-{kind}-linux-{architecture}.tar.gz' in names
                 assert 'SHA256SUMS' not in names
                 assert 'release.manifest' in names
+                metadata = dict(line.split('=', 1) for line in archive.read('release.manifest').decode().splitlines())
+                for kind in ('runtime', 'dev'):
+                    assert metadata[f'{kind}_{architecture}_config'] == '{"Env":["ROS_DISTRO=humble"]}'
+                    assert metadata[f'{kind}_{architecture}_layers'] == '["sha256:' + 'b' * 64 + '"]'
         else:
             with tarfile.open(path, 'r:gz') as archive:
                 members = {member.name.removeprefix('./'): member for member in archive.getmembers()}
@@ -70,6 +76,8 @@ def main():
                     filename = f'images/taiphoon-agent-{kind}-linux-{architecture}.tar.gz'
                     payload = archive.extractfile(members[filename]).read()
                     assert hashlib.sha256(payload).hexdigest() == metadata[f'{kind}_{architecture}_sha256']
+                    assert metadata[f'{kind}_{architecture}_config'] == '{"Env":["ROS_DISTRO=humble"]}'
+                    assert metadata[f'{kind}_{architecture}_layers'] == '["sha256:' + 'b' * 64 + '"]'
                 other_architecture = 'amd64' if architecture == 'arm64' else 'arm64'
                 assert not any(other_architecture in name and name.startswith('images/') for name in members)
                 if '-macos-' in path.name:

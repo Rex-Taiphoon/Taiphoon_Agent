@@ -147,6 +147,27 @@ jobs:
             fi
           '
           docker stop --timeout 20 runtime-check
+      - name: 真正 CLI 的單組與四組 PX4 模擬
+        if: matrix.architecture == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose_plugin=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')
+          docker run --entrypoint /bin/bash \
+            --group-add "$(stat -c %g /var/run/docker.sock)" \
+            --mount "type=bind,source=$PWD,target=$PWD" --workdir "$PWD" \
+            --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+            --mount "type=bind,source=$(command -v docker),target=/usr/local/bin/docker,readonly" \
+            --mount "type=bind,source=$compose_plugin,target=/usr/local/lib/docker/cli-plugins/docker-compose,readonly" \
+            -e "TAIPHOON_SIM_RUNTIME_IMAGE=taiphoon-agent:${VERSION}-runtime-${ARCHITECTURE}" \
+            -e "TAIPHOON_SIM_DEV_IMAGE=taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" \
+            "taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" -c '
+              set -eo pipefail
+              source /opt/ros/humble/setup.bash
+              source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
+              source /home/taiphoon/Taiphoon_Agent/install/setup.bash
+              python3 test/deployment_live_simulation_test.py output/taiphoon_agent
+            '
       - name: 匯出映像與內部校驗資訊
         if: ${{ !inputs.verification_only }}
         shell: bash
@@ -162,6 +183,9 @@ jobs:
             fi
             echo "${kind}_${ARCHITECTURE}_sha256=$(sha256sum "$archive" | cut -d ' ' -f1)" >> output/images.manifest
             echo "${kind}_${ARCHITECTURE}_id=$(docker image inspect --format '{{.Id}}' "$image")" \
+              >> output/images.manifest
+            # containerd 的 .Id 是 manifest/index digest；不能跨儲存方式比對 config digest。
+            echo "${kind}_${ARCHITECTURE}_layers=$(docker image inspect --format '{{json .RootFS.Layers}}' "$image")" \
               >> output/images.manifest
           done
       - uses: actions/upload-artifact@v4

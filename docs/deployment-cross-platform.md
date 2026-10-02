@@ -1,58 +1,44 @@
-# 跨平台部署與 Release 計畫
+# 跨平台部署設計
 
-## 介面與範圍
+主角色：Docker／部署維護人員，負責介面、失效、測試與文件。
+本輪已授權自行決定實作、提交／推送與新 Release；飛行邏輯與既有 planner 未提交變更不納入。
 
-- 主角色：Docker／部署維護人員；協作責任：系統架構、測試與文件審查。
-- 原生 C++ 啟動工具統一命名為 `taiphoon_agent`；Windows 為 `taiphoon_agent.exe`。
-- Agent 與 ROS2 仍在 Ubuntu 22.04／Humble 容器執行，維持既有 Node、Topic、訊息與飛行邏輯。
-- 原生工具支援 Ubuntu AMD64／ARM64、Windows AMD64、macOS universal（Intel／Apple Silicon）。
-- Release 僅附五個自包含平台下載包，各包內含原生工具及相應架構的 runtime、dev Docker 映像。
-  macOS 原生工具為 universal binary；包內映像則分 ARM64／AMD64，避免下載不必要架構。
-- 首次 `init` 保存模式與必要參數；日常使用 `start`、`stop`、`status`、`logs`。
-- 開發提供 `build`、`test`、`shell`；ROS2 建置與測試只在開發容器執行。
+## 介面與資料流
 
-## 資料流
+`原生 C++ taiphoon_agent → 保存設定／套件 manifest → Docker Compose → MicroXRCEAgent → ROS2 Agent`
 
-`taiphoon_agent → 本機設定／Release manifest → Docker Compose → MicroXRCEAgent + 既有 ROS2 launch`
+- 支援 Ubuntu 22.04 AMD64／ARM64、Windows x64、macOS Intel／Apple Silicon。
+- 零參數等同 start；首次設定 deploy、sim 或 dev，之後重用設定。stop／config 切換情境。
+- deploy 啟動一個 Agent，可指定無人機編號。飛控預設 `192.168.1.14`，UDP client 需指向 Agent 主機。
+- sim 預設一組，支援 1～4 組 PX4＋Agent；dev 可選模擬或實機，先容器建置再啟動。
+- 啟動不等待實機資料、不自動 Arm／起飛，實機不注入模擬感測資料；資料鏈仍使用 ROS2／DDS。
 
-發布工具依 Docker daemon 架構選擇包內映像，校驗 SHA256 後 `docker load`。
-儲存庫為私有，因此使用者只在 GitHub 下載平台包時登入，不另要求 CLI token 或 gh 登入。
-本機設定不執行 shell，使用者輸入透過程序 argv 傳遞；不混入命令文字。
-部署模式不掛載原始碼、不在啟動時編譯、不啟動模擬感測資料，也不自動 Arm／起飛。
-開發模式掛載原始碼，建置與安裝產物使用容器 volume，隔離不同 CPU 架構。
-模擬模式使用獨立 Compose 專案與網路；先 Agent 後 PX4，不發送起飛命令。
-新入口不修改原本的 `docker-compose.yml` 與開發 entrypoint。
+## 網路與持久化
 
-## 失效情境
+- Linux 實機使用 host network；Desktop 使用 bridge，自動映射 XRCE UDP 與 DDS unicast port。
+  不要求 Desktop 全域 host networking、不固定 context、網卡、Docker API 或安裝版本。
+- 多機模擬 Agent 共用 agent_1 網路命名空間，避免 DDS participant 的 NAT 埠互相衝突；
+  各 PX4 仍獨立執行，分別連向 agent_1 的 UDP 8888～8891，先等待對應 Agent 健康。
+- local 模擬只使用內部網路；wifi 可設定 GCS IPv4。每次啟動以不傳封包的 UDP 路由查詢取得
+  公告 IPv4，網路偵測失敗只提示，仍使用 DDS 自動探索。Wi-Fi 改變後 restart 套用新設定。
+- GCS 與 Agent 使用一致 domain；DDS participant auto index 0～40，映射 `7400 + 250 × domain + 10～91`。
+- dev 掛載原始碼，共用按 CPU 分開的 build／install／log volumes；deploy 不掛載或編譯原始碼。
+- 舊設定補預設值、保留未知進階欄位。stop 保留容器、映像、設定、volume，不操作其他 Compose 專案。
 
-- Docker 未啟動、Compose 不可用、daemon 架構不支援：啟動前停止並顯示處理方式。
-- Release 下載失敗、校驗不符、映像 ID／架構不符：禁止啟動該映像。
-- 設定非法、實體設備不存在、工作目錄不存在：不產生不完整服務。
-- ROS2 程序／橋接死亡：容器以失敗結束；不靜默宣稱已就緒。
-- Docker Desktop 連接實機需啟用 host networking；LAN DDS 另設定公告 IPv4 與 discovery peers。
-- SITL 若沒有 ARM64 映像，使用 AMD64 模擬；效能與硬體驗證必須在目標平台確認。
-- `status` 區分容器程序健康與飛控連線，不把容器 running 當成可起飛。
-- 不刪除使用者資料、volume、原始碼或既有服務；stop 僅停止本工具所屬容器。
+## 必要檢查與失效
 
-## 驗證方式
+- 拒絕非法 ID、1～4 以外的機數、損毀套件、工具／manifest 版本不符、非 Linux／錯誤 CPU 映像。
+- 首次載入校驗 archive SHA256；既有映像依 ID 或完整檔案層確認內容，忽略儲存方式造成的 Config 差異。
+  runtime entrypoint 由 Compose 固定，保留已發布 manifest 相容性。
+- Docker／Compose 不可用時提供處理方式，不清除設定；飛控離線不阻止啟動。
+- 執行中設定變更需先 stop；重複 start 保留健康服務，部分失效需明確 restart。
+- 不修改 Docker Desktop 全域設定、容器權限、飛控參數、ROS2 Node／Topic／訊息或安全門檻。
 
-1. 在既有 Docker 開發映像內先建置 workspace，再執行套件與啟動工具測試。
-2. 啟動工具測試：設定驗證、SHA256、Compose 產生、Windows argv 引用、模式安全預設。
-3. 在容器內驗證 runtime entrypoint 的語法與程序失敗回傳，不發送飛行命令。
-4. 發布 CI 分別建置 AMD64／ARM64，執行 workspace 測試與 runtime 無飛控啟動檢查。
-5. Windows／macOS 原生工具由相應 GitHub runner 編譯；目標平台啟動驗證由使用者完成。
-6. 全部必要工作通過才建立 prerelease 並上傳五個完整平台下載包；任一建置失敗不發布。
-   使用者不需要另外下載或操作校驗檔；校驗資訊只內含於工具包。
+## 驗證與發布
 
-## 發布與人工 Gate
+既有 Docker dev 映像內先編譯 workspace，再驗證設定遷移、Desktop／Linux Compose、1／4 組模擬、
+Wi-Fi 埠與映像儲存差異。實際 SITL 僅讀取狀態，不發布飛行命令。
+GitHub Actions 編譯 AMD64／ARM64、Windows x64、macOS universal，通過後發布五個自包含平台包。
+樹莓派硬體、macOS 實機 Wi-Fi 與外部 GCS 需目標平台驗收，不由編譯成功推論。
 
-CI/CD 使用同一份可重用 workflow：一般分支 push／PR 執行雙架構容器與原生入口驗證；
-版本標籤才匯出大型映像、組裝套件並發布。失敗保留診斷日誌，不發布不完整套件。
-驗證：檢查 YAML、可重用 workflow 輸入與權限，實際追蹤 GitHub Actions；維護方式記錄於
-`docs/ci-cd.md`。此自動化僅操作 CI 容器與產物，不改變 Agent 飛行邏輯。
-
-原工作區的 `src/nodes/ego_swarm_planner_node.cpp` 尚未提交，禁止混入部署提交。
-Git commit／push 與 Docker 映像建置遵守根目錄 AGENTS.md：先列出具體內容供開發者確認。
-本次開發者已授權部署提交、推送、GitHub Actions 建置與 `v1.3.0-rc.1` 發布；
-後續版本仍依專案規約由維護者確認提交與標籤。
-不修改 `msg/` 或 ROS2 對外契約，因此不需要同步外部 Taiphoon_Agent_Interfaces。
+操作見 [README](../README.md)，CI 維護見 [ci-cd.md](ci-cd.md)，結果見 [deployment-verification.md](deployment-verification.md)。

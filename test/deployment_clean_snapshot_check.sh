@@ -8,7 +8,7 @@ snapshot="$(mktemp -d /tmp/taiphoon-release-review.XXXXXX)"
 tar -xf /workspace/.scratch/deployment-base.tar -C "${snapshot}"
 mkdir -p "${snapshot}/Tools/agent_launcher" "${snapshot}/.github/workflows"
 cp -a /workspace/Tools/agent_launcher/. "${snapshot}/Tools/agent_launcher/"
-cp /workspace/.github/workflows/agent-release.yml "${snapshot}/.github/workflows/"
+cp -a /workspace/.github/workflows/. "${snapshot}/.github/workflows/"
 cp /workspace/Dockerfile /workspace/README.md "${snapshot}/"
 cp /workspace/docker/runtime-entrypoint.sh /workspace/docker/runtime-healthcheck.sh \
     /workspace/docker/sitl-entrypoint.sh "${snapshot}/docker/"
@@ -17,7 +17,8 @@ cp /workspace/test/agent_launcher_test.cpp /workspace/test/agent_launcher_integr
 cd "${snapshot}"
 source /opt/ros/humble/setup.bash
 source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash
-colcon --log-base "${snapshot}/log" build --executor sequential --packages-select taiphoon_agent
+colcon --log-base "${snapshot}/log" build --executor sequential --packages-select taiphoon_agent \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
 source "${snapshot}/install/setup.bash"
 colcon --log-base "${snapshot}/log" test --packages-select taiphoon_agent
 colcon --log-base "${snapshot}/log" test-result --verbose

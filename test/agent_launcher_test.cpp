@@ -64,7 +64,13 @@ int main()
         }
         settings = defaults();
         settings["unknown"] = "x";
-        requireRejected([&settings] { deployment::validateSettings(settings); });
+        deployment::validateSettings(settings);
+        require(deployment::withDefaultSettings(settings).at("unknown") == "x", "進階欄位未保留");
+        auto migrated = deployment::withDefaultSettings({{"mode", "sim"}, {"count", "1"}});
+        deployment::validateSettings(migrated);
+        require(migrated.at("network") == "local" && deployment::isSimulation(migrated), "舊設定未補預設值");
+        require(deployment::localIpv4ForPeer("127.0.0.1") == "127.0.0.1", "無封包路由查詢失敗");
+        require(deployment::localIpv4ForPeer("not-an-ip").empty(), "非法路由目的未忽略");
         settings = defaults();
         settings["lan_address"] = "192.168.1.999";
         requireRejected([&settings] { deployment::validateSettings(settings); });
@@ -76,6 +82,19 @@ int main()
         deployment::writeText(directory / "cyclonedds.xml", xml);
 
         deployment::writeText(directory / "data", "abc");
+        const auto path_directory = directory / "PATH tools";
+        const auto fallback_directory = directory / fs::u8path("中文 Docker Desktop") / "resources" / "bin";
+        deployment::writeText(fallback_directory / "docker.exe", "fixture");
+        require(deployment::findExecutable({{}, path_directory, fallback_directory}, "docker.exe")
+            == fs::absolute(fallback_directory / "docker.exe"), "缺少 PATH 時未使用安裝目錄備援");
+        deployment::writeText(path_directory / "docker.exe", "fixture");
+        require(deployment::findExecutable({path_directory, fallback_directory}, "docker.exe")
+            == fs::absolute(path_directory / "docker.exe"), "未保留 PATH 優先順序");
+        require(deployment::findExecutable({directory / "missing"}, "docker.exe").empty(),
+            "不存在的 Docker CLI 被接受");
+        fs::create_directories(directory / "not-a-file" / "docker.exe");
+        require(deployment::findExecutable({directory / "not-a-file"}, "docker.exe").empty(),
+            "目錄被錯認為 Docker CLI");
         require(deployment::sha256(directory / "data")
             == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA256 abc 錯誤");
         deployment::writeText(directory / "data", "");
@@ -86,6 +105,36 @@ int main()
             == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "SHA256 多區塊錯誤");
         deployment::writeText(directory / "settings", "mode=deploy\r\nmode=sim\r\n");
         requireRejected([&directory] { deployment::readSettings(directory / "settings"); });
+
+        deployment::Settings manifest = {{"version", "v0.0.0-review"},
+            {"repository", "Rex-Taiphoon/Taiphoon_Agent"}};
+        for (const std::string architecture : {"amd64", "arm64"})
+        {
+            for (const std::string kind : {"runtime", "dev"})
+            {
+                const auto prefix = kind + "_" + architecture;
+                manifest[prefix + "_sha256"] = std::string(64, 'a');
+                manifest[prefix + "_id"] = "sha256:" + std::string(64, 'b');
+            }
+        }
+        deployment::validateManifest(manifest);
+        manifest["runtime_arm64_config"] = "{}";
+        deployment::validateManifest(manifest);
+        manifest["runtime_arm64_layers"] = "[\"sha256:" + std::string(64, 'c') + "\"]";
+        deployment::validateManifest(manifest);
+        const auto complete_manifest = manifest;
+        std::string large_layers = "[";
+        for (unsigned int layer = 0; layer < 1000; ++layer)
+        {
+            large_layers += (layer == 0 ? "" : ",") + std::string("\"sha256:") + std::string(64, 'c') + "\"";
+        }
+        manifest["runtime_arm64_layers"] = large_layers + ']';
+        deployment::validateManifest(manifest);
+        manifest["runtime_arm64_layers"] = "[\"missing-digest\"]";
+        requireRejected([&manifest] { deployment::validateManifest(manifest); });
+        manifest = complete_manifest;
+        manifest["runtime_arm64_config"] = "null";
+        deployment::validateManifest(manifest);
 
         settings = defaults();
         const auto deploy = deployment::renderCompose(settings, "taiphoon-agent:test", "arm64", directory);
@@ -107,6 +156,29 @@ int main()
         require(sim.find("condition: service_healthy") != std::string::npos, "模擬器未等待 Agent");
         require(sim.find("network_mode: host") == std::string::npos, "模擬網路未隔離");
         require(sim.find("auto_start_sequence:=true") == std::string::npos, "錯誤啟用自動起飛");
+        require(sim.find("network_mode: service:agent_1") != std::string::npos, "多機未共用 DDS 埠空間");
+        migrated["network"] = "wifi";
+        migrated["agent_id"] = "7";
+        const auto single = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
+        require(single.find("px4_1:") != std::string::npos && single.find("px4_2:") == std::string::npos,
+            "單機模擬啟動額外飛控");
+        require(single.find("7410-7491:7410-7491/udp") != std::string::npos, "Wi-Fi 未映射 DDS 埠");
+        migrated["mode"] = "deploy";
+        const auto desktop = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
+        require(desktop.find("8894:8894/udp") != std::string::npos, "無人機編號未對應 Desktop UDP 埠");
+        require(desktop.find("network_mode: host") == std::string::npos, "Desktop 要求全域 host networking");
+        require(desktop.find("px4_1:") == std::string::npos, "實機部署啟動模擬器");
+        migrated["mode"] = "dev";
+        migrated["scenario"] = "sim";
+        migrated["workspace"] = directory.u8string();
+        const auto development = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
+        require(development.find("px4_1:") != std::string::npos && development.find("build_amd64") != std::string::npos,
+            "開發模擬缺少 PX4 或共享建置 volume");
+        for (const auto& count : {"0", "5", "999"})
+        {
+            migrated["count"] = count;
+            requireRejected([&migrated] { deployment::validateSettings(migrated); });
+        }
         settings["transport"] = "serial";
         settings["serial_device"] = "/dev/ttyACM0";
         requireRejected([&settings] { deployment::validateSettings(settings); });
