@@ -53,6 +53,7 @@ GCS 使用相同 ROS domain（預設 0）；填入 GCS IPv4 可使用 unicast di
 須允許 UDP；domain 0 的 Desktop DDS 範圍為 7410～7491。更換 Wi-Fi 後執行 restart。
 本機模擬若要讓主機或外部 GCS 存取，選 wifi。不要讓實體飛控連到模擬模式的 Agent。
 ARM64 SITL 需要 Docker 的 AMD64 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
+首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
 
 ## 設定與排查
 
@@ -63,5 +64,5 @@ ARM64 SITL 需要 Docker 的 AMD64 CPU 模擬支援；樹莓派實機 Agent 為�
 `TAIPHOON_AGENT_HOME` 僅供使用者隔離不同設定目錄；一般操作不需要環境參數。
 
 找不到 Docker 時先安裝／開啟 Desktop 或 Engine；Windows／Mac 工具會自動查標準 CLI 位置。
-Windows exe 不能使用僅安裝在 WSL Ubuntu 內的 Engine；請使用 Desktop 的 WSL Integration。
+Windows exe 無法直接使用僅安裝在 WSL Ubuntu 內的 CLI；請使用 Docker Desktop 的 Windows CLI 與 Linux Engine。
 啟動失敗先看 logs；不同版本的工具、manifest 與映像請一起下載，不要單獨混用。

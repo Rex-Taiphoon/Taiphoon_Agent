@@ -18,7 +18,7 @@ CI 使用唯讀權限；只有 Release publish 使用 GitHub token 寫入，不�
 - Docker 內三組 CTest：設定／Compose／程序、CLI 生命週期與映像儲存方式、五個平台打包。
 - runtime 無飛控健康檢查；AMD64 再以真正 CLI 啟動 1／4 組 PX4 SIH，只讀取狀態並正常停止。
 - Windows MSVC 與 macOS Intel／Apple Silicon universal 原生工具編譯；不在 host 執行 ROS2。
-- 硬體 UART、樹莓派負载、Mac／Pi Wi-Fi、外部 GCS 與飛行行為仍需目標平台驗收。
+- 硬體 UART、樹莓派負載、Mac／Pi Wi-Fi、外部 GCS 與飛行行為仍需目標平台驗收。
 
 ## 發布
 

@@ -23,6 +23,8 @@ def main():
     """CI 專用，工作區以相同絕對路徑掛載；不建構映像或發布控制命令。"""
     source = Path.cwd()
     root = Path(tempfile.mkdtemp(prefix='simulation-', dir=source / 'output'))
+    # mkdtemp 預設 0700；容器與 runner 的 UID 不同，artifact 掃描仍需讀取。
+    root.chmod(0o755)
     package = root / 'package'
     package.mkdir()
     executable = package / 'taiphoon_agent'

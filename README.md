@@ -46,6 +46,7 @@ Linux 實機使用 host network；Desktop 自動映射 UDP，不需要開啟全�
 Wi-Fi GCS 使用相同 ROS domain（預設 0）與介面；若網路阻擋 discovery，填入 GCS IPv4。
 本機模擬只連接模擬飛控；要讓主機或其他電腦的 GCS 存取，選 wifi。不要混用模擬與實機飛控。
 ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
+首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
 
 ## 常用指令
 

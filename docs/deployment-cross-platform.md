@@ -41,6 +41,7 @@
 既有 Docker dev 映像內先編譯 workspace，再驗證設定遷移、Desktop／Linux Compose、1／4 組模擬、
 Wi-Fi 埠與映像儲存差異。實際 SITL 僅讀取狀態，不發布飛行命令。
 GitHub Actions 編譯 AMD64／ARM64、Windows x64、macOS universal，通過後發布五個自包含平台包。
+Docker 建立的 CI 模擬暫存目錄需允許 runner 讀取，避免測試成功後 artifact 上傳因不同 UID 失敗。
 樹莓派硬體、macOS 實機 Wi-Fi 與外部 GCS 需目標平台驗收，不由編譯成功推論。
 
 操作見 [README](../README.md)，CI 維護見 [ci-cd.md](ci-cd.md)，結果見 [deployment-verification.md](deployment-verification.md)。
