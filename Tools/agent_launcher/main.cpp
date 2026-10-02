@@ -267,8 +267,8 @@ void buildWorkspace(const fs::path& home, bool should_test)
     std::vector<std::string> arguments = {"run", "--rm", "--no-deps", "--entrypoint", "/bin/bash", "agent_1",
         "-c", "set -e; source /opt/ros/humble/setup.bash; "
         "source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash; "
-        "colcon build --symlink-install --executor sequential --packages-select taiphoon_agent "
-        "--cmake-args -DCMAKE_BUILD_TYPE=Release"};
+        "colcon build --executor sequential --packages-select taiphoon_agent "
+        "--cmake-args -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=OFF"};
     if (should_test)
     {
         arguments.back() += "; colcon test --packages-select taiphoon_agent; colcon test-result --verbose";

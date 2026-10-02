@@ -23,6 +23,8 @@
   公告 IPv4，網路偵測失敗只提示，仍使用 DDS 自動探索。Wi-Fi 改變後 restart 套用新設定。
 - GCS 與 Agent 使用一致 domain；DDS participant auto index 0～40，映射 `7400 + 250 × domain + 10～91`。
 - dev 掛載原始碼，共用按 CPU 分開的 build／install／log volumes；deploy 不掛載或編譯原始碼。
+- dev 沿用預編譯映像的複製安裝並明確設定 AMENT_CMAKE_SYMLINK_INSTALL=OFF，
+  避免既有建置目錄與 symlink 模式衝突；start 仍編譯目前原始碼，不需要清除 volume。
 - 舊設定補預設值、保留未知進階欄位。stop 保留容器、映像、設定、volume，不操作其他 Compose 專案。
 
 ## 必要檢查與失效

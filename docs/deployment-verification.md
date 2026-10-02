@@ -16,6 +16,7 @@
 | Windows 真正 exe：4 組 local | 四組全部健康，每台均通過唯讀狀態檢查；共用網路命名空間，8888～8891 分流 |
 | Windows 真正 exe：4 組 wifi | 自動公告本機 IPv4、映射 DDS 7410～7491；四台都收到有效狀態；尚未驗收外部 GCS |
 | Windows 真正 exe：單機 deploy | ID 7、飛控預設 192.168.1.14、UDP 8894；僅一個 Agent 健康，沒有模擬器；實體飛控尚未連接 |
+| Windows 真正 exe：dev＋sim | Windows 原始碼掛載、copy-install 重新編譯成功；單組 PX4＋Agent 健康並通過唯讀狀態檢查 |
 | 模式切換／停止 | stop → config → start 成功；正常停止測試服務，保留資料 |
 | 長 manifest | 線性解析 1000 個 layer digest；修正 Windows regex 堆疊耗盡，容許無關 Config 差異 |
 | 文件 | README 約 90 行；命令／ROS2 參數各有獨立參考，部署與 CI 操作集中整理 |
@@ -28,7 +29,9 @@
 
 `agent-build.yml` 會建置 Ubuntu 22.04 AMD64／ARM64、Windows x64、macOS Intel＋Apple Silicon，
 Linux 各執行套件測試與三組 CTest；AMD64 額外執行真正 CLI 的 1／4 組 PX4 模擬與停止。
-新版本預定 `v1.3.0-rc.2`，本段在實際完成後填入 run 與 Release 連結，不能以本機成功代替。
+[本輪 CI](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37031017927) 全平台編譯與測試通過，
+AMD64 的真正 CLI 單／四機模擬也已通過。開發模式 copy-install 修正將再由 Release 流程驗證。
+新版本預定 `v1.3.0-rc.2`，完成發布後填入 Release 連結。
 
 歷史版本：[rc.1 Release](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.1)
 與[建置 run](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37006614126) 全數完成，

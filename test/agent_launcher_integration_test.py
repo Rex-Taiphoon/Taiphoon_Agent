@@ -177,6 +177,24 @@ def main():
     run_cli(executable, environment, 'stop')
     result = run_cli(executable, environment, 'build', expected=1)
     assert '需要 dev 模式' in result.stderr
+    # dev 沿用 Release 的 copy-install，不切換成會與既有 Python build 目錄衝突的 symlink。
+    workspace = root / 'source workspace'
+    workspace.mkdir()
+    (workspace / 'package.xml').write_text('<package/>')
+    (workspace / 'CMakeLists.txt').write_text('# fixture')
+    before_development = settings_file.read_text()
+    settings_file.write_text(before_development.replace('mode=sim', 'mode=dev')
+                            .replace('scenario=real', 'scenario=sim')
+                            .replace('workspace=\n', f'workspace={workspace}\n'))
+    before = len((root / 'calls.jsonl').read_text().splitlines())
+    run_cli(executable, environment, 'build')
+    calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()][before:]
+    build = next(call[-1] for call in calls if call[0] == 'compose' and 'run' in call)
+    assert 'AMENT_CMAKE_SYMLINK_INSTALL=OFF' in build and '--symlink-install' not in build
+    run_cli(executable, environment)
+    assert 'px4_1' in yaml.safe_load((config / 'compose.yaml').read_text())['services']
+    run_cli(executable, environment, 'stop')
+    settings_file.write_text(before_development)
     run_cli(executable, environment, 'unknown', expected=1)
     run_cli(executable, environment, 'start', '--unexpected', expected=1)
     # Mac containerd 首次 load 及已有映像時，ID 不同但完整內容相同都須正常啟動。
