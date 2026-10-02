@@ -18,23 +18,28 @@
 | Windows 真正 exe：單機 deploy | ID 7、飛控預設 192.168.1.14、UDP 8894；僅一個 Agent 健康，沒有模擬器；實體飛控尚未連接 |
 | Windows 真正 exe：dev＋sim | Windows 原始碼掛載、copy-install 重新編譯成功；單組 PX4＋Agent 健康並通過唯讀狀態檢查 |
 | Windows 真正 exe：test | Docker dev 容器內先建置，再執行 328 個 ROS2 測試與三組 CTest，全部通過 |
+| rc.3 Release Windows 完整包 | 直接下載已發布 ZIP、確認 v1.3.0-rc.3；自動載入新版 runtime，單組模擬健康、有效未解鎖狀態與正常停止均通過 |
 | 模式切換／停止 | stop → config → start 成功；正常停止測試服務，保留資料 |
 | 長 manifest | 線性解析 1000 個 layer digest；修正 Windows regex 堆疊耗盡，容許無關 Config 差異 |
 | 文件 | README 約 80 行；命令／ROS2 參數各有獨立參考，部署與 CI 操作集中整理 |
 
-實際 Windows 啟動檢查使用本輪新編譯的測試版 launcher 與已發布的 rc.1 Agent 映像，
-只新增測試標籤與隔離設定，不替換既有映像。本輪 ROS2 本體沒有改動；新 Release 映像另由 CI 編譯驗證。
+早期 Windows 場景檢查使用本輪測試版 launcher 與 rc.1 Agent 映像，只新增隔離設定與測試標籤。
+發布後另以 rc.3 完整包的 exe／runtime 完成單機驗證；唯讀觀測使用既有 dev 映像，介面未改。
+本輪 ROS2 本體沒有改動；新 Release 映像另由 CI 完整編譯驗證，不替換既有使用者映像。
 全部 ROS2 觀測都在 Docker dev 容器執行；沒有 Arm、Takeoff 或飛行任務。
 
 ## 跨平台 CI／Release
 
 `agent-build.yml` 會建置 Ubuntu 22.04 AMD64／ARM64、Windows x64、macOS Intel＋Apple Silicon，
 Linux 各執行套件測試與三組 CTest；AMD64 額外執行真正 CLI 的 1／4 組 PX4 模擬與停止。
-[本輪 CI](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37031017927) 全平台編譯與測試通過，
-AMD64 的真正 CLI 單／四機模擬也已通過。
-rc.2 Release run 的雙架構各 328 個 ROS2 測試與三組 CTest、AMD64 單／四機模擬全部通過，
-但 artifact 上傳因容器暫存目錄的 0700 權限失敗，因此沒有發布不完整版本。
-CI 暫存目錄改為 0755 供 runner 讀取；新版本預定 `v1.3.0-rc.3`，完成發布後填入連結。
+[rc.3 Release](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.3)
+與[發布 run](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37037584104)
+於 2026-10-03（臺北時間）完成，版本來源 `a4d4f02`。
+雙架構各 328 個 ROS2 測試與三組 CTest、AMD64 真正 CLI 的單／四機模擬全部通過；
+Windows 與 Mac 原生工具編譯成功。五個完整平台包皆完成上傳，不另附校驗檔。
+
+rc.2 通過編譯／測試，但 artifact 上傳遇到容器暫存目錄的 0700 權限，沒有發布。
+rc.3 改為 0755，已驗證不同 UID 可讀取真正 CLI 產物，並成功完成 artifact／Release 上傳。
 
 歷史版本：[rc.1 Release](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases/tag/v1.3.0-rc.1)
 與[建置 run](https://github.com/Rex-Taiphoon/Taiphoon_Agent/actions/runs/37006614126) 全數完成，

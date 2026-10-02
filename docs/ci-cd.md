@@ -25,8 +25,8 @@ CI 使用唯讀權限；只有 Release publish 使用 GitHub token 寫入，不�
 依專案規約確認部署變更與 CI 授權後，提交／推送分支，再推送尚未使用的版本標籤，例如：
 
 ```sh
-git tag -a v1.3.0-rc.2 -m "Taiphoon Agent v1.3.0-rc.2"
-git push origin v1.3.0-rc.2
+git tag -a v1.3.0-rc.4 -m "Taiphoon Agent v1.3.0-rc.4"
+git push origin v1.3.0-rc.4
 ```
 
 版本標籤通過所有必要工作後才發布；`-rc.N` 為 prerelease，其餘為正式版本。
