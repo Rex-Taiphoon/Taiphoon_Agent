@@ -1,5 +1,7 @@
 # Taiphoon Agent
 
+目前版本：`v1.3.0` 正式版，詳見 [版本說明](docs/releases/v1.3.0.md)。
+
 以 ROS2 Humble 整合飛控、任務規劃、感測器與影像。每個 Agent 只控制自己對應的飛控；
 日常啟動統一使用 `taiphoon_agent`，不需要附加參數，不會自動 Arm 或起飛。
 
@@ -71,6 +73,7 @@ Windows 若找不到 Docker，先開啟 Desktop；工具會查 PATH 與標準安
 
 - [平台套件與進階設定](Tools/agent_launcher/PACKAGE-README.md)
 - [CI/CD 與版本發布](docs/ci-cd.md)
+- [各版本 Release 說明](docs/releases/)
 - [部署設計](docs/deployment-cross-platform.md)／[驗證紀錄](docs/deployment-verification.md)
 - [ROS2 Node／Topic 介面](docs/taiphoon-agent-interface.md)
 - [飛行命令](docs/agent-commands.md)／[ROS2 參數](docs/agent-configuration.md)

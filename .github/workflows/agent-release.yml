@@ -28,6 +28,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: 確認版本說明
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "docs/releases/$VERSION.md" ]; then
+            echo "請先撰寫 docs/releases/$VERSION.md，列出本版變更、下載與驗證資訊。" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: release-packages
@@ -38,17 +49,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          cat > release-notes.md <<'NOTES'
-          下載符合平台的 taiphoon_agent 套件，解壓後直接開啟，或執行 taiphoon_agent start。
-          樹莓派 Ubuntu 選 linux-arm64；Windows 選 windows-amd64；Mac 依晶片選 macos-arm64 或 macos-amd64。
-          需要先安裝 Docker；首次啟動會引導設定並自動載入套件內的預編譯 Agent 映像。
-          校驗由工具自動完成，不需要另下載校驗檔。啟動不會自動 Arm 或起飛。
-          sim 可啟動 1～4 組 PX4＋Agent；deploy 啟動一台，Wi-Fi 飛控預設為 192.168.1.14。
-          Docker Desktop 自動映射 UDP，不需要開啟 host networking；詳細操作見套件 README。
-          樹莓派與 macOS 實機／DDS 驗收另由使用者完成。
-          NOTES
+          {
+            printf '版本：`%s`\n' "$VERSION"
+            printf '原始碼：[%s](https://github.com/%s/tree/%s)\n\n' \
+              "${SOURCE_COMMIT:0:12}" "$GH_REPO" "$SOURCE_COMMIT"
+            cat "docs/releases/$VERSION.md"
+          } > release-notes.md
           release_args=()
           if [[ "$VERSION" == *-* ]]; then release_args+=(--prerelease); fi
           gh release create "$VERSION" release/* --verify-tag "${release_args[@]}" \

@@ -22,6 +22,23 @@ CI 使用唯讀權限；只有 Release publish 使用 GitHub token 寫入，不�
 
 ## 發布
 
+發布前先撰寫 `docs/releases/<版本標籤>.md`，例如 `docs/releases/v1.3.0-rc.3.md`。
+Release workflow 讀取該版文件，補上版本與原始碼連結；缺少文件時停止發布。
+
+### Release 說明格式
+
+沿用 [Taiphoon_GCS](https://github.com/Rex-Taiphoon/Taiphoon_GCS/releases) 的版本資訊、平台下載表、
+主要變更與 Full Changelog，修正清單參考 [Betaflight](https://github.com/betaflight/betaflight/releases) 的簡短條列。
+
+- 章節順序固定為「平台下載 → 使用方式 → 主要變更 → 驗證與限制」，每版只保留一組主要變更標題。
+- 平台表使用「平台／完整套件」兩欄，連結指向該版實際發布的檔案。
+- 每項變更用一個條列，直接寫「修正／新增／調整」的對象、發生情境與結果；項目多時再分為修正、新增與改善。
+- 以最近一個已發布版本為比較基準；首次發布列出新增功能。補上對應的 Full Changelog 連結。
+- 直接說明行為與適用條件，避免「不等於／不代表」的對比句，以及只有「提升體驗／全面優化」的空泛描述。
+- 驗證只列已完成的項目；待驗收的平台、連線或飛行情境另列一點，詳細紀錄留在驗證文件。
+
+### 版本標籤
+
 依專案規約確認部署變更與 CI 授權後，提交／推送分支，再推送尚未使用的版本標籤，例如：
 
 ```sh
@@ -45,6 +62,7 @@ git push origin v1.3.0-rc.4
 | ROS2 依賴、預編譯映像 | Dockerfile、docker/runtime-*.sh |
 | runner／PX4 訊息 commit／建置參數／CI 驗證 | .github/workflows/agent-build.yml |
 | PR 觸發／發布條件 | agent-ci.yml、agent-release.yml |
+| Release 內容與格式 | docs/releases/*.md、docs/ci-cd.md |
 | 平台打包與安裝 | Tools/agent_launcher/package_release.py、install.* |
 | 模式、網路、程序與設定 | Tools/agent_launcher/*.cpp |
 | CTest、真實模擬與唯讀觀測 | test/agent_launcher*、test/deployment_* |
