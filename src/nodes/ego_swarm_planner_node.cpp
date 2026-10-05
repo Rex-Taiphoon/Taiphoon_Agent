@@ -885,7 +885,10 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
     {
         requested_config.type = ego_swarm::FormationType::VERT_LINEAR;
         requested_config.spacing_m = parsed.param_value;
-        requested_config.vertical_offset_m = 0.0;
+        requested_config.vertical_offset_m = has_accepted_formation_epoch_ &&
+            accepted_formation_epoch_.formation_type ==
+                taiphoon_agent::msg::FormationEpoch::VERT_LINEAR
+            ? accepted_formation_epoch_.vertical_offset_m : 0.0;
     }
     if (!ego_swarm::is_finite(requested_config.radius_m) ||
         !ego_swarm::is_finite(requested_config.spacing_m) ||
