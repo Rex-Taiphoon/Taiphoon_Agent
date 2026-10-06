@@ -19,3 +19,5 @@
 重跑前本機驗證：隔離 Docker workspace 建置成功、7 個 Release 傳輸 Gate 測試通過、五平台打包 fixture 通過、Cyclone DDS 真實 planner 回歸通過（19.932 s）。顯式 lo 配置與 ROS_LOCALHOST_ONLY 會重複選取介面，改為 ROS_LOCALHOST_ONLY=1 並清空 CYCLONEDDS_URI 使用 RMW 內建 localhost 設定；測試失敗不改預期。官方 gh CLI 的 Release 查找支援草稿，可沿用 upload／download。
 
 首次新版 Workflow 37460824351：macOS universal 編譯及草稿傳輸成功；Windows MSVC 編譯成功，但 Python 預設 cp1252 讀取含中文 Release JSON 失敗。傳輸 subprocess 明確指定 UTF-8，Workflow 同時設 PYTHONUTF8=1 保障中文 stdout；新增實際子程序 UTF-8 輸出回歸，Docker 8 項測試全通過。提交「發布: 修正 Windows 草稿傳輸編碼」後以新 Workflow revision 重試，rc.4 程式來源維持 ff706d6。
+
+第二次 Workflow 37461137194：Windows／macOS 完整工作成功，ARM64 的單元、planner 回歸、啟動工具與 runtime 健康檢查全通過；草稿上傳時 Linux protected_hardlinks 拒絕為容器 UID 所有的 launcher 建立硬連結。改為同一檔案系統暫時 rename，上傳成功／失敗皆 finally 還原，避免額外複製 GB 級映像。新增 readonly 建置檔在上傳失敗後完整還原測試，Docker 9 項測試通過；提交「發布: 修正容器產物上傳權限」後重試。

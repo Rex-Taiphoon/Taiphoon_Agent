@@ -10,6 +10,8 @@ import importlib.util
 import os
 import locale
 import sys
+import tempfile
+import subprocess
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -21,6 +23,19 @@ spec.loader.exec_module(transfer)
 
 
 class ReleaseTransferTest(unittest.TestCase):
+    def test_failed_upload_restores_readonly_build_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'taiphoon_agent'
+            path.write_bytes(b'compiled-output')
+            path.chmod(0o444)
+            with patch.object(transfer, 'draft', return_value={'assets': []}), \
+                    patch.object(transfer, 'execute', side_effect=subprocess.CalledProcessError(1, 'gh')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    transfer.upload_file('v1.3.0-rc.4', path, 'stage-fixture')
+            self.assertEqual(path.read_bytes(), b'compiled-output')
+            self.assertEqual([item.name for item in Path(directory).iterdir()], ['taiphoon_agent'])
+            path.chmod(0o644)
+
     def test_api_output_decodes_utf8_under_windows_legacy_locale(self):
         with patch.object(locale, 'getpreferredencoding', return_value='cp1252'):
             result = transfer.execute([sys.executable, '-c',

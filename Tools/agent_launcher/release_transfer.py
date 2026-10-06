@@ -114,7 +114,7 @@ def checksum(path):
 
 
 def upload_file(version, path, name, replace_draft=False):
-    """硬連結保留原檔名；只允許更新本次未公開草稿的完整平台包。"""
+    """暫時改名後還原；不複製大型映像或依賴跨 UID 硬連結權限。"""
     release = draft(version)
     digest = checksum(path)
     existing = next((asset for asset in release['assets'] if asset['name'] == name), None)
@@ -126,8 +126,11 @@ def upload_file(version, path, name, replace_draft=False):
         api(f'releases/assets/{existing["id"]}', 'DELETE')
     with tempfile.TemporaryDirectory(prefix='release-upload-', dir=path.parent) as directory:
         staged = Path(directory) / name
-        os.link(path, staged)
-        execute(['gh', 'release', 'upload', version, str(staged)])
+        path.rename(staged)
+        try:
+            execute(['gh', 'release', 'upload', version, str(staged)])
+        finally:
+            staged.rename(path)
     uploaded = next(asset for asset in draft(version)['assets'] if asset['name'] == name)
     if uploaded.get('digest') != digest or uploaded['size'] != path.stat().st_size:
         raise RuntimeError(f'上傳校驗失敗：{name}')
