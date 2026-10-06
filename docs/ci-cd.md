@@ -6,11 +6,22 @@
 |---|---|---|
 | 分支 push／PR | Ubuntu 22.04 AMD64／ARM64、Windows x64、Mac universal 編譯；Docker 內測試 | 成功狀態／失敗診斷 |
 | 新 `vX.Y.Z` 或 `vX.Y.Z-rc.N` tag | 共用相同驗證，再匯出映像與打包 | 五個 GitHub Release 平台包 |
-| Actions 手動執行 Release workflow | 同上，使用 CI 版本 | 七天保留的測試 artifacts，不發布 |
+| Actions 手動執行 Release workflow，指定既有 release_tag | 使用該標籤的固定 commit 重新建置 | 完整五平台 Release；不移動標籤 |
 
 `agent-ci.yml` 與 `agent-release.yml` 共用 `agent-build.yml`，維護建置邏輯只改一份。
 一般 CI 不匯出大型映像。Docker layer cache 按 CPU 分開，cache 失效不影響完整建置。
-CI 使用唯讀權限；只有 Release publish 使用 GitHub token 寫入，不需要個人發布 token。
+CI 使用唯讀權限；Release 呼叫端提供 contents write，用於未公開草稿傳輸與最後發布，不需要個人發布 token。
+共用 workflow 繼承呼叫端權限，不會提高 CI 的權限。
+
+## 產物傳輸與儲存
+
+- 不使用 `actions/upload-artifact`／`actions/download-artifact`，也不建立 Docker build record artifact。
+- Release 的原生工具、映像與內部 manifest 直接暫存在同版 GitHub Release 草稿，跨 runner 下載時核對 GitHub SHA256 digest。
+- staging 名稱包含 run ID、attempt 與平台；只選取同一 run 的完整平台集合，支援只重跑失敗工作。
+- 五個完整包上傳並校驗後，publish 工作清除草稿中的 staging 檔案，再公開 Release。任一必要工作失敗時保留未公開草稿供重跑。
+- 已公開版本拒絕修改；原始碼一律由既有版本標籤解析成固定 commit，不以目前分支替代。
+- 一般 CI 只建置與測試，不上傳產物。失敗診斷留在工作 log；Docker layer cache 仍沿用既有 cache 設定。
+- 手動重建範例：在 `master` 執行 Release workflow，將 `release_tag` 設為尚未公開的 `v1.3.0-rc.4`。
 
 ## 驗證範圍
 
@@ -54,9 +65,9 @@ git push origin v1.3.0-rc.4
 
 ## 失敗與維護位置
 
-先查看 Actions 的失敗步驟；Linux 上傳 `diagnostics-linux-ARCH`，包含容器、runtime 與 colcon 日誌。
+先查看 Actions 的失敗步驟；Linux 將容器、runtime 與 colcon 診斷摘要輸出至工作 log。
 暫時的 runner／網路錯誤可重跑 failed jobs；程式問題提交新版本。發布失敗先確認既有 Release 資產狀態。
-需要足夠的 GitHub Actions runner／artifact 額度，所有測試完成前不發布不完整套件。
+需要足夠的 GitHub Actions runner 額度；產物不占用 Actions Artifact 儲存，所有測試完成前不發布不完整套件。
 
 | 要修改的內容 | 位置 |
 |---|---|

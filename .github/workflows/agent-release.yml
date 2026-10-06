@@ -7,58 +7,58 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 要重建及發布的既有版本標籤
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: agent-release-${{ github.ref }}
+  group: agent-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build:
+    permissions:
+      contents: write
     uses: ./.github/workflows/agent-build.yml
     with:
       verification_only: false
+      release_tag: ${{ inputs.release_tag || '' }}
 
   publish:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.release_tag != ''
     needs: build
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.source_commit }}
+          path: release-source
       - name: 確認版本說明
         shell: bash
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          if [ ! -s "docs/releases/$VERSION.md" ]; then
+          if [ ! -s "release-source/docs/releases/$VERSION.md" ]; then
             echo "請先撰寫 docs/releases/$VERSION.md，列出本版變更、下載與驗證資訊。" >&2
             exit 1
           fi
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-packages
-          path: release
       - name: 發布完整平台套件
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ github.ref_name }}
-          SOURCE_COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
         run: |
           set -euo pipefail
-          {
-            printf '版本：`%s`\n' "$VERSION"
-            printf '原始碼：[%s](https://github.com/%s/tree/%s)\n\n' \
-              "${SOURCE_COMMIT:0:12}" "$GH_REPO" "$SOURCE_COMMIT"
-            cat "docs/releases/$VERSION.md"
-          } > release-notes.md
-          release_args=()
-          if [[ "$VERSION" == *-* ]]; then release_args+=(--prerelease); fi
-          gh release create "$VERSION" release/* --verify-tag "${release_args[@]}" \
-            --title "Taiphoon Agent $VERSION" --notes-file release-notes.md
+          python3 Tools/agent_launcher/release_transfer.py publish "$VERSION" \
+            "release-source/docs/releases/$VERSION.md"

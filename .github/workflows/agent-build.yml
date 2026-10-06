@@ -10,9 +10,17 @@ on:
         description: 只建置與測試，不匯出大型映像或發布
         type: boolean
         default: false
+      release_tag:
+        description: 使用既有版本標籤的原始碼重建，不移動標籤
+        type: string
+        default: ''
+    outputs:
+      version:
+        value: ${{ jobs.version.outputs.value }}
+      source_commit:
+        value: ${{ jobs.version.outputs.source_commit }}
 
-permissions:
-  contents: read
+# 繼承呼叫端權限：CI 為 read，只有 Release 呼叫端提供 contents write。
 
 concurrency:
   group: agent-build-${{ github.run_id }}
@@ -29,22 +37,41 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       value: ${{ steps.version.outputs.value }}
+      source_commit: ${{ steps.version.outputs.source_commit }}
     steps:
+      - uses: actions/checkout@v4
       - id: version
         shell: bash
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          VERIFICATION_ONLY: ${{ inputs.verification_only }}
         run: |
+          set -euo pipefail
+          if [ -n "$REQUESTED_TAG" ]; then REF_NAME="$REQUESTED_TAG"; REF_TYPE=tag; fi
+          if [ "$VERIFICATION_ONLY" != true ] && [ "$REF_TYPE" != tag ]; then
+            echo "請指定既有 release_tag；分支驗證請使用 CI workflow" >&2
+            exit 1
+          fi
           if [ "$REF_TYPE" = tag ]; then
             if ! [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
               echo "Release tag 必須是 vX.Y.Z 或 vX.Y.Z-rc.N" >&2
               exit 1
             fi
             echo "value=$REF_NAME" >> "$GITHUB_OUTPUT"
+            git fetch --depth 1 origin "refs/tags/$REF_NAME"
+            echo "source_commit=$(git rev-parse 'FETCH_HEAD^{commit}')" >> "$GITHUB_OUTPUT"
           else
             echo "value=v0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "source_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           fi
+      - name: 準備未公開的 Release 草稿
+        if: ${{ !inputs.verification_only }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 Tools/agent_launcher/release_transfer.py create '${{ steps.version.outputs.value }}' '${{ steps.version.outputs.source_commit }}'
 
   linux:
     needs: version
@@ -58,16 +85,26 @@ jobs:
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: release-source
     env:
       VERSION: ${{ needs.version.outputs.value }}
       ARCHITECTURE: ${{ matrix.architecture }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_SOURCE_COMMIT: ${{ needs.version.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.source_commit }}
+          path: release-source
       - uses: docker/setup-buildx-action@v4
       - name: 建置開發映像
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: release-source
           target: taiphoon-release-dev
           load: true
           tags: taiphoon-agent:${{ env.VERSION }}-dev-${{ matrix.architecture }}
@@ -82,7 +119,7 @@ jobs:
       - name: 建置執行映像
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: release-source
           target: taiphoon-runtime
           load: true
           tags: taiphoon-agent:${{ env.VERSION }}-runtime-${{ matrix.architecture }}
@@ -109,7 +146,8 @@ jobs:
               colcon test --packages-select taiphoon_agent
               colcon test-result --verbose
               source install/setup.bash
-              ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+              ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+                CYCLONEDDS_URI='' \
                 TAIPHOON_PLANNER_EXECUTABLE="$PWD/install/taiphoon_agent/lib/taiphoon_agent/ego_swarm_planner" \
                 TAIPHOON_TEST_LOG_DIR=/output \
                 python3 test/landing_planner_integration_test.py
@@ -153,6 +191,11 @@ jobs:
             fi
           '
           docker stop --timeout 20 runtime-check
+      - name: 容器內 Release 傳輸 Gate 回歸
+        run: |
+          docker run --rm --network none --entrypoint python3 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workflow,readonly" \
+            "taiphoon-agent:${VERSION}-dev-${ARCHITECTURE}" /workflow/test/release_transfer_test.py
       - name: 真正 CLI 的單組與四組 PX4 模擬
         if: matrix.architecture == 'amd64'
         shell: bash
@@ -194,13 +237,9 @@ jobs:
             echo "${kind}_${ARCHITECTURE}_layers=$(docker image inspect --format '{{json .RootFS.Layers}}' "$image")" \
               >> output/images.manifest
           done
-      - uses: actions/upload-artifact@v4
+      - name: 將 Linux 建置檔案送至 Release 草稿
         if: ${{ !inputs.verification_only }}
-        with:
-          name: linux-${{ matrix.architecture }}
-          path: output/*
-          compression-level: 0
-          retention-days: 7
+        run: python3 ../Tools/agent_launcher/release_transfer.py upload "$VERSION" "linux-$ARCHITECTURE" output
 
       - name: 保留失敗診斷
         if: failure()
@@ -210,12 +249,10 @@ jobs:
           docker ps -a > diagnostics/containers.txt
           docker logs runtime-check > diagnostics/runtime.log 2>&1 || true
           if [ -d output/ros-logs ]; then cp -r output/ros-logs diagnostics/; fi
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: diagnostics-linux-${{ matrix.architecture }}
-          path: diagnostics/
-          retention-days: 7
+          cat diagnostics/containers.txt diagnostics/runtime.log
+          if [ -f output/ros-logs/latest_test/taiphoon_agent/stdout_stderr.log ]; then
+            tail -n 200 output/ros-logs/latest_test/taiphoon_agent/stdout_stderr.log
+          fi
 
   native:
     needs: version
@@ -229,8 +266,19 @@ jobs:
             runner: macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: release-source
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_SOURCE_COMMIT: ${{ needs.version.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.source_commit }}
+          path: release-source
       - name: 建置 Windows 原生入口
         if: runner.os == 'Windows'
         shell: pwsh
@@ -257,12 +305,18 @@ jobs:
           cmake --build build/launcher --parallel 2
           mkdir -p output
           cp build/launcher/taiphoon_agent output/
-      - uses: actions/upload-artifact@v4
+      - name: 將原生入口送至 Release 草稿
         if: ${{ !inputs.verification_only }}
-        with:
-          name: native-${{ matrix.platform }}
-          path: output/*
-          retention-days: 7
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python ../Tools/agent_launcher/release_transfer.py upload "$VERSION" "native-$PLATFORM" output
+          else
+            python3 ../Tools/agent_launcher/release_transfer.py upload "$VERSION" "native-$PLATFORM" output
+          fi
 
   package:
     if: ${{ !inputs.verification_only }}
@@ -270,18 +324,23 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       VERSION: ${{ needs.version.outputs.value }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_SOURCE_COMMIT: ${{ needs.version.outputs.source_commit }}
+    defaults:
+      run:
+        working-directory: release-source
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          path: artifacts
+          ref: ${{ needs.version.outputs.source_commit }}
+          path: release-source
+      - name: 從草稿下載已驗證的建置檔案
+        run: python3 ../Tools/agent_launcher/release_transfer.py download "$VERSION" artifacts
       - name: 組裝各平台下載包；校驗資訊內含於工具包
         shell: bash
         run: |
           python3 Tools/agent_launcher/package_release.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-packages
-          path: release/*
-          compression-level: 0
-          retention-days: 7
+      - name: 上傳五個完整平台包至草稿
+        run: python3 ../Tools/agent_launcher/release_transfer.py packages "$VERSION" release
