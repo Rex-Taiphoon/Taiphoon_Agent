@@ -125,8 +125,8 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `local_goal_detour_margin_m` | `double` | `3.0` | Local Goal 側向繞行相對於 peer collision distance 額外保留的追蹤裕度（公尺） |
 | `local_goal_replan_ratio` | `double` | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
 | `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
-| `formation_min_distance_m` | `double` | `3.0` | 編隊槽位的機體中心到中心最小距離 |
-| `peer_collision_min_distance_m` | `double` | `3.0` | 同儕軌跡的機體中心到中心最小距離 |
+| `formation_min_distance_m` | `double` | `2.0` | 編隊槽位的機體中心到中心最小距離 |
+| `peer_collision_min_distance_m` | `double` | `2.0` | 同儕軌跡的機體中心到中心最小距離 |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
 | `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
 | `max_velocity_m_s` | `double` | `2.5` | duration 計算使用的最大速度 |
@@ -433,7 +433,14 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 > 未來軌跡透過 `/uav_all_agent/swarm/agent_trajectories` 交換。EGO planner 每 3 秒
 > 掃描同儕 Agent，並以各 Agent 的 state Topic 建立同儕訂閱。
 >
-> 待命或沒有任務時，planner 仍會在 global topic 發布 `terminal_hold=true` heartbeat
+> 確認落地或解除解鎖後會清除任務目標、編隊 Epoch／assignment 與 active plan，
+> 停止 optimizer 與有效本機控制軌跡；local `planning/trajectory` 發布一次
+> `valid=false` 撤銷舊軌跡，同時於 global 軌跡 topic 發布撤銷訊息；已降落機體不再
+> 廣播佔位，其他 Agent 依有效落地狀態移除其舊軌跡與編隊成員資格。
+> 地面移動／編隊命令不排隊，重新起飛必須重新下達編隊命令，
+> 舊 Epoch heartbeat 不會自動恢復編隊。無效 PX4 觀測暫停規劃，但不視為確認落地。
+>
+> 空中待命或沒有任務時，planner 仍會在 global topic 發布 `terminal_hold=true` heartbeat
 > 供同儕保留 occupancy，但不會同步發布到本機 `planning/trajectory`；因此不會改寫
 > BasicController 在 HOVER／TAKEOFF 後鎖定的本機 setpoint。移動中、煞車中及任務終點
 > 的本機執行軌跡才會同時進入 local topic。
@@ -700,5 +707,15 @@ Monitor 會輸出 `east_progress_m`、`max_state_north_offset_m`、
 並將完整命令與結果寫入 `AutoTest/Log/`。這是測試前置條件，不新增 runtime topic 或命令。
 
 ---
+
+### Windows 小場域三機驗證
+
+`AutoTest/scripts/small_field_three_agent_validation.ps1` 在獨立 Docker observer 中啟動
+測試節點 `/autotest/small_field_three_agent_validation`；此節點不屬於正式 Agent launch。
+沿用三台 Agent 的 `state`、`planning/status`、全體 FormationEpoch／AgentTrajectory，
+以及既有 `command`、`shutdown` 介面，不新增 runtime message 或 topic。
+前五步驗證與交叉移動均監測 9×9×8 m 場域與 2 m 中心距離；observer 成功仍須使用
+`analyze_small_field_px4_logs.py` 離線查核失效機原始日誌，不能以 peer 被移除推論飛機已消失。
+本輪不下達 RTL，PX4 自主失聯處置仍由既有參數決定。
 
 > **文件維護**：此文件由 Taiphoon_Agent 團隊維護，每次新增或修改 Topic/Service/Node 時應同步更新。

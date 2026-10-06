@@ -396,6 +396,29 @@ void requireNoLegacyAgents(const Settings& settings)
     }
 }
 
+/** @brief 為此 Compose 專案執行中的完整容器 ID 啟動退出清理。
+ * @param home 此次部署的設定目錄。
+ */
+void watchContainers(const fs::path& home)
+{
+    const auto ids = checked(compose(home, {"ps", "--status", "running", "--quiet"}), true);
+    std::istringstream containers(ids);
+    std::string container_id;
+    while (containers >> container_id)
+    {
+        // 只綁定完整 ID，不以名稱刪除後來建立的替代容器。
+        if (container_id.size() == 64 && container_id.find_first_not_of("0123456789abcdef") == std::string::npos)
+        {
+#ifdef _WIN32
+            const auto watcher = deployment::executableDirectory() / "taiphoon_agent.exe";
+#else
+            const auto watcher = deployment::executableDirectory() / "taiphoon_agent";
+#endif
+            deployment::runDetached({watcher.u8string(), "--watch-container", container_id});
+        }
+    }
+}
+
 /** @brief 顯示各平台相同的最小操作入口。 */
 void help()
 {
@@ -419,6 +442,25 @@ int main(int argc, char* argv[])
     try
     {
         const std::string command = argc == 1 ? "start" : argv[1];
+        if (command == "--watch-container" && argc == 3)
+        {
+            const std::string container_id = argv[2];
+            if (container_id.size() != 64 || container_id.find_first_not_of("0123456789abcdef") != std::string::npos)
+            {
+                throw std::runtime_error("容器清理需要完整 Docker container ID");
+            }
+            const auto waited = deployment::run({"docker", "wait", container_id}, true);
+            if (waited.code != 0)
+            {
+                return waited.code;
+            }
+            const auto state = deployment::run({"docker", "inspect", "--format", "{{.State.Running}}", container_id}, true);
+            if (state.code == 0 && state.output.find("false") != std::string::npos)
+            {
+                return deployment::run({"docker", "rm", container_id}, true).code;
+            }
+            return state.code;
+        }
         if (argc > 2)
         {
             throw std::runtime_error("命令不需要額外參數；請使用 taiphoon_agent config 設定");
@@ -482,7 +524,7 @@ int main(int argc, char* argv[])
             }
             else
             {
-                checked(compose(home, command == "stop" ? std::vector<std::string>{"stop", "--timeout", "20"}
+                checked(compose(home, command == "stop" ? std::vector<std::string>{"down", "--timeout", "20"}
                     : std::vector<std::string>{"logs", "--tail", "150"}));
             }
             return 0;
@@ -504,7 +546,7 @@ int main(int argc, char* argv[])
         }
         if (command == "restart" && fs::exists(home / "compose.yaml"))
         {
-            checked(compose(home, {"stop", "--timeout", "20"}));
+            checked(compose(home, {"down", "--timeout", "20"}));
         }
         const bool is_running = fs::exists(home / "compose.yaml")
             && !checked(compose(home, {"ps", "--status", "running", "--quiet"}), true).empty();
@@ -520,6 +562,7 @@ int main(int argc, char* argv[])
             if (command == "start")
             {
                 requireHealthyAgents(home, settings);
+                watchContainers(home);
                 std::cout << "服務已在執行；飛控連線可用 taiphoon_agent status 查看。\n";
                 return 0;
             }
@@ -560,6 +603,7 @@ int main(int argc, char* argv[])
         }
         checked(compose(home, {"up", "--detach", "--no-build", "--wait", "--wait-timeout",
             std::to_string(START_TIMEOUT_SECONDS)}));
+        watchContainers(home);
         std::cout << "服務程序已啟動；不會自動 Arm／起飛。\n";
         std::cout << "使用 taiphoon_agent status 查看飛控連線，logs 查看日誌。\n";
         return 0;

@@ -85,7 +85,7 @@ struct LocalGoalEnvironment
     bool peers_are_fresh{false};
     std::vector<PeerTrajectory> peers{};
     const perception::IObstacleMap* obstacle_map{nullptr};
-    double peer_collision_min_distance_m{3.0};
+    double peer_collision_min_distance_m{2.0};
     double obstacle_clearance_m{1.0};
     double maximum_velocity_mps{2.5};
 };

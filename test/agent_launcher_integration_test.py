@@ -49,7 +49,18 @@ elif arguments[0] == 'image':
 elif arguments[0] == 'load':
     values['loaded'] = True
 elif arguments[0] == 'inspect':
-    print('running healthy' if values['running'] else 'exited unhealthy')
+    if '{{.State.Running}}' in arguments:
+        print('true' if values['running'] else 'false')
+    else:
+        print('running healthy' if values['running'] else 'exited unhealthy')
+elif arguments[0] == 'wait':
+    if os.environ.get('FIXTURE_WAIT_EXIT'):
+        values['running'] = False
+    print('0')
+elif arguments[0] == 'rm':
+    assert not values['running']
+    assert len(arguments) == 2 and len(arguments[1]) == 64
+    values['removed'] = arguments[1]
 elif arguments[0] == 'compose':
     if '--file' not in arguments:
         if os.environ.get('FIXTURE_COMPOSE_FAILURE'):
@@ -65,7 +76,7 @@ elif arguments[0] == 'compose':
         elif operation == 'up':
             assert '--no-build' in arguments and '--wait' in arguments
             values['running'] = True
-        elif operation == 'stop':
+        elif operation in ('stop', 'down'):
             values['running'] = False
         elif operation == 'exec':
             print('True')
@@ -228,7 +239,20 @@ def main():
     assert 'SHA256 不符' in result.stderr
     calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()][before:]
     assert not any(call[0] == 'load' or 'up' in call for call in calls)
-    print('PASS: Docker 依賴、設定保留、跨儲存方式映像識別、異內容拒絕、舊套件、ARM64 與校驗失敗')
+    # 容器退出清理只刪除已停止的完整 ID；不能誤刪正在運作或名稱重用的容器。
+    container_id = 'd' * 64
+    (root / 'state.json').write_text('{"loaded": true, "running": true}')
+    before = len((root / 'calls.jsonl').read_text().splitlines())
+    run_cli(executable, environment, '--watch-container', container_id)
+    calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()][before:]
+    assert not any(call[0] == 'rm' for call in calls)
+    run_cli(executable, dict(environment, FIXTURE_WAIT_EXIT='1'), '--watch-container', container_id)
+    assert json.loads((root / 'state.json').read_text())['removed'] == container_id
+    run_cli(executable, environment, '--watch-container', 'container-name', expected=1)
+    calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
+    assert any(call[0] == 'compose' and 'down' in call for call in calls)
+    assert not any('--force' in call or '-f' in call for call in calls if call[0] == 'rm')
+    print('PASS: Docker 依賴、映像識別、設定保留、關閉後清理與執行中容器保護')
 
 
 if __name__ == '__main__':

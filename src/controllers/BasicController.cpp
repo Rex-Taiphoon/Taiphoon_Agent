@@ -1730,6 +1730,10 @@ void BasicController::vehicle_status_cb(const px4_msgs::msg::VehicleStatus::Shar
         return;
     }
     arming_state_.store(msg->arming_state);
+    if (msg->arming_state != px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED)
+    {
+        clear_timed_trajectory();
+    }
     px4_nav_state_.store(msg->nav_state);
     last_vehicle_status_ns_.store(node_->now().nanoseconds());
 }
@@ -1744,6 +1748,10 @@ void BasicController::vehicle_land_detected_cb(
         return;
     }
     is_landed_.store(msg->landed);
+    if (msg->landed)
+    {
+        clear_timed_trajectory();
+    }
     last_land_detected_ns_.store(node_->now().nanoseconds());
 }
 

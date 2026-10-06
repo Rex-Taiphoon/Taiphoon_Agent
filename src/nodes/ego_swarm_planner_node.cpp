@@ -628,7 +628,59 @@ void EgoSwarmPlannerNode::own_state_cb(
     }
     own_state_ = *msg;
     has_own_state_ = true;
+    if (flight_mission_lifecycle_.observe(
+            msg->px4_state_valid, msg->armed, msg->landed))
+    {
+        clear_grounded_mission();
+    }
     update_vehicle_motion_state(*msg);
+}
+
+void EgoSwarmPlannerNode::clear_grounded_mission()
+{
+    has_goal_ = false;
+    has_position_target_ = false;
+    has_formation_ = false;
+    formation_command_pending_ = false;
+    formation_membership_change_pending_ = false;
+    formation_initial_plan_pending_ = false;
+    preserve_altitude_ = false;
+    has_formation_center_target_ = false;
+    formation_assignment_.clear();
+    has_accepted_formation_epoch_ = false;
+    has_candidate_formation_epoch_ = false;
+    accepted_formation_epoch_ = taiphoon_agent::msg::FormationEpoch{};
+    candidate_formation_epoch_ = taiphoon_agent::msg::FormationEpoch{};
+    candidate_adopted_agents_.clear();
+    last_epoch_publish_s_ = 0.0;
+    has_target_yaw_ = false;
+    goal_position_ = ego_swarm::Vector3{};
+    formation_center_ = ego_swarm::Vector3{};
+    invalidate_active_plan();
+    clear_peer_deconfliction_state();
+
+    // 已降落機體不再佔位，同時撤銷本機與同儕端的舊軌跡。
+    taiphoon_agent::msg::AgentTrajectory cleared;
+    cleared.stamp = this->now();
+    cleared.agent_index = static_cast<uint32_t>(agent_index_);
+    cleared.trajectory_id = ++trajectory_id_;
+    cleared.valid = false;
+    local_trajectory_pub_->publish(cleared);
+    trajectory_pub_->publish(cleared);
+}
+
+bool EgoSwarmPlannerNode::is_grounded_peer(const int agent_id) const
+{
+    const auto iterator = peers_.find(agent_id);
+    if (iterator == peers_.end() || !iterator->second.has_state)
+    {
+        return false;
+    }
+    const auto& peer = iterator->second;
+    const double age = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - peer.last_arrival).count();
+    return peer.state.px4_state_valid && peer.state.landed &&
+        std::isfinite(age) && age >= 0.0 && age <= peer_trajectory_timeout_s_;
 }
 
 void EgoSwarmPlannerNode::own_attitude_cb(
@@ -717,6 +769,10 @@ void EgoSwarmPlannerNode::peer_state_cb(
     peer.state = *msg;
     peer.last_arrival = std::chrono::steady_clock::now();
     peer.has_state = true;
+    if (is_grounded_peer(agent_index))
+    {
+        (void)peer_trajectories_.erase(agent_index);
+    }
 
     // peer 的 position_ned 屬於 peer 自己的 PX4 local frame，不能直接拿來和
     // 本機 planner-local NED 比較。位置先從 WGS84 投影；速度仍供
@@ -814,6 +870,10 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         return;
     }
 
+    if (!flight_mission_lifecycle_.can_plan())
+    {
+        return;
+    }
     const auto parsed = utils::parse_command_string(msg->data);
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
@@ -899,6 +959,7 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         return;
     }
 
+    flight_mission_lifecycle_.accept_formation_command();
     preserve_altitude_ = false;
     std::vector<int> members = stable_member_ids();
     std::sort(members.begin(), members.end());
@@ -1147,7 +1208,7 @@ EgoSwarmPlannerNode::live_peer_min_distance(
     std::size_t peer_count = 0U;
     for (const int peer_id : peer_ids)
     {
-        if (peer_id == agent_index_)
+        if (peer_id == agent_index_ || is_grounded_peer(peer_id))
         {
             continue;
         }
@@ -1215,7 +1276,7 @@ EgoSwarmPlannerNode::make_peer_deconfliction_input(
 
     for (const int peer_id : peer_ids)
     {
-        if (peer_id <= 0 || peer_id == agent_index_)
+        if (peer_id <= 0 || peer_id == agent_index_ || is_grounded_peer(peer_id))
         {
             continue;
         }
@@ -1482,7 +1543,15 @@ std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
 {
     if (!stable_members_.empty())
     {
-        return stable_members_;
+        std::vector<int> members;
+        for (const int member : stable_members_)
+        {
+            if (!is_grounded_peer(member))
+            {
+                members.push_back(member);
+            }
+        }
+        return members;
     }
 
     std::vector<int> members;
@@ -1493,7 +1562,8 @@ std::vector<int> EgoSwarmPlannerNode::stable_member_ids() const
     for (const int index : currently_discovered_peers_)
     {
         const auto iterator = peers_.find(index);
-        if (iterator != peers_.end() && iterator->second.has_state &&
+        if (!is_grounded_peer(index) &&
+            iterator != peers_.end() && iterator->second.has_state &&
             is_finite_state_position(iterator->second.state))
         {
             members.push_back(index);
@@ -1936,7 +2006,10 @@ void EgoSwarmPlannerNode::formation_epoch_cb(
         RCLCPP_WARN(get_logger(), "formation_epoch_cb received nullptr");
         return;
     }
-    adopt_formation_epoch(*msg);
+    if (flight_mission_lifecycle_.can_adopt_formation())
+    {
+        adopt_formation_epoch(*msg);
+    }
 }
 
 void EgoSwarmPlannerNode::maybe_activate_formation_epoch()
@@ -2080,7 +2153,8 @@ void EgoSwarmPlannerNode::trajectory_cb(
     }
     if (msg->agent_index == 0U ||
         msg->agent_index == static_cast<uint32_t>(agent_index_) ||
-        !msg->valid || msg->order != ego_swarm::BSPLINE_DEGREE)
+        !msg->valid || msg->order != ego_swarm::BSPLINE_DEGREE ||
+        is_grounded_peer(static_cast<int>(msg->agent_index)))
     {
         return;
     }
@@ -2207,6 +2281,16 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, false, false, now);
         return;
     }
+    if (!flight_mission_lifecycle_.can_plan())
+    {
+        (void)peer_trajectories_.prune(now_s);
+        // 地面與觀測失效時不執行 optimizer，也不發布佔位或控制軌跡。
+        const bool has_localization = has_own_state_ && update_planner_frame();
+        publish_status(PLANNER_STATE_HOLD,
+                       "Flight mission inactive: grounded or PX4 state unavailable",
+                       nullptr, has_localization, false, now);
+        return;
+    }
     if (has_candidate_formation_epoch_ &&
         (!std::isfinite(last_epoch_publish_s_) ||
          now_s - last_epoch_publish_s_ >= FORMATION_EPOCH_HEARTBEAT_PERIOD_S))
@@ -2224,7 +2308,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     expected_peer_ids.reserve(currently_discovered_peers_.size());
     for (const int peer_id : currently_discovered_peers_)
     {
-        if (peer_id > 0 && peer_id != agent_index_)
+        if (peer_id > 0 && peer_id != agent_index_ && !is_grounded_peer(peer_id))
         {
             expected_peer_ids.push_back(peer_id);
         }
@@ -3084,7 +3168,8 @@ void EgoSwarmPlannerNode::scan_peers_cb()
     for (const int index : currently_discovered_peers_)
     {
         const auto peer_iterator = peers_.find(index);
-        if (peer_iterator == peers_.end() || !peer_iterator->second.has_state ||
+        if (is_grounded_peer(index) ||
+            peer_iterator == peers_.end() || !peer_iterator->second.has_state ||
             !is_finite_state_position(peer_iterator->second.state))
         {
             continue;
@@ -3618,6 +3703,10 @@ bool EgoSwarmPlannerNode::publish_waiting_hold(
 
 void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
 {
+    if (!flight_mission_lifecycle_.can_plan())
+    {
+        return;
+    }
     const auto parsed = utils::parse_command_string(command);
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {

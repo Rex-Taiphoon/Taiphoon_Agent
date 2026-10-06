@@ -82,6 +82,9 @@ protected:
         vehicle_status_pub_ =
             node_->create_publisher<px4_msgs::msg::VehicleStatus>(
                 "fmu/out/vehicle_status_v4", rclcpp::QoS(10).best_effort());
+        land_detected_pub_ =
+            node_->create_publisher<px4_msgs::msg::VehicleLandDetected>(
+                "fmu/out/vehicle_land_detected", rclcpp::QoS(10).best_effort());
         executor_.add_node(node_);
         enter_offboard_session_for_test();
         has_setpoint_ = false;
@@ -94,6 +97,7 @@ protected:
         executor_.remove_node(node_);
         trajectory_setpoint_sub_.reset();
         vehicle_status_pub_.reset();
+        land_detected_pub_.reset();
         controller_.reset();
         node_.reset();
     }
@@ -223,8 +227,40 @@ protected:
     rclcpp::Publisher<px4_msgs::msg::VehicleStatus>::SharedPtr
         vehicle_status_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleLandDetected>::SharedPtr
+        land_detected_pub_;
     bool has_setpoint_{false};
 };
+
+TEST_F(BasicControllerTrajectoryTest, LandingObservationClearsCachedTrajectory)
+{
+    ASSERT_TRUE(controller_->update_timed_trajectory(
+        make_linear_trajectory(node_->now())));
+    px4_msgs::msg::VehicleLandDetected landed;
+    landed.landed = true;
+    for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS &&
+             controller_->has_timed_trajectory(); ++attempt)
+    {
+        land_detected_pub_->publish(landed);
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    EXPECT_FALSE(controller_->has_timed_trajectory());
+}
+
+TEST_F(BasicControllerTrajectoryTest, DisarmingObservationClearsCachedTrajectory)
+{
+    ASSERT_TRUE(controller_->update_timed_trajectory(
+        make_linear_trajectory(node_->now())));
+    px4_msgs::msg::VehicleStatus status;
+    status.arming_state = px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED;
+    for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS &&
+             controller_->has_timed_trajectory(); ++attempt)
+    {
+        vehicle_status_pub_->publish(status);
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    EXPECT_FALSE(controller_->has_timed_trajectory());
+}
 
 TEST_F(BasicControllerTrajectoryTest, SamplesLinearTrajectoryAtRosTime)
 {

@@ -343,7 +343,7 @@ def generate_launch_description():
             description="是否要求 fresh obstacle map 才能規劃"),
         DeclareLaunchArgument(
             "formation_min_distance_m",
-            default_value="3.0",
+            default_value="2.0",
             description="編隊槽位中心到中心最小距離（公尺），可降至 1.5 或 2"),
         DeclareLaunchArgument(
             "knot_interval_s",
@@ -441,7 +441,7 @@ def generate_launch_description():
             description="障礙物安全間距（公尺）"),
         DeclareLaunchArgument(
             "peer_collision_min_distance_m",
-            default_value="3.0",
+            default_value="2.0",
             description="同儕軌跡中心到中心最小距離（公尺），不因資料年齡擴張"),
         DeclareLaunchArgument(
             "enable_obstacle_cloud_simulator",

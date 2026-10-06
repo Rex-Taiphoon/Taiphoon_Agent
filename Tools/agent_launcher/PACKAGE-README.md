@@ -26,7 +26,7 @@ Windows 指令為 `./taiphoon_agent.exe`；Mac Terminal 為 `./taiphoon_agent`�
 
 ```text
 taiphoon_agent          啟動（等同 start）
-taiphoon_agent stop     停止自有服務，保留資料
+taiphoon_agent stop     停止並移除自有容器，保留設定與命名 volumes
 taiphoon_agent config   停止後切換模式或機數
 taiphoon_agent restart  重新取得目前網路並啟動
 taiphoon_agent status   程序健康、PX4 狀態

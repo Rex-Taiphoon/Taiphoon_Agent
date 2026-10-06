@@ -61,11 +61,11 @@ ros2 launch taiphoon_agent basic_controller.launch.py \
     single_agent_mode:=true target_system:="${TARGET_SYSTEM}" agent_namespace:="${AGENT_NAMESPACE}" \
     auto_start_sequence:=false \
     planning_rate_hz:="${EGO_SWARM_PLANNING_RATE_HZ:-10.0}" \
-    formation_min_distance_m:="${EGO_SWARM_FORMATION_MIN_DISTANCE_M:-3.0}" \
+    formation_min_distance_m:="${EGO_SWARM_FORMATION_MIN_DISTANCE_M:-2.0}" \
     knot_interval_s:="${EGO_SWARM_KNOT_INTERVAL_S:-1.0}" \
     candidate_offset_m:="${EGO_SWARM_CANDIDATE_OFFSET_M:-3.0}" \
     obstacle_clearance_m:="${EGO_SWARM_OBSTACLE_CLEARANCE_M:-1.0}" \
-    peer_collision_min_distance_m:="${EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M:-3.0}" \
+    peer_collision_min_distance_m:="${EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M:-2.0}" \
     planner_backend:="${EGO_SWARM_PLANNER_BACKEND:-optimized}" \
     enable_generic_trajectory_reservation:="${EGO_SWARM_ENABLE_GENERIC_TRAJECTORY_RESERVATION:-false}" \
     peer_planning_margin_m:="${EGO_SWARM_PEER_PLANNING_MARGIN_M:-1.0}" \

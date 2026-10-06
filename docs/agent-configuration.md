@@ -37,8 +37,8 @@
 | `local_goal_detour_margin_m` | double | `3.0` | Local Goal 側向繞行相對於 peer collision distance 額外保留的追蹤裕度（公尺） |
 | `local_goal_replan_ratio` | double | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
 | `minimum_replan_interval_s` | double | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
-| `formation_min_distance_m` | double | `3.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
-| `peer_collision_min_distance_m` | double | `3.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
+| `formation_min_distance_m` | double | `2.0` | 編隊槽位的機體中心到中心最小距離；可調為 1.5、2 或 3 m |
+| `peer_collision_min_distance_m` | double | `2.0` | 同儕未來軌跡的機體中心到中心最小距離；不因資料年齡擴張 |
 | `obstacle_clearance_m` | double | `1.0` | EGO-Swarm 與局部障礙物的安全間距 |
 | `knot_interval_s` | double | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由 EGO-Swarm 依候選路徑長度與限制計算 |
 | `max_velocity_m_s` | double | `2.5` | EGO-Swarm 計算軌跡 duration 使用的最大速度（公尺/秒） |
@@ -66,7 +66,7 @@
 只使用單一直線 B-spline seed，起終點為硬約束，中間控制點的水平搜尋範圍為內部 10 m；
 `FIXED_Z` 與 `LINEAR_Z` 路徑會分別固定高度或只允許起終點之間的線性高度變化。
 objective 包含 terminal goal、smoothness、動力學超限、障礙物 clearance barrier 與
-peer time-aligned separation barrier，並保留 obstacle 1 m、peer 3 m 的 hard safety
+peer time-aligned separation barrier，並保留 obstacle 1 m、peer 2 m 的 hard safety
 門檻。動力學 gate 預設上限為 velocity 2.5 m/s、acceleration 1.5 m/s²、jerk 3.0 m/s³；
 optimizer wall-time budget 為 50 ms。Optimizer 失敗時不使用 deterministic fallback；靜止／低速 Agent 立即建立固定
 位置 HOLD 並週期性重試，移動中的 Agent 使用 EmergencyBrakePlanner 後再 HOLD。

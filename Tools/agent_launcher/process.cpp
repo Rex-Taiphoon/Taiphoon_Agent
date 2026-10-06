@@ -16,6 +16,7 @@
 #include <windows.h>
 #else
 #include <cerrno>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -310,6 +311,88 @@ private:
 }
 #endif
 
+void runDetached(const std::vector<std::string>& arguments)
+{
+    if (arguments.empty())
+    {
+        throw std::invalid_argument("缺少背景程序名稱");
+    }
+#ifdef _WIN32
+    std::wstring command;
+    for (const auto& argument : arguments)
+    {
+        if (!command.empty())
+        {
+            command += L' ';
+        }
+        command += quoteWindowsArgument(widen(argument));
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION information{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &information))
+    {
+        throw std::runtime_error("無法啟動容器退出清理程序");
+    }
+    CloseHandle(information.hProcess);
+    CloseHandle(information.hThread);
+#else
+    const pid_t child = fork();
+    if (child < 0)
+    {
+        throw std::runtime_error("無法建立容器退出清理程序");
+    }
+    if (child == 0)
+    {
+        if (setsid() < 0)
+        {
+            _exit(1);
+        }
+        const pid_t detached = fork();
+        if (detached < 0)
+        {
+            _exit(1);
+        }
+        if (detached > 0)
+        {
+            _exit(0);
+        }
+        const int null_descriptor = open("/dev/null", O_RDWR);
+        if (null_descriptor < 0)
+        {
+            _exit(1);
+        }
+        for (int descriptor = 0; descriptor <= 2; ++descriptor)
+        {
+            if (dup2(null_descriptor, descriptor) < 0)
+            {
+                _exit(1);
+            }
+        }
+        if (null_descriptor > 2)
+        {
+            close(null_descriptor);
+        }
+        std::vector<char*> values;
+        for (const auto& argument : arguments)
+        {
+            values.push_back(const_cast<char*>(argument.c_str()));
+        }
+        values.push_back(nullptr);
+        execvp(values.front(), values.data());
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    {
+        throw std::runtime_error("容器退出清理程序啟動失敗");
+    }
+#endif
+}
+
 ProcessResult run(const std::vector<std::string>& arguments, bool should_capture)
 {
     if (arguments.empty())
@@ -348,7 +431,7 @@ ProcessResult run(const std::vector<std::string>& arguments, bool should_capture
     }
     PROCESS_INFORMATION information{};
     if (!CreateProcessW(executable.empty() ? nullptr : executable.c_str(), command.data(), nullptr, nullptr,
-        should_capture ? TRUE : FALSE, 0, nullptr, nullptr, &startup, &information))
+        should_capture ? TRUE : FALSE, should_capture ? CREATE_NO_WINDOW : 0, nullptr, nullptr, &startup, &information))
     {
         const auto error = GetLastError();
         throw std::runtime_error("無法執行 " + arguments.front() + "（Windows 錯誤 "

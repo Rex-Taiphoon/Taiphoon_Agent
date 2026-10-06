@@ -545,6 +545,8 @@ void BasicControllerNode::agent_trajectory_cb(
 
     if (!msg->valid)
     {
+        std::lock_guard<std::mutex> lock(agent_trajectory_mutex_);
+        has_latest_agent_trajectory_ = false;
         RCLCPP_WARN(this->get_logger(),
                     "Rejecting invalid AgentTrajectory id=%u",
                     msg->trajectory_id);
@@ -557,6 +559,15 @@ void BasicControllerNode::agent_trajectory_cb(
             this->get_logger(), *this->get_clock(), 2000,
             "Rejecting AgentTrajectory id=%u: GPS or odometry is not ready",
             msg->trajectory_id);
+        return;
+    }
+
+    const auto observation = controller_->get_flight_state_observation();
+    if (!observation.is_px4_state_valid || !observation.is_armed ||
+        observation.is_landed)
+    {
+        std::lock_guard<std::mutex> lock(agent_trajectory_mutex_);
+        has_latest_agent_trajectory_ = false;
         return;
     }
 

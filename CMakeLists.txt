@@ -17,6 +17,7 @@ find_package(rosidl_default_generators REQUIRED)
 # 測試依賴 (僅在 BUILD_TESTING 啟用時)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  option(TAIPHOON_BUILD_LEGACY_TESTS "建置未接入現行 runtime 的舊模型相容測試" OFF)
 endif()
 
 # --- 自訂訊息 ---
@@ -203,24 +204,25 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  # CollisionSafetyMonitor 測試（純邏輯，獨立編譯）
-  ament_add_gtest(test_collision_safety_monitor
-    test/collision_safety_monitor_test.cpp
-    src/safety/CollisionSafetyMonitor.cpp
-  )
+  if(TAIPHOON_BUILD_LEGACY_TESTS)
+    # 舊觀測式防撞與編隊模型不再接入現行 runtime。
+    ament_add_gtest(test_collision_safety_monitor
+      test/collision_safety_monitor_test.cpp
+      src/safety/CollisionSafetyMonitor.cpp
+    )
 
-  target_include_directories(test_collision_safety_monitor PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
+    target_include_directories(test_collision_safety_monitor PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
 
-  # FormationCalculator 測試 (純邏輯，獨立編譯)
-  ament_add_gtest(test_formation_calculator
-    test/formation_calculator_test.cpp
-  )
+    ament_add_gtest(test_formation_calculator
+      test/formation_calculator_test.cpp
+    )
 
-  target_include_directories(test_formation_calculator PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
+    target_include_directories(test_formation_calculator PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+  endif()
 
   # PeerMatcher 測試 (純邏輯，獨立編譯)
   ament_add_gtest(test_peer_matcher
@@ -239,14 +241,16 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
-  # TrajectoryPlanner 測試 (純邏輯，獨立編譯)
-  ament_add_gtest(test_trajectory_planner
-    test/trajectory_planner_test.cpp
-  )
+  if(TAIPHOON_BUILD_LEGACY_TESTS)
+    # 舊 waypoint planner 只在相容驗證時建置。
+    ament_add_gtest(test_trajectory_planner
+      test/trajectory_planner_test.cpp
+    )
 
-  target_include_directories(test_trajectory_planner PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
+    target_include_directories(test_trajectory_planner PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+  endif()
 
   # EGO-Swarm 核心測試
   ament_add_gtest(test_ego_swarm_core
@@ -273,6 +277,13 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_planning_target_selector PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  ament_add_gtest(test_flight_mission_lifecycle
+    test/flight_mission_lifecycle_test.cpp
+  )
+  target_include_directories(test_flight_mission_lifecycle PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

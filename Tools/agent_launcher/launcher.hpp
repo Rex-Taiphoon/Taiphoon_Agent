@@ -27,6 +27,10 @@ struct ProcessResult
  * @return 程序回傳碼與輸出。
  */
 ProcessResult run(const std::vector<std::string>& arguments, bool should_capture = false);
+/** @brief 啟動無視窗背景程序，讓容器退出清理不依賴啟動器前景生命週期。
+ * @param arguments 程序與獨立參數。
+ */
+void runDetached(const std::vector<std::string>& arguments);
 /** @brief 依 Windows CRT 規則引用 argv。
  * @param value 原始 Unicode 參數。
  * @return 保留空白與反斜線語意的引用結果。

@@ -1,9 +1,38 @@
 # Taiphoon Agent
 
-目前版本：`v1.3.0` 正式版，詳見 [版本說明](docs/releases/v1.3.0.md)。
+目前版本：`v1.3.0-rc.4` 預發布版，詳見 [版本說明](docs/releases/v1.3.0-rc.4.md)。
 
 以 ROS2 Humble 整合飛控、任務規劃、感測器與影像。每個 Agent 只控制自己對應的飛控；
 日常啟動統一使用 `taiphoon_agent`，不需要附加參數，不會自動 Arm 或起飛。
+
+編隊與同儕避碰的預設機體中心最小距離為 **2 m**，規劃額外裕度維持 1 m。
+這些參數不會自動限制場域邊界、飛行高度或 PX4 RTL 路徑；小場域三機驗證與
+測試取捨詳見 [驗證計畫](docs/codex/small-field-three-agent-validation-plan.md)。
+
+預設單元測試只建置現行控制鏈與必要回歸；舊 FormationCalculator、waypoint planner
+與觀測式防撞測試可由 `-DTAIPHOON_BUILD_LEGACY_TESTS=ON` 啟用，原始測試檔仍保留。
+
+確認落地或解除解鎖後，Agent 會清除編隊、移動目標與舊本機軌跡，停止任務規劃。
+地面移動／編隊命令不會排隊到起飛後執行；再次起飛後須重新下達編隊命令。
+已降落的機體不再發布佔位，其他 Agent 依有效落地狀態移除其舊軌跡與編隊成員資格。
+降落生命週期回歸與 Docker 測試方式詳見 [驗證報告](docs/codex/landing-mission-lifecycle-report.md)。
+
+Windows 開發環境可用 PowerShell 執行小場域驗證（需 Docker Desktop、原生 Compose、
+Git Bash、既有 dev 映像與可寫入的開發建置 volumes；Git Bash 僅調度 Docker，ROS2 在容器內執行）：
+
+```powershell
+./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 1
+./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 2
+./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 3
+./AutoTest/scripts/small_field_three_agent_validation.ps1 -Scenario crossing
+```
+
+測試使用三機、2 m 起飛高度、2 m 圓半徑與嚴格 2 m 中心距離驗收。
+編隊情境只執行前五步；兩機重編隊須持續收斂 15 秒，不下達 RTL。
+交叉情境讓兩端飛機互換位置，中間飛機保持原位。
+記錄輸出於 `AutoTest/Log/small-field-日期/`；即時 monitor 成功後，仍須在 Docker 中以
+`analyze_small_field_px4_logs.py`（需要 `pyulog`）檢查包含失效機的三台 PX4 ULog。
+離線查核使用共同 UTC 時鐘與 20 Hz 取樣，不等同實體碰撞模擬或實機零碰撞保證。
 
 ## 下載與啟動
 
@@ -22,6 +51,12 @@
 Windows PowerShell 可執行 `./taiphoon_agent.exe`，macOS Terminal 可執行 `./taiphoon_agent`。
 選用 `install.ps1` 或 `bash install.sh` 安裝後，各平台可直接使用 `taiphoon_agent`。
 macOS 首次開啟依系統提供的核准流程操作；目前套件未公證。
+
+原生啟動器啟動時會在主機註冊容器退出清理，Agent 遠端關閉或自行退出後便移除容器；
+`stop`／`restart` 也會移除舊容器，保留命名 volumes 與設定。Windows 清理程序不開啟視窗。
+此行為需要重新編譯的啟動器，既有 Release 執行檔不會自動更新；直接執行
+`docker compose up` 不會註冊此清理程序。容器移除後無法使用 `docker logs` 讀取舊 stdout，
+需要保留的記錄應先匯出；上述驗證腳本會在移除前自動保存 Agent 日誌。
 
 ## 一次設定，後續一鍵
 

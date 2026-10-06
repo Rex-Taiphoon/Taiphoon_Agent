@@ -108,6 +108,12 @@ jobs:
               colcon build --executor sequential --packages-select taiphoon_agent
               colcon test --packages-select taiphoon_agent
               colcon test-result --verbose
+              source install/setup.bash
+              ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+                TAIPHOON_PLANNER_EXECUTABLE="$PWD/install/taiphoon_agent/lib/taiphoon_agent/ego_swarm_planner" \
+                TAIPHOON_TEST_LOG_DIR=/output \
+                python3 test/landing_planner_integration_test.py
+              python3 test/small_field_monitor_test.py
               cmake -S Tools/agent_launcher -B /tmp/launcher -DBUILD_TESTING=ON \
                 -DCMAKE_BUILD_TYPE=Release -DTAIPHOON_RELEASE_VERSION="$RELEASE_VERSION"
               cmake --build /tmp/launcher --parallel 2

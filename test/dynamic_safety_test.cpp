@@ -80,6 +80,41 @@ double speed_at(
     return std::sqrt(taiphoon::ego_swarm::squared_norm(sample.velocity));
 }
 
+TEST(ContinuousSafetyValidatorTest, EnforcesTwoMeterDefaultAtBoundary)
+{
+    const PlannerConfig config;
+    ContinuousSafetyValidator validator(config);
+    RawPointObstacleMap map;
+    ASSERT_TRUE(map.set_explicit_empty(0.0));
+    VehiclePlanningState state;
+    state.position = Vector3{0.0, 0.0, -2.0};
+    const BsplineTrajectory hold(
+        std::vector<Vector3>(config.control_point_count, state.position), 1.0);
+
+    for (const double distance_m : {1.99, 2.0, 2.01})
+    {
+        PeerTrajectoryTable peers;
+        auto peer = make_peer(
+            2, 0.0, 0.0,
+            std::vector<Vector3>(config.control_point_count,
+                                 Vector3{0.0, distance_m, -2.0}),
+            1.0);
+        peer.terminal_hold = true;
+        ASSERT_TRUE(peers.update(peer));
+        const auto result = validator.validate(
+            hold, make_context(state, peers, map, 0.0));
+        if (distance_m < 2.0)
+        {
+            EXPECT_FALSE(result.is_safe);
+            EXPECT_EQ(result.reason, SafetyFailureReason::PEER_COLLISION);
+        }
+        else
+        {
+            EXPECT_TRUE(result.is_safe);
+        }
+    }
+}
+
 TEST(VehiclePlanningStateTest, RejectsNonFiniteState)
 {
     VehiclePlanningState state;

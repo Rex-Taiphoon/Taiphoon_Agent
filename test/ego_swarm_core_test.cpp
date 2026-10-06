@@ -240,6 +240,37 @@ TEST(FormationSlotPlannerTest, ComputesCircleAndVerticalSlots)
     EXPECT_NEAR(circle_slot.offset_ned.at(2), 0.75, 1.0e-9);
 }
 
+TEST(FormationSlotPlannerTest, SmallFieldCircleSupportsThreeThenTwoMembers)
+{
+    constexpr double FIELD_HALF_WIDTH_M = 4.5;
+    constexpr double FLIGHT_ALTITUDE_M = 2.0;
+    FormationConfig config;
+    config.type = FormationType::CIRCLE;
+    config.radius_m = 2.0;
+    config.vertical_offset_m = -FLIGHT_ALTITUDE_M;
+    const PlannerConfig planner_config;
+
+    for (const auto& members : {
+             std::vector<int>{1, 2, 3}, std::vector<int>{1, 3}})
+    {
+        std::vector<FormationSlot> slots;
+        ASSERT_TRUE(FormationSlotPlanner::compute_all_slots(
+            members, config, slots));
+        ASSERT_TRUE(FormationSlotPlanner::are_slots_safe(
+            slots, planner_config.peer_collision_min_distance_m));
+        for (const double center_north_m : {0.0, 1.0, 0.0})
+        {
+            for (const auto& slot : slots)
+            {
+                EXPECT_LT(std::abs(slot.offset_ned.at(0) + center_north_m),
+                          FIELD_HALF_WIDTH_M);
+                EXPECT_LT(std::abs(slot.offset_ned.at(1)), FIELD_HALF_WIDTH_M);
+                EXPECT_NEAR(slot.offset_ned.at(2), -FLIGHT_ALTITUDE_M, 1.0e-9);
+            }
+        }
+    }
+}
+
 TEST(MovementFrameTest, ConvertsBodyForwardAndRightUsingCommandYaw)
 {
     Vector3 offset{};

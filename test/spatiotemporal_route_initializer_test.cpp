@@ -229,6 +229,8 @@ TEST(SpatiotemporalRouteInitializerTest, StaggeredTerminalHoldsAllowMiddleRoute)
         3, Vector3{7.0, 2.9, 0.0});
     snapshot.peers = {lower, upper};
     PlannerConfig config;
+    // 此回歸場景以 3 m 門檻阻塞直線，不依賴部署預設距離。
+    config.peer_collision_min_distance_m = 3.0;
     config.optimizer_time_budget_ms = 50.0;
     SpatiotemporalRouteInitializer initializer;
 

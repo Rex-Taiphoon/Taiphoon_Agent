@@ -16,6 +16,7 @@ CI 使用唯讀權限；只有 Release publish 使用 GitHub token 寫入，不�
 
 - AMD64／ARM64 原生 ROS2 workspace 建置與套件測試；ARM64 不以 QEMU 編譯 Agent。
 - Docker 內三組 CTest：設定／Compose／程序、CLI 生命週期與映像儲存方式、五個平台打包。
+- Linux 兩種架構在隔離 DDS domain 執行降落／重飛的 planner 節點回歸，並驗證 cubic 曲線邊界判定。
 - runtime 無飛控健康檢查；AMD64 再以真正 CLI 啟動 1／4 組 PX4 SIH，只讀取狀態並正常停止。
 - Windows MSVC 與 macOS Intel／Apple Silicon universal 原生工具編譯；不在 host 執行 ROS2。
 - 硬體 UART、樹莓派負載、Mac／Pi Wi-Fi、外部 GCS 與飛行行為仍需目標平台驗收。

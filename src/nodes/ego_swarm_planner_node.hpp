@@ -30,6 +30,7 @@
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
 #include "ego_swarm/FormationConvergence.hpp"
 #include "ego_swarm/FormationReentryPolicy.hpp"
+#include "ego_swarm/FlightMissionLifecycle.hpp"
 #include "ego_swarm/FormationReservation.hpp"
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
@@ -59,8 +60,8 @@ namespace nodes
 {
 
 constexpr double DEFAULT_EGO_PLANNER_RATE_HZ = 10.0;
-constexpr double DEFAULT_FORMATION_MIN_DISTANCE_M = 3.0;
-constexpr double DEFAULT_PEER_COLLISION_MIN_DISTANCE_M = 3.0;
+constexpr double DEFAULT_FORMATION_MIN_DISTANCE_M = 2.0;
+constexpr double DEFAULT_PEER_COLLISION_MIN_DISTANCE_M = 2.0;
 constexpr double DEFAULT_OBSTACLE_CLEARANCE_M = 1.0;
 constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
@@ -127,6 +128,8 @@ private:
     void trajectory_cb(
         const taiphoon_agent::msg::AgentTrajectory::SharedPtr msg);
     void planner_loop_cb();
+    void clear_grounded_mission();
+    bool is_grounded_peer(int agent_id) const;
     void scan_peers_cb();
     void formation_epoch_cb(
         const taiphoon_agent::msg::FormationEpoch::SharedPtr msg);
@@ -292,6 +295,7 @@ private:
     ego_swarm::Vector3 planner_to_px4_ned_offset_{0.0, 0.0, 0.0};
 
     bool has_own_state_{false};
+    ego_swarm::FlightMissionLifecycle flight_mission_lifecycle_{};
     bool has_previous_state_sample_{false};
     bool has_vehicle_motion_state_{false};
     double previous_state_timestamp_s_{0.0};

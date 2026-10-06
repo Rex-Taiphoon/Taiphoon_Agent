@@ -99,7 +99,7 @@ struct PlannerConfig
     double optimizer_peer_soft_margin_m{1.0};
     double optimizer_obstacle_soft_margin_m{0.5};
     double obstacle_clearance_m{1.0};
-    double peer_collision_min_distance_m{3.0};
+    double peer_collision_min_distance_m{2.0};
     double goal_weight{1.0};
     double smoothness_weight{0.1};
     double dynamic_weight{10.0};
