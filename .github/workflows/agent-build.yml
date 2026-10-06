@@ -27,6 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Windows Python 的系統預設編碼可能不是 UTF-8；API 與繁體中文 log 統一處理。
+  PYTHONUTF8: '1'
   # 打包只下載指定產物，不需要額外的 Docker build record artifact。
   DOCKER_BUILD_RECORD_UPLOAD: 'false'
   # 與目前已驗證的開發映像相同，不追蹤 px4_msgs 的浮動 main。

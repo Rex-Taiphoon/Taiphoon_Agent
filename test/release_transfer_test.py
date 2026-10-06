@@ -8,6 +8,8 @@
 """
 import importlib.util
 import os
+import locale
+import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -19,6 +21,12 @@ spec.loader.exec_module(transfer)
 
 
 class ReleaseTransferTest(unittest.TestCase):
+    def test_api_output_decodes_utf8_under_windows_legacy_locale(self):
+        with patch.object(locale, 'getpreferredencoding', return_value='cp1252'):
+            result = transfer.execute([sys.executable, '-c',
+                                       'import sys; sys.stdout.buffer.write(bytes.fromhex("e6b8ace8a9a6"))'])
+        self.assertEqual(result, '測試')
+
     def release_api(self, release):
         def response(path, *args):
             if path.startswith('releases?'):

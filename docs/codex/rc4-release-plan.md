@@ -17,3 +17,5 @@
 2026-10-06 人類重新授權執行多平台 Workflow。主角色為 Docker／部署維護，協作責任為測試驗證，由同一代理完成。前次 Linux CI 的 278 個 colcon 測項皆通過，整合回歸因指定未安裝的 Fast DDS 而失敗；僅修改 Workflow 測試環境，使用既有 Cyclone DDS、domain 77、loopback 與 localhost peer。Release 草稿查找改為分頁列出可見版本，再依數字 ID 讀取，防止 REST tags endpoint 的 404 造成重複草稿。測試先以獨立 Docker 執行傳輸 Gate、打包及真實 planner 回歸，預期全部通過；再提交流程修正並從 master dispatch rc.4，持續追蹤四組 runner 與五平台下載包。既有 tag 與飛行程式碼保持來源 ff706d6。
 
 重跑前本機驗證：隔離 Docker workspace 建置成功、7 個 Release 傳輸 Gate 測試通過、五平台打包 fixture 通過、Cyclone DDS 真實 planner 回歸通過（19.932 s）。顯式 lo 配置與 ROS_LOCALHOST_ONLY 會重複選取介面，改為 ROS_LOCALHOST_ONLY=1 並清空 CYCLONEDDS_URI 使用 RMW 內建 localhost 設定；測試失敗不改預期。官方 gh CLI 的 Release 查找支援草稿，可沿用 upload／download。
+
+首次新版 Workflow 37460824351：macOS universal 編譯及草稿傳輸成功；Windows MSVC 編譯成功，但 Python 預設 cp1252 讀取含中文 Release JSON 失敗。傳輸 subprocess 明確指定 UTF-8，Workflow 同時設 PYTHONUTF8=1 保障中文 stdout；新增實際子程序 UTF-8 輸出回歸，Docker 8 項測試全通過。提交「發布: 修正 Windows 草稿傳輸編碼」後以新 Workflow revision 重試，rc.4 程式來源維持 ff706d6。

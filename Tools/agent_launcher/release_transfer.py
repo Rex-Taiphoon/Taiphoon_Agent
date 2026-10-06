@@ -22,7 +22,8 @@ PLATFORMS = ('linux-amd64', 'linux-arm64', 'windows-amd64', 'macos-amd64', 'maco
 
 def execute(arguments, payload=None):
     """以 argv 呼叫 gh；憑證只由 GH_TOKEN 環境提供，不寫入檔案。"""
-    return subprocess.run(arguments, input=payload, text=True, capture_output=True, check=True).stdout
+    return subprocess.run(arguments, input=payload, text=True, encoding='utf-8',
+                          capture_output=True, check=True).stdout
 
 
 def api(path, method='GET', payload=None):
