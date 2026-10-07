@@ -37,7 +37,7 @@ jobs:
       value: ${{ steps.version.outputs.value }}
       source_commit: ${{ steps.version.outputs.source_commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
         shell: bash
         env:
@@ -97,8 +97,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_SOURCE_COMMIT: ${{ needs.version.outputs.source_commit }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.source_commit }}
           path: release-source
@@ -279,8 +279,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_SOURCE_COMMIT: ${{ needs.version.outputs.source_commit }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.source_commit }}
           path: release-source
@@ -336,8 +336,8 @@ jobs:
       run:
         working-directory: release-source
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.source_commit }}
           path: release-source

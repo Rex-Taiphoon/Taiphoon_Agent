@@ -21,3 +21,7 @@
 首次新版 Workflow 37460824351：macOS universal 編譯及草稿傳輸成功；Windows MSVC 編譯成功，但 Python 預設 cp1252 讀取含中文 Release JSON 失敗。傳輸 subprocess 明確指定 UTF-8，Workflow 同時設 PYTHONUTF8=1 保障中文 stdout；新增實際子程序 UTF-8 輸出回歸，Docker 8 項測試全通過。提交「發布: 修正 Windows 草稿傳輸編碼」後以新 Workflow revision 重試，rc.4 程式來源維持 ff706d6。
 
 第二次 Workflow 37461137194：Windows／macOS 完整工作成功，ARM64 的單元、planner 回歸、啟動工具與 runtime 健康檢查全通過；草稿上傳時 Linux protected_hardlinks 拒絕為容器 UID 所有的 launcher 建立硬連結。改為同一檔案系統暫時 rename，上傳成功／失敗皆 finally 還原，避免額外複製 GB 級映像。新增 readonly 建置檔在上傳失敗後完整還原測試，Docker 9 項測試通過；提交「發布: 修正容器產物上傳權限」後重試。
+
+2026-10-07 重建：人類確認以 79bb7b5（發布: 手動重建限定於版本標籤執行）作為新的 rc.4 狀態，並親自刪除舊 Release 與遠端標籤；舊標籤曾指向 cee9f20，上述 ff706d6 的來源描述已不適用。Release workflow 改為只能在版本標籤上執行，workflow、傳輸工具與建置原始碼固定為同一提交；標籤在執行期間被移動時停止。master CI 37593991623 通過後，於 79bb7b5 重新建立 annotated 標籤 v1.3.0-rc.4，Release 37594964029 的 version、Linux AMD64／ARM64、Windows、macOS、package 與 publish 全部成功，五個平台包皆有 SHA256 digest，target_commitish 為 79bb7b5，草稿 stage 已清除。另於 master 手動 dispatch Release（37596392342），version 工作以「Release 必須在版本標籤上執行」拒絕，未建立草稿。
+
+下載驗證：linux-amd64 包大小與 GitHub digest 相符；隔離容器內核對包內檔案集合與執行權限、manifest 格式、兩個映像 SHA256、映像標籤、linux/amd64 平台、HEALTHCHECK，以及映像 tar 內 rootfs diff_ids 與 manifest _layers 完全相同，30 項通過；乾淨 Ubuntu 22.04 執行包內 launcher，`--version` 回傳 v1.3.0-rc.4。曾安裝舊 rc.4 的主機保有同名但檔案層不同的映像，launcher 會拒絕啟動，需先移除 `taiphoon-agent:v1.3.0-rc.4-runtime-*`／`-dev-*` 舊映像。重建後 Workflow 的 actions/checkout 升級為 v5，消除 Node.js 20 淘汰警告；此變更只在 master，不移動 rc.4 標籤。
