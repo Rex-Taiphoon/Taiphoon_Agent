@@ -49,9 +49,15 @@ def main():
         compose = ['docker', 'compose', '--project-name', 'taiphoon_agent', '--file',
                    str(root / f'config-{count}' / 'compose.yaml')]
         try:
-            execute([str(executable), 'start'], env=environment, input=f'sim\n{count}\nlocal\n', timeout=180)
-            container = execute(compose + ['ps', '--quiet', 'agent_1'], capture_output=True).stdout.strip()
-            execute(['docker', 'run', '--name', observer, '--network', f'container:{container}',
+            execute([str(executable), 'start'], env=environment, input=f'sim\n{count}\n', timeout=180)
+            for instance in range(1, count + 1):
+                container = execute(compose + ['ps', '--quiet', f'agent_{instance}'],
+                                    capture_output=True).stdout.strip()
+                configuration = json.loads(execute(['docker', 'inspect', container], capture_output=True).stdout)[0]
+                assert 'Taiphoon_Net' in configuration['NetworkSettings']['Networks']
+                assert not configuration['HostConfig']['NetworkMode'].startswith('container:')
+                assert not configuration['HostConfig'].get('PortBindings')
+            execute(['docker', 'run', '--name', observer, '--network', 'Taiphoon_Net',
                      '--mount', f'type=bind,source={source}/test/deployment_simulation_observer.py,target=/observer.py,readonly',
                      '-e', 'RMW_IMPLEMENTATION=rmw_cyclonedds_cpp', '--entrypoint', '/bin/bash', development,
                      '-c', 'set -e; source /opt/ros/humble/setup.bash; '

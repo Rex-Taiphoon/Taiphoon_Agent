@@ -136,8 +136,8 @@ void initialize(const fs::path& home)
     {
         settings["count"] = prompt("PX4＋Agent 組數（1～4）", settings.at("count"));
         settings["transport"] = "udp";
-        settings["network"] = prompt("通訊 local（本機）／wifi（GCS）",
-            previous_mode == settings.at("mode") ? settings.at("network") : "local");
+        settings["network"] = "local";
+        std::cout << "模擬 Agent 與 GCS 透過 Docker 網路 Taiphoon_Net 通訊。\n";
     }
     else
     {
@@ -569,7 +569,7 @@ int main(int argc, char* argv[])
         }
         else
         {
-            if (settings.at("network") == "wifi")
+            if (!deployment::isSimulation(settings) && settings.at("network") == "wifi")
             {
                 if (settings.at("lan_address").empty() || settings.at("lan_address") == "auto")
                 {

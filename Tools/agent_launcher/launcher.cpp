@@ -467,13 +467,13 @@ std::string renderCycloneDds(const Settings& settings)
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         << "<CycloneDDS xmlns=\"https://cdds.io/config\"><Domain Id=\"any\"><General>"
         << "<AllowMulticast>true</AllowMulticast>";
-    if (!settings.at("lan_address").empty() && settings.at("lan_address") != "auto")
+    if (!isSimulation(settings) && !settings.at("lan_address").empty() && settings.at("lan_address") != "auto")
     {
         xml << "<ExternalNetworkAddress>" << settings.at("lan_address") << "</ExternalNetworkAddress>";
     }
     xml << "</General><Discovery><ParticipantIndex>auto</ParticipantIndex>"
         << "<MaxAutoParticipantIndex>40</MaxAutoParticipantIndex><Peers><Peer Address=\"127.0.0.1\"/>";
-    for (const auto& peer : peers(settings.at("dds_peers")))
+    for (const auto& peer : peers(isSimulation(settings) ? "" : settings.at("dds_peers")))
     {
         xml << "<Peer Address=\"" << peer << "\"/>";
     }
@@ -491,7 +491,8 @@ std::string renderCompose(const Settings& settings, const std::string& image,
     const bool is_simulation = isSimulation(settings);
     const bool is_development = mode == "dev";
     const bool uses_bridge = is_simulation || is_desktop;
-    const bool uses_wifi = settings.count("network") == 0 ? !is_simulation : settings.at("network") == "wifi";
+    const bool uses_wifi = !is_simulation
+        && (settings.count("network") == 0 || settings.at("network") == "wifi");
     constexpr unsigned int DDS_BASE_PORT = 7400;
     constexpr unsigned int DDS_DOMAIN_PORT_STEP = 250;
     constexpr unsigned int DDS_UNICAST_OFFSET = 10;
@@ -510,13 +511,12 @@ std::string renderCompose(const Settings& settings, const std::string& image,
         {
             yaml << "    network_mode: host\n";
         }
-        else if (is_simulation && instance > 1)
-        {
-            yaml << "    network_mode: service:agent_1\n"
-                << "    depends_on:\n      agent_1:\n        condition: service_started\n";
-        }
         else
         {
+            if (is_simulation)
+            {
+                yaml << "    networks:\n      - taiphoon_net\n";
+            }
             yaml << "    extra_hosts:\n      - host.docker.internal:host-gateway\n";
             if (uses_wifi || !is_simulation)
             {
@@ -569,10 +569,11 @@ std::string renderCompose(const Settings& settings, const std::string& image,
         {
             yaml << "  px4_" << instance << ":\n    image: px4io/px4-sitl:latest\n"
                 << "    platform: linux/amd64\n    restart: \"no\"\n"
+                << "    networks:\n      - taiphoon_net\n"
                 << "    depends_on:\n      agent_" << instance << ":\n        condition: service_healthy\n"
                 << "    entrypoint: [/bin/sh, /deployment/sitl-entrypoint.sh]\n"
                 << "    environment:\n      PX4_INSTANCE: \"" << instance - 1 << "\"\n"
-                << "      PX4_SYS_ID: \"" << instance << "\"\n      PX4_AGENT_HOST: agent_1\n"
+                << "      PX4_SYS_ID: \"" << instance << "\"\n      PX4_AGENT_HOST: agent_" << instance << "\n"
                 << "      PX4_AGENT_PORT: \"" << XRCE_BASE_PORT + instance << "\"\n"
                 << "      PX4_PARAM_UXRCE_DDS_DOM_ID: " << yamlString(settings.at("domain_id")) << "\n"
                 << "    extra_hosts:\n      - host.docker.internal:host-gateway\n"
@@ -580,6 +581,7 @@ std::string renderCompose(const Settings& settings, const std::string& image,
                 << yamlString((home / "sitl-entrypoint.sh").u8string())
                 << "\n        target: /deployment/sitl-entrypoint.sh\n        read_only: true\n";
         }
+        yaml << "networks:\n  taiphoon_net:\n    name: Taiphoon_Net\n    external: true\n";
     }
     if (is_development)
     {

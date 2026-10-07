@@ -156,13 +156,35 @@ int main()
         require(sim.find("condition: service_healthy") != std::string::npos, "模擬器未等待 Agent");
         require(sim.find("network_mode: host") == std::string::npos, "模擬網路未隔離");
         require(sim.find("auto_start_sequence:=true") == std::string::npos, "錯誤啟用自動起飛");
-        require(sim.find("network_mode: service:agent_1") != std::string::npos, "多機未共用 DDS 埠空間");
+        require(sim.find("network_mode:") == std::string::npos, "模擬 Agent 不應共用網路空間");
+        require(sim.find("PX4_AGENT_HOST: agent_4") != std::string::npos,
+            "PX4 未連向對應 Agent");
+        for (unsigned int instance = 1; instance <= 4; ++instance)
+        {
+            const auto start = sim.find("  agent_" + std::to_string(instance) + ":\n");
+            const auto end = sim.find("\n  agent_", start + 1);
+            const auto service = sim.substr(start, end == std::string::npos ? end : end - start);
+            require(service.find("    networks:\n      - taiphoon_net") != std::string::npos,
+                "模擬 Agent 未獨立接入 Taiphoon_Net");
+        }
+        require(sim.find("name: Taiphoon_Net\n    external: true") != std::string::npos,
+            "模擬未使用外部 Taiphoon_Net");
+        require(sim.find("    networks:\n      - taiphoon_net") != std::string::npos,
+            "模擬 Agent 未接入 Taiphoon_Net");
         migrated["network"] = "wifi";
+        migrated["lan_address"] = "192.168.1.20";
+        migrated["dds_peers"] = "192.168.1.21";
+        const auto simulation_xml = deployment::renderCycloneDds(migrated);
+        require(simulation_xml.find("ExternalNetworkAddress") == std::string::npos
+            && simulation_xml.find("192.168.1.21") == std::string::npos,
+            "模擬不應公告主機位址或沿用外部 GCS peer");
         migrated["agent_id"] = "7";
         const auto single = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
         require(single.find("px4_1:") != std::string::npos && single.find("px4_2:") == std::string::npos,
             "單機模擬啟動額外飛控");
-        require(single.find("7410-7491:7410-7491/udp") != std::string::npos, "Wi-Fi 未映射 DDS 埠");
+        require(single.find("ports:") == std::string::npos, "舊 Wi-Fi 模擬設定不應映射主機 DDS 埠");
+        require(single.find("name: Taiphoon_Net\n    external: true") != std::string::npos,
+            "Wi-Fi 模擬未接入 Taiphoon_Net");
         migrated["mode"] = "deploy";
         const auto desktop = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
         require(desktop.find("8894:8894/udp") != std::string::npos, "無人機編號未對應 Desktop UDP 埠");

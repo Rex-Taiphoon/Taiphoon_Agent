@@ -185,6 +185,13 @@ def main():
     assert settings_file.read_bytes() == saved_settings
     assert 'px4_1' in yaml.safe_load((config / 'compose.yaml').read_text())['services']
     assert 'px4_2' not in yaml.safe_load((config / 'compose.yaml').read_text())['services']
+    description = yaml.safe_load((config / 'compose.yaml').read_text())
+    assert description['networks']['taiphoon_net'] == {'name': 'Taiphoon_Net', 'external': True}
+    assert description['services']['agent_1']['networks'] == ['taiphoon_net']
+    assert description['services']['px4_1']['networks'] == ['taiphoon_net']
+    assert description['services']['px4_1']['environment']['PX4_AGENT_HOST'] == 'agent_1'
+    assert 'ports' not in description['services']['agent_1']
+    assert 'ExternalNetworkAddress' not in (config / 'cyclonedds.xml').read_text()
     run_cli(executable, environment, 'stop')
     result = run_cli(executable, environment, 'build', expected=1)
     assert '需要 dev 模式' in result.stderr

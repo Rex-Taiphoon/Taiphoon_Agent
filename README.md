@@ -65,9 +65,9 @@ macOS 首次開啟依系統提供的核准流程操作；目前套件未公證�
 | 情境 | 首次選擇 | 啟動內容 |
 |---|---|---|
 | 樹莓派單機實機 | deploy → 無人機編號 → 選填 GCS IP | 一個 Agent，Wi-Fi／UDP 飛控 |
-| 單組本機模擬 | sim → 1 → local | 一個 PX4＋一個 Agent |
-| 多組本機模擬 | sim → 2～4 → local | 對應數量 PX4＋Agent，先 Agent 後 PX4 |
-| 模擬與 Wi-Fi GCS | sim → 1～4 → wifi → 選填 GCS IP | 本機 PX4／Agent，DDS 連向 GCS |
+| 單組本機模擬 | sim → 1 | 一個 PX4＋一個 Agent |
+| 多組本機模擬 | sim → 2～4 | 對應數量 PX4＋Agent，先 Agent 後 PX4 |
+| 模擬與容器 GCS | sim → 1～4 | PX4／Agent 與 GCS 透過 Taiphoon_Net 通訊 |
 | 開發 | dev → 原始碼目錄 → sim 或 real | 容器內編譯；sim 可選 1～4 組 |
 
 實機預設飛控 IP 為 **192.168.1.14**；這不是 Agent 主機 IP。工具每次啟動自動取得
@@ -81,7 +81,12 @@ uxrce_dds_client start -t udp -h <Agent主機IPv4> -p 8888 -n uav_1
 以上指令在飛控 console 設定；system ID 須與無人機編號一致。啟動工具不改寫飛控參數。
 Linux 實機使用 host network；Desktop 自動映射 UDP，不需要開啟全域 host networking。
 Wi-Fi GCS 使用相同 ROS domain（預設 0）與介面；若網路阻擋 discovery，填入 GCS IPv4。
-本機模擬只連接模擬飛控；要讓主機或其他電腦的 GCS 存取，選 wifi。不要混用模擬與實機飛控。
+模擬模式（sim 或 dev → sim）一律接入外部 Docker 網路 `Taiphoon_Net`。
+首次使用前，若網路不存在，執行 `docker network create Taiphoon_Net`。
+每個模擬 Agent 獨立接入網路，PX4 也接入同一網路並連向對應 Agent；GCS 容器接入
+`Taiphoon_Net` 並使用相同 ROS domain（預設 0），即可透過 ROS2／DDS 與 Agent 通訊。
+模擬模式不映射主機 DDS 埠；既有設定中的 wifi 與外部 DDS 位址在模擬模式下不生效。
+網路不存在時啟動會失敗；stop 不會移除此外部網路。不要混用相同 UAV 編號與 domain 的模擬及實機。
 ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
 首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
 
