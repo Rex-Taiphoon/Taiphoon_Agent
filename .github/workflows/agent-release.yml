@@ -6,18 +6,14 @@ name: Taiphoon Agent Release
 on:
   push:
     tags: ['v*']
+  # 手動重建必須在 "Use workflow from" 選擇版本標籤，workflow 與原始碼來自同一提交。
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 要重建及發布的既有版本標籤
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: agent-release-${{ inputs.release_tag || github.ref_name }}
+  group: agent-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -27,10 +23,9 @@ jobs:
     uses: ./.github/workflows/agent-build.yml
     with:
       verification_only: false
-      release_tag: ${{ inputs.release_tag || '' }}
 
   publish:
-    if: github.ref_type == 'tag' || inputs.release_tag != ''
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-22.04
     permissions:

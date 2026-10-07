@@ -10,10 +10,6 @@ on:
         description: 只建置與測試，不匯出大型映像或發布
         type: boolean
         default: false
-      release_tag:
-        description: 使用既有版本標籤的原始碼重建，不移動標籤
-        type: string
-        default: ''
     outputs:
       version:
         value: ${{ jobs.version.outputs.value }}
@@ -47,13 +43,11 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-          REQUESTED_TAG: ${{ inputs.release_tag }}
           VERIFICATION_ONLY: ${{ inputs.verification_only }}
         run: |
           set -euo pipefail
-          if [ -n "$REQUESTED_TAG" ]; then REF_NAME="$REQUESTED_TAG"; REF_TYPE=tag; fi
           if [ "$VERIFICATION_ONLY" != true ] && [ "$REF_TYPE" != tag ]; then
-            echo "請指定既有 release_tag；分支驗證請使用 CI workflow" >&2
+            echo "Release 必須在版本標籤上執行；手動重建請在 Use workflow from 選擇標籤" >&2
             exit 1
           fi
           if [ "$REF_TYPE" = tag ]; then
@@ -61,9 +55,15 @@ jobs:
               echo "Release tag 必須是 vX.Y.Z 或 vX.Y.Z-rc.N" >&2
               exit 1
             fi
-            echo "value=$REF_NAME" >> "$GITHUB_OUTPUT"
             git fetch --depth 1 origin "refs/tags/$REF_NAME"
-            echo "source_commit=$(git rev-parse 'FETCH_HEAD^{commit}')" >> "$GITHUB_OUTPUT"
+            source_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+            # workflow、release_transfer.py 與建置原始碼必須是同一提交；標籤在執行期間被移動時停止。
+            if [ "$source_commit" != "$(git rev-parse 'HEAD^{commit}')" ]; then
+              echo "標籤 $REF_NAME 目前指向 $source_commit，與本次 workflow 提交不同" >&2
+              exit 1
+            fi
+            echo "value=$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
           else
             echo "value=v0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "source_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

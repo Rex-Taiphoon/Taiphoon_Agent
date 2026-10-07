@@ -6,7 +6,7 @@
 |---|---|---|
 | 分支 push／PR | Ubuntu 22.04 AMD64／ARM64、Windows x64、Mac universal 編譯；Docker 內測試 | 成功狀態／失敗診斷 |
 | 新 `vX.Y.Z` 或 `vX.Y.Z-rc.N` tag | 共用相同驗證，再匯出映像與打包 | 五個 GitHub Release 平台包 |
-| Actions 手動執行 Release workflow，指定既有 release_tag | 使用該標籤的固定 commit 重新建置 | 完整五平台 Release；不移動標籤 |
+| Actions 手動執行 Release workflow，Use workflow from 選擇既有版本標籤 | workflow 與原始碼皆使用該標籤的固定 commit 重新建置 | 完整五平台 Release；不移動標籤 |
 
 `agent-ci.yml` 與 `agent-release.yml` 共用 `agent-build.yml`，維護建置邏輯只改一份。
 一般 CI 不匯出大型映像。Docker layer cache 按 CPU 分開，cache 失效不影響完整建置。
@@ -21,7 +21,10 @@ CI 使用唯讀權限；Release 呼叫端提供 contents write，用於未公開
 - 五個完整包上傳並校驗後，publish 工作清除草稿中的 staging 檔案，再公開 Release。任一必要工作失敗時保留未公開草稿供重跑。
 - 已公開版本拒絕修改；原始碼一律由既有版本標籤解析成固定 commit，不以目前分支替代。
 - 一般 CI 只建置與測試，不上傳產物。失敗診斷留在工作 log；Docker layer cache 仍沿用既有 cache 設定。
-- 手動重建範例：在 `master` 執行 Release workflow，將 `release_tag` 設為尚未公開的 `v1.3.0-rc.4`。
+- 手動重建範例：執行 `gh workflow run agent-release.yml --ref <尚未公開的版本標籤>`，或在 Actions 頁面的 Use workflow from 選擇該標籤。
+  `v1.3.0-rc.4` 及更早的標籤仍保留舊 workflow，需另外加上 `-f release_tag=<同一標籤>`。
+  在分支上手動執行 Release workflow 會直接失敗；標籤在執行期間被移動時也會停止。
+- 重建使用標籤當時的 workflow 與發布工具，發布流程的修正只會套用到之後的新標籤。
 
 ## 驗證範圍
 
