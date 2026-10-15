@@ -71,7 +71,7 @@ macOS 首次開啟依系統提供的核准流程操作；目前套件未公證�
 | 樹莓派單機實機 | deploy → 無人機編號 → 選填 GCS IP | 一個 Agent，Wi-Fi／UDP 飛控 |
 | 單組本機模擬 | sim → 1 | 一個 PX4＋一個 Agent |
 | 多組本機模擬 | sim → 2～4 | 對應數量 PX4＋Agent，先 Agent 後 PX4 |
-| 模擬與容器 GCS | sim → 1～4 | PX4／Agent 與 GCS 透過 Taiphoon_Net 通訊 |
+| 模擬與本機 QGCS | sim → 1～4 | Docker Desktop 上由同機原生 Taiphoon_QGCS 以單播連線 |
 | 開發 | dev → 原始碼目錄 → sim 或 real | 容器內編譯；sim 可選 1～4 組 |
 
 實機預設飛控 IP 為 **192.168.1.14**；這不是 Agent 主機 IP。工具每次啟動自動取得
@@ -87,12 +87,47 @@ Linux 實機使用 host network；Desktop 自動映射 UDP，不需要開啟全�
 Wi-Fi GCS 使用相同 ROS domain（預設 0）與介面；若網路阻擋 discovery，填入 GCS IPv4。
 模擬模式（sim 或 dev → sim）一律接入外部 Docker 網路 `Taiphoon_Net`。
 首次使用前，若網路不存在，執行 `docker network create Taiphoon_Net`。
-每個模擬 Agent 獨立接入網路，PX4 也接入同一網路並連向對應 Agent；GCS 容器接入
-`Taiphoon_Net` 並使用相同 ROS domain（預設 0），即可透過 ROS2／DDS 與 Agent 通訊。
-模擬模式不映射主機 DDS 埠；既有設定中的 wifi 與外部 DDS 位址在模擬模式下不生效。
+每個模擬 Agent 獨立接入網路，PX4 也接入同一網路並連向對應 Agent，Agent 之間以
+multicast 互相發現。Linux Docker Engine 的 GCS 接入 `Taiphoon_Net` 並使用相同 ROS domain
+（預設 0）即可通訊，不映射主機 DDS 埠。
+
+Docker Desktop（Windows／macOS）的容器位於 NAT 之後，主機收不到容器 multicast，因此
+`taiphoon_agent` 在 Desktop 模擬時一律產生供同機原生 Taiphoon_QGCS 連線的單播設定，不需額外選項：
+
+- 啟動時自動取得主機區網 IPv4（`lan_address=auto`）；多網卡選錯或離線時，在 `settings.ini` 指定 `lan_address`。
+- 每台 Agent 使用各自的 `cyclonedds_N.xml`：公告主機 IPv4、專屬單播埠段，並向
+  `192.168.65.254`（host.docker.internal）的 QGCS 埠（domain 0 為 7510）送出 discovery。
+- 只映射該 Agent 的埠段並綁定主機 IPv4：domain 0 時 agent_1 7410-7433、agent_2 7434-7457、
+  agent_3 7458-7481、agent_4 7482-7505；domain 每加 1，所有埠號加 250。
+- 啟動成功後印出 QGCS 參數，例如：
+  `Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50`
+
+此時 Agent 之間的 DDS 資料也會經主機埠轉送，只用於 GCS 連線與功能測試，不作為編隊時序驗證。
+主機 IP 改變（例如更換 Wi-Fi）後執行 `taiphoon_agent restart`。`dds_peers` 在模擬模式下不生效。
 網路不存在時啟動會失敗；stop 不會移除此外部網路。不要混用相同 UAV 編號與 domain 的模擬及實機。
 ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
 首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
+
+## 本機原生 QGCS 測試（開發 compose）
+
+Windows Docker Desktop 上，主機的原生 Taiphoon_QGCS 收不到容器 multicast，需改用單播疊加檔
+`docker-compose.local-qgcs.yml`：每台 Agent 公告主機區網 IPv4、使用各自的 CycloneDDS 埠段
+（uav_1 7410-7433、uav_2 7434-7457、uav_3 7458-7481、uav_4 7482-7505）並只映射該埠段。
+QGCS 固定使用 participant index 50（7510/7511），Agent 經 `host.docker.internal` 回送，
+不需修改 Windows 防火牆。
+
+```powershell
+./AutoTest/scripts/start_local_qgcs_agents.ps1 -Count 3
+```
+
+腳本會自動取得主機 IP、啟動 Agent，並印出 PX4 SITL 與 QGCS 啟動指令，例如：
+
+```powershell
+Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50
+```
+
+此模式的 DDS 單播會經 Docker Desktop 埠轉送，只用於 GCS 連線測試，不作為編隊時序驗證；
+預設 `docker compose up -d` 與實機部署不受影響。同一時間只能有一組使用相同 UAV 編號的模擬環境。
 
 ## 常用指令
 

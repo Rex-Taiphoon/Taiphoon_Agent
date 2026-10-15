@@ -46,6 +46,12 @@ fs::path findExecutable(const std::vector<fs::path>& directories, const std::str
 Settings withDefaultSettings(const Settings& settings = {});
 /** @brief 判斷 sim 或 dev 模擬情境。 @param settings 完整設定。 @return 是否啟動 PX4 模擬。 */
 bool isSimulation(const Settings& settings);
+/** @brief 判斷是否產生供同機原生 Taiphoon_QGCS 連線的單播 DDS 設定。
+ * @param settings 完整設定。
+ * @param is_desktop Docker daemon 是否為 Desktop（容器位於 NAT 之後）。
+ * @return Desktop 模擬情境為 true；Linux Engine 與實機維持既有網路。
+ */
+bool usesHostGcs(const Settings& settings, bool is_desktop);
 /** @brief 只讀取 UDP 路由，不傳送封包。 @param peer 目的 IPv4。 @return 本機 IPv4；失敗為空字串。 */
 std::string localIpv4ForPeer(const std::string& peer);
 /** @brief 尋找原生工具的實際安裝目錄。 @return 可找到同版本 manifest 的目錄。 */
@@ -74,8 +80,13 @@ std::string sha256(const fs::path& path);
  */
 std::string renderCompose(const Settings& settings, const std::string& image,
     const std::string& architecture, const fs::path& home, bool is_desktop = false);
-/** @brief 產生 CycloneDDS 設定。 @param settings 已驗證設定。 @return DDS XML。 */
-std::string renderCycloneDds(const Settings& settings);
+/** @brief 產生 CycloneDDS 設定。
+ * @param settings 已驗證設定；原生 GCS 模式的 lan_address 必須已解析為 IPv4。
+ * @param is_desktop Docker daemon 是否為 Desktop。
+ * @param instance 模擬 Agent 序號，決定原生 GCS 模式的單播埠段。
+ * @return DDS XML。
+ */
+std::string renderCycloneDds(const Settings& settings, bool is_desktop = false, unsigned int instance = 1);
 /** @brief 檢查版本化 Release manifest。 @param manifest 套件資訊。 @return 無。 */
 void validateManifest(const Settings& manifest);
 }

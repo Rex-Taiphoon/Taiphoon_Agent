@@ -21,6 +21,8 @@ using taiphoon::deployment::Settings;
 namespace deployment = taiphoon::deployment;
 namespace fs = std::filesystem;
 constexpr unsigned int START_TIMEOUT_SECONDS = 90;
+// TEST-NET-1 位址只用於查詢預設路由的本機 IPv4，不會送出封包。
+constexpr const char* DEFAULT_ROUTE_PROBE = "192.0.2.1";
 
 #ifdef _WIN32
 /** @brief 雙擊 exe 時保留結果視窗；從既有終端執行不額外暫停。 */
@@ -137,7 +139,8 @@ void initialize(const fs::path& home)
         settings["count"] = prompt("PX4＋Agent 組數（1～4）", settings.at("count"));
         settings["transport"] = "udp";
         settings["network"] = "local";
-        std::cout << "模擬 Agent 與 GCS 透過 Docker 網路 Taiphoon_Net 通訊。\n";
+        std::cout << "模擬 Agent 透過 Docker 網路 Taiphoon_Net 互相通訊；Docker Desktop 上由本機原生"
+            " Taiphoon_QGCS 經主機區網 IPv4 連線。\n";
     }
     else
     {
@@ -305,7 +308,19 @@ void prepare(const Settings& settings, const Settings& manifest, const std::stri
     }
     const std::string kind = settings.at("mode") == "dev" ? "dev" : "runtime";
     const auto image = ensureImage(manifest, kind, architecture, package);
-    deployment::writeText(home / "cyclonedds.xml", deployment::renderCycloneDds(settings));
+    if (deployment::usesHostGcs(settings, is_desktop))
+    {
+        // 每台 Agent 使用各自的單播埠段，因此各自一份 DDS 設定。
+        for (unsigned int instance = 1; instance <= std::stoul(settings.at("count")); ++instance)
+        {
+            deployment::writeText(home / ("cyclonedds_" + std::to_string(instance) + ".xml"),
+                deployment::renderCycloneDds(settings, is_desktop, instance));
+        }
+    }
+    else
+    {
+        deployment::writeText(home / "cyclonedds.xml", deployment::renderCycloneDds(settings));
+    }
     if (deployment::isSimulation(settings))
     {
         if (!fs::exists(package / "sitl-entrypoint.sh"))
@@ -580,6 +595,21 @@ int main(int argc, char* argv[])
                 std::cout << "Wi-Fi Agent 主機 IPv4：" << (settings.at("lan_address").empty()
                     ? "未取得；使用 DDS 自動探索" : settings.at("lan_address")) << '\n';
             }
+            else if (deployment::usesHostGcs(settings, docker.is_desktop))
+            {
+                if (settings.at("lan_address").empty() || settings.at("lan_address") == "auto")
+                {
+                    settings["lan_address"] = deployment::localIpv4ForPeer(DEFAULT_ROUTE_PROBE);
+                }
+                if (settings.at("lan_address").empty() || settings.at("lan_address").rfind("127.", 0) == 0)
+                {
+                    throw std::runtime_error("無法取得主機區網 IPv4；請確認網路已連線，"
+                        "或在 settings.ini 指定 lan_address 後重新啟動");
+                }
+                settings["dds_peers"] = "";
+                std::cout << "本機 Taiphoon_QGCS 連線用主機 IPv4：" << settings.at("lan_address")
+                    << "（多網卡選錯時請在 settings.ini 指定 lan_address）\n";
+            }
             else
             {
                 settings["lan_address"] = "";
@@ -605,6 +635,13 @@ int main(int argc, char* argv[])
             std::to_string(START_TIMEOUT_SECONDS)}));
         watchContainers(home);
         std::cout << "服務程序已啟動；不會自動 Arm／起飛。\n";
+        if (deployment::usesHostGcs(settings, docker.is_desktop) && !settings.at("lan_address").empty()
+            && settings.at("lan_address") != "auto")
+        {
+            std::cout << "本機 Taiphoon_QGCS 啟動參數（ROS domain " << settings.at("domain_id") << "）：\n"
+                << "  --interface " << settings.at("lan_address") << " --external-address 192.168.65.254"
+                << " --no-multicast --peer " << settings.at("lan_address") << " --participant-index 50\n";
+        }
         std::cout << "使用 taiphoon_agent status 查看飛控連線，logs 查看日誌。\n";
         return 0;
     }

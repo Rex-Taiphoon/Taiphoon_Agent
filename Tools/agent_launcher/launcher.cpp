@@ -23,6 +23,18 @@ constexpr unsigned int SHA_LENGTH_BYTES = 8;
 constexpr unsigned int MAX_AGENTS = 4;
 constexpr unsigned int MAX_SYSTEM_ID = 255;
 constexpr unsigned int MAX_DOMAIN_ID = 101;
+constexpr unsigned int DDS_BASE_PORT = 7400;
+constexpr unsigned int DDS_DOMAIN_PORT_STEP = 250;
+constexpr unsigned int DDS_UNICAST_OFFSET = 10;
+constexpr unsigned int DDS_PARTICIPANT_PORT_STEP = 2;
+constexpr unsigned int DDS_LAST_PARTICIPANT_PORT = 91;
+// 原生 GCS 模式每台 Agent 12 個 participant（index 0～11），各占 meta／data 兩埠。
+constexpr unsigned int HOST_GCS_MAX_PARTICIPANT_INDEX = 11;
+constexpr unsigned int HOST_GCS_AGENT_PORT_SPAN = (HOST_GCS_MAX_PARTICIPANT_INDEX + 1) * DDS_PARTICIPANT_PORT_STEP;
+// Taiphoon_QGCS 固定 participant index；domain 0 時對應 7510，不與 4 台 Agent 埠段重疊。
+constexpr unsigned int HOST_GCS_PARTICIPANT_INDEX = 50;
+// Docker Desktop 的 host.docker.internal，Agent 由此主動送 discovery 給主機上的 QGCS。
+constexpr const char* DESKTOP_HOST_GATEWAY = "192.168.65.254";
 
 /** @brief 線性解析 digest 陣列，避免 Windows std::regex 對大型 manifest 耗盡堆疊。
  * @param value Docker 的緊湊 JSON layer 陣列。
@@ -144,6 +156,18 @@ std::vector<std::string> peers(const std::string& value)
         throw std::runtime_error("dds_peers 不可包含空項目");
     }
     return result;
+}
+
+/** @brief 指定 domain 的 DDS 埠基準，與 CycloneDDS 預設 PB／DG 相同。 */
+unsigned int ddsDomainBase(const Settings& settings)
+{
+    return DDS_BASE_PORT + DDS_DOMAIN_PORT_STEP * number(settings, "domain_id", MAX_DOMAIN_ID, 0);
+}
+
+/** @brief 原生 GCS 模式下第 instance 台 Agent 的單播 meta 埠偏移，data 偏移為其加一。 */
+unsigned int hostGcsUnicastOffset(unsigned int instance)
+{
+    return DDS_UNICAST_OFFSET + HOST_GCS_AGENT_PORT_SPAN * (instance - 1);
 }
 
 /** @brief SHA256 定義的 32 位元循環右移。 */
@@ -272,6 +296,11 @@ bool isSimulation(const Settings& settings)
 {
     return settings.at("mode") == "sim" || (settings.at("mode") == "dev"
         && settings.count("scenario") != 0 && settings.at("scenario") == "sim");
+}
+
+bool usesHostGcs(const Settings& settings, bool is_desktop)
+{
+    return is_desktop && isSimulation(settings);
 }
 
 void validateSettings(const Settings& settings)
@@ -460,13 +489,37 @@ void validateManifest(const Settings& manifest)
     }
 }
 
-std::string renderCycloneDds(const Settings& settings)
+std::string renderCycloneDds(const Settings& settings, bool is_desktop, unsigned int instance)
 {
     validateSettings(settings);
     std::ostringstream xml;
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         << "<CycloneDDS xmlns=\"https://cdds.io/config\"><Domain Id=\"any\"><General>"
         << "<AllowMulticast>true</AllowMulticast>";
+    if (usesHostGcs(settings, is_desktop))
+    {
+        // Desktop 主機收不到容器 multicast：公告主機 IP＋專屬埠段，並主動向主機 QGCS 單播 discovery。
+        if (!isIpv4(settings.at("lan_address")))
+        {
+            throw std::runtime_error("模擬 Agent 需要主機區網 IPv4 供本機 Taiphoon_QGCS 連線；"
+                "請在 settings.ini 指定 lan_address");
+        }
+        if (instance < 1 || instance > number(settings, "count", MAX_AGENTS))
+        {
+            throw std::runtime_error("模擬 Agent 序號超出 count");
+        }
+        const auto base = ddsDomainBase(settings);
+        const auto offset = hostGcsUnicastOffset(instance);
+        xml << "<ExternalNetworkAddress>" << settings.at("lan_address") << "</ExternalNetworkAddress>"
+            << "</General><Discovery><ParticipantIndex>auto</ParticipantIndex>"
+            << "<MaxAutoParticipantIndex>" << HOST_GCS_MAX_PARTICIPANT_INDEX << "</MaxAutoParticipantIndex>"
+            << "<Peers><Peer Address=\"127.0.0.1\"/><Peer Address=\"" << DESKTOP_HOST_GATEWAY << ':'
+            << base + DDS_UNICAST_OFFSET + DDS_PARTICIPANT_PORT_STEP * HOST_GCS_PARTICIPANT_INDEX
+            << "\"/></Peers><Ports><UnicastMetaOffset>" << offset << "</UnicastMetaOffset>"
+            << "<UnicastDataOffset>" << offset + 1 << "</UnicastDataOffset></Ports>"
+            << "</Discovery></Domain></CycloneDDS>\n";
+        return xml.str();
+    }
     if (!isSimulation(settings) && !settings.at("lan_address").empty() && settings.at("lan_address") != "auto")
     {
         xml << "<ExternalNetworkAddress>" << settings.at("lan_address") << "</ExternalNetworkAddress>";
@@ -493,10 +546,11 @@ std::string renderCompose(const Settings& settings, const std::string& image,
     const bool uses_bridge = is_simulation || is_desktop;
     const bool uses_wifi = !is_simulation
         && (settings.count("network") == 0 || settings.at("network") == "wifi");
-    constexpr unsigned int DDS_BASE_PORT = 7400;
-    constexpr unsigned int DDS_DOMAIN_PORT_STEP = 250;
-    constexpr unsigned int DDS_UNICAST_OFFSET = 10;
-    constexpr unsigned int DDS_LAST_PARTICIPANT_PORT = 91;
+    const bool uses_host_gcs = usesHostGcs(settings, is_desktop);
+    if (uses_host_gcs && !isIpv4(settings.at("lan_address")))
+    {
+        throw std::runtime_error("模擬 Agent 需要主機區網 IPv4 以映射 DDS 埠；請在 settings.ini 指定 lan_address");
+    }
     const unsigned int count = is_simulation ? number(settings, "count", MAX_AGENTS) : 1;
     std::ostringstream yaml;
     yaml << "# 由 taiphoon_agent 產生；進階 ROS2 參數請使用各服務的 environment。\nservices:\n";
@@ -518,7 +572,7 @@ std::string renderCompose(const Settings& settings, const std::string& image,
                 yaml << "    networks:\n      - taiphoon_net\n";
             }
             yaml << "    extra_hosts:\n      - host.docker.internal:host-gateway\n";
-            if (uses_wifi || !is_simulation)
+            if (uses_wifi || !is_simulation || uses_host_gcs)
             {
                 yaml << "    ports:\n";
                 if (!is_simulation && settings.at("transport") == "udp")
@@ -528,11 +582,19 @@ std::string renderCompose(const Settings& settings, const std::string& image,
                 }
                 if (uses_wifi)
                 {
-                    const auto base = DDS_BASE_PORT + DDS_DOMAIN_PORT_STEP
-                        * number(settings, "domain_id", MAX_DOMAIN_ID, 0);
+                    const auto base = ddsDomainBase(settings);
                     const auto range = std::to_string(base + DDS_UNICAST_OFFSET) + "-"
                         + std::to_string(base + DDS_LAST_PARTICIPANT_PORT);
                     yaml << "      - " << yamlString(range + ":" + range + "/udp") << '\n';
+                }
+                if (uses_host_gcs)
+                {
+                    // 只映射本 Agent 的埠段並綁定主機區網 IP，避免多台 Agent 搶同一主機埠。
+                    const auto first = ddsDomainBase(settings) + hostGcsUnicastOffset(instance);
+                    const auto range = std::to_string(first) + "-"
+                        + std::to_string(first + HOST_GCS_AGENT_PORT_SPAN - 1);
+                    yaml << "      - " << yamlString(settings.at("lan_address") + ":" + range + ":"
+                        + range + "/udp") << '\n';
                 }
             }
         }
@@ -547,7 +609,8 @@ std::string renderCompose(const Settings& settings, const std::string& image,
             << "      XRCE_SERIAL_BAUD: " << yamlString(settings.at("serial_baud")) << "\n"
             << "      ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"" << (is_simulation ? "true" : "false") << "\"\n"
             << "    volumes:\n      - type: bind\n        source: "
-            << yamlString((home / "cyclonedds.xml").u8string())
+            << yamlString((home / (uses_host_gcs ? "cyclonedds_" + std::to_string(instance) + ".xml"
+                : std::string("cyclonedds.xml"))).u8string())
             << "\n        target: /home/taiphoon/deployment/cyclonedds.xml\n        read_only: true\n";
         if (settings.at("transport") == "serial")
         {

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
@@ -182,10 +183,72 @@ int main()
         const auto single = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
         require(single.find("px4_1:") != std::string::npos && single.find("px4_2:") == std::string::npos,
             "單機模擬啟動額外飛控");
-        require(single.find("ports:") == std::string::npos, "舊 Wi-Fi 模擬設定不應映射主機 DDS 埠");
+        require(single.find("7410-7491") == std::string::npos, "舊 Wi-Fi 模擬設定不應映射整段主機 DDS 埠");
+        require(single.find("\"192.168.1.20:7410-7433:7410-7433/udp\"") != std::string::npos
+            && single.find("cyclonedds_1.xml") != std::string::npos,
+            "Desktop 模擬未只映射本機 QGCS 單播埠段");
         require(single.find("name: Taiphoon_Net\n    external: true") != std::string::npos,
             "Wi-Fi 模擬未接入 Taiphoon_Net");
+        // Desktop 模擬：每台 Agent 公告主機 IP、使用不重疊埠段，並向主機 QGCS 單播 discovery。
+        auto host_gcs = defaults();
+        host_gcs["mode"] = "sim";
+        host_gcs["lan_address"] = "192.168.1.30";
+        const auto engine_sim = deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory);
+        require(engine_sim.find("ports:") == std::string::npos
+            && engine_sim.find("cyclonedds_1.xml") == std::string::npos,
+            "Linux Engine 模擬不應改變既有網路設定");
+        require(deployment::renderCycloneDds(host_gcs) == deployment::renderCycloneDds(host_gcs, false, 3)
+            && deployment::renderCycloneDds(host_gcs).find("<MaxAutoParticipantIndex>40<") != std::string::npos
+            && deployment::renderCycloneDds(host_gcs).find("ExternalNetworkAddress") == std::string::npos,
+            "非 Desktop 模擬的 DDS 設定被改變");
+        require(deployment::usesHostGcs(host_gcs, true) && !deployment::usesHostGcs(host_gcs, false),
+            "原生 QGCS 判斷錯誤");
+        const auto desktop_sim = deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory, true);
+        const std::vector<std::string> ranges = {"7410-7433", "7434-7457", "7458-7481", "7482-7505"};
+        for (unsigned int instance = 1; instance <= 4; ++instance)
+        {
+            const auto start = desktop_sim.find("  agent_" + std::to_string(instance) + ":\n");
+            const auto end = desktop_sim.find("\n  agent_", start + 1);
+            const auto service = desktop_sim.substr(start, end == std::string::npos ? end : end - start);
+            const auto& range = ranges[instance - 1];
+            require(service.find("\"192.168.1.30:" + range + ":" + range + "/udp\"") != std::string::npos,
+                "Agent " + std::to_string(instance) + " 埠段映射錯誤");
+            require(service.find("cyclonedds_" + std::to_string(instance) + ".xml") != std::string::npos
+                && service.find("    networks:\n      - taiphoon_net") != std::string::npos,
+                "Agent " + std::to_string(instance) + " 未使用專屬 DDS 設定或未接入 Taiphoon_Net");
+            const auto offset = std::to_string(10 + 24 * (instance - 1));
+            const auto host_xml = deployment::renderCycloneDds(host_gcs, true, instance);
+            require(host_xml.find("<ExternalNetworkAddress>192.168.1.30<") != std::string::npos
+                && host_xml.find("<MaxAutoParticipantIndex>11<") != std::string::npos
+                && host_xml.find("Address=\"127.0.0.1\"") != std::string::npos
+                && host_xml.find("Address=\"192.168.65.254:7510\"") != std::string::npos
+                && host_xml.find("<UnicastMetaOffset>" + offset + "<") != std::string::npos
+                && host_xml.find("<UnicastDataOffset>" + std::to_string(11 + 24 * (instance - 1)) + "<")
+                    != std::string::npos
+                && host_xml.find("<AllowMulticast>true<") != std::string::npos,
+                "Agent " + std::to_string(instance) + " 單播 DDS 設定錯誤");
+            deployment::writeText(directory / ("cyclonedds_" + std::to_string(instance) + ".xml"), host_xml);
+        }
+        require(desktop_sim.find("px4_4:") != std::string::npos
+            && desktop_sim.find("PX4_AGENT_HOST: agent_4") != std::string::npos, "Desktop 模擬 PX4 服務改變");
+        requireRejected([&host_gcs] { deployment::renderCycloneDds(host_gcs, true, 5); });
+        requireRejected([&host_gcs] { deployment::renderCycloneDds(host_gcs, true, 0); });
+        host_gcs["domain_id"] = "1";
+        require(deployment::renderCycloneDds(host_gcs, true, 1).find("192.168.65.254:7760") != std::string::npos
+            && deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory, true)
+                .find("192.168.1.30:7660-7683:7660-7683/udp") != std::string::npos,
+            "非 0 domain 埠號未平移");
+        for (const auto& unresolved : {"auto", ""})
+        {
+            host_gcs["lan_address"] = unresolved;
+            requireRejected([&host_gcs] { deployment::renderCycloneDds(host_gcs, true, 1); });
+            requireRejected([&host_gcs, &directory] {
+                deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory, true); });
+        }
+        deployment::writeText(directory / "desktop-sim.yaml", desktop_sim);
         migrated["mode"] = "deploy";
+        require(deployment::renderCycloneDds(migrated, true) == deployment::renderCycloneDds(migrated),
+            "實機 DDS 設定受 Desktop 判斷影響");
         const auto desktop = deployment::renderCompose(migrated, "taiphoon-agent:test", "amd64", directory, true);
         require(desktop.find("8894:8894/udp") != std::string::npos, "無人機編號未對應 Desktop UDP 埠");
         require(desktop.find("network_mode: host") == std::string::npos, "Desktop 要求全域 host networking");
@@ -226,7 +289,7 @@ int main()
         deployment::writeText(directory / "dev.yaml", dev);
         deployment::writeText(directory / "sim.yaml", sim);
         deployment::writeText(directory / "serial.yaml", serial);
-        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、串列、Windows argv、程序失敗\n"
+        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、本機 QGCS 單播、串列、Windows argv、程序失敗\n"
             << "測試產物：" << directory.u8string() << '\n';
         return 0;
     }

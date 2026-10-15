@@ -181,7 +181,9 @@ def main():
     result = run_cli(executable, dict(environment, FIXTURE_DAEMON_FAILURE='1'), expected=1)
     assert '無法連線至 Docker Engine' in result.stderr
     assert settings_file.read_bytes() == saved_settings
-    run_cli(executable, environment)
+    # Linux Engine 模擬維持 Taiphoon_Net 原設定，不映射主機 DDS 埠。
+    engine_environment = dict(environment, FIXTURE_DOCKER_OS='Ubuntu 22.04.4 LTS')
+    run_cli(executable, engine_environment)
     assert settings_file.read_bytes() == saved_settings
     assert 'px4_1' in yaml.safe_load((config / 'compose.yaml').read_text())['services']
     assert 'px4_2' not in yaml.safe_load((config / 'compose.yaml').read_text())['services']
@@ -192,7 +194,29 @@ def main():
     assert description['services']['px4_1']['environment']['PX4_AGENT_HOST'] == 'agent_1'
     assert 'ports' not in description['services']['agent_1']
     assert 'ExternalNetworkAddress' not in (config / 'cyclonedds.xml').read_text()
+    assert description['services']['agent_1']['volumes'][0]['source'] == str(config / 'cyclonedds.xml')
     run_cli(executable, environment, 'stop')
+    # Docker Desktop 模擬：每台 Agent 各自單播埠段與 DDS 設定，供同機原生 Taiphoon_QGCS 連線。
+    engine_settings = settings_file.read_text()
+    settings_file.write_text(engine_settings.replace('count=1', 'count=2')
+                             .replace('lan_address=auto', 'lan_address=192.168.1.30'))
+    result = run_cli(executable, environment)
+    assert '--interface 192.168.1.30 --external-address 192.168.65.254' in result.stdout
+    assert '--participant-index 50' in result.stdout
+    description = yaml.safe_load((config / 'compose.yaml').read_text())
+    for instance, ports, offset in ((1, '7410-7433', 10), (2, '7434-7457', 34)):
+        agent = description['services'][f'agent_{instance}']
+        assert agent['networks'] == ['taiphoon_net']
+        assert agent['ports'] == [f'192.168.1.30:{ports}:{ports}/udp']
+        assert agent['volumes'][0]['source'] == str(config / f'cyclonedds_{instance}.xml')
+        assert agent['volumes'][0]['target'] == '/home/taiphoon/deployment/cyclonedds.xml'
+        xml = (config / f'cyclonedds_{instance}.xml').read_text()
+        assert '<ExternalNetworkAddress>192.168.1.30</ExternalNetworkAddress>' in xml
+        assert '<Peer Address="192.168.65.254:7510"/>' in xml
+        assert f'<UnicastMetaOffset>{offset}</UnicastMetaOffset>' in xml
+        assert description['services'][f'px4_{instance}']['environment']['PX4_AGENT_HOST'] == f'agent_{instance}'
+    run_cli(executable, environment, 'stop')
+    settings_file.write_text(engine_settings.replace('lan_address=auto', 'lan_address=192.168.1.30'))
     result = run_cli(executable, environment, 'build', expected=1)
     assert '需要 dev 模式' in result.stderr
     # dev 沿用 Release 的 copy-install，不切換成會與既有 Python build 目錄衝突的 symlink。

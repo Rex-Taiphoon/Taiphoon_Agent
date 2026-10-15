@@ -13,6 +13,7 @@
 | `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器 |
 | `scripts/px4-sitl-launcher/start_single_instance.sh` | 啟動單一 PX4 SITL 實例 |
 | `scripts/px4-sitl-launcher/stop_all.sh` | 停止所有 PX4 SITL 容器 |
+| `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |
 | `Log/` | 測試紀錄（依根目錄 `AGENTS.md` 的 Verification 規範建立） |
 
 ## 標準測試流程
