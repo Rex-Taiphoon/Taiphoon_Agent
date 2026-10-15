@@ -28,7 +28,9 @@
 #include "taiphoon_agent/msg/planner_status.hpp"
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
+#include "ego_swarm/FormationCenterPolicy.hpp"
 #include "ego_swarm/FormationConvergence.hpp"
+#include "ego_swarm/FormationEpochPolicy.hpp"
 #include "ego_swarm/FormationReentryPolicy.hpp"
 #include "ego_swarm/FlightMissionLifecycle.hpp"
 #include "ego_swarm/FormationReservation.hpp"
@@ -159,6 +161,11 @@ private:
     void adopt_formation_epoch(
         const taiphoon_agent::msg::FormationEpoch& epoch);
     void maybe_activate_formation_epoch();
+    void set_candidate_formation_epoch(
+        const taiphoon_agent::msg::FormationEpoch& epoch);
+    void discard_candidate_formation_epoch(const char* reason);
+    void expire_stalled_formation_epoch();
+    bool is_member_view_stable() const;
     void publish_formation_epoch(uint8_t status);
     std::vector<int> stable_member_ids() const;
     bool formation_config_matches(
@@ -354,6 +361,12 @@ private:
     taiphoon_agent::msg::FormationEpoch accepted_formation_epoch_{};
     taiphoon_agent::msg::FormationEpoch candidate_formation_epoch_{};
     std::set<int> candidate_adopted_agents_{};
+    /// 目前候選 epoch 建立或採用的時間，用於判斷未完成 proposal 逾時。
+    std::chrono::steady_clock::time_point candidate_epoch_since_{};
+    /// 已逾時的候選 epoch；heartbeat 不得再把它帶回。
+    ego_swarm::ExpiredFormationEpochs expired_formation_epochs_{};
+    /// 各 peer 最近一次送出 FormationEpoch 的時間，代表已準備加入編隊。
+    std::map<int, std::chrono::steady_clock::time_point> formation_ready_signal_time_{};
     double last_epoch_publish_s_{0.0};
     std::vector<int> discovery_candidate_members_{};
     std::vector<int> stable_members_{};

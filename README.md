@@ -17,6 +17,10 @@
 已降落的機體不再發布佔位，其他 Agent 依有效落地狀態移除其舊軌跡與編隊成員資格。
 降落生命週期回歸與 Docker 測試方式詳見 [驗證報告](docs/codex/landing-mission-lifecycle-report.md)。
 
+編隊高度一律以 Home 為基準，先移動再下達編隊也不會疊加目前飛行高度。Agent 關閉後，
+存活成員會自動重組；飛行中重新啟動的 Agent 需重新下達 `FORMATION_*` 才會加入，
+期間其他成員維持目前編隊。規則詳見 [介面文件](docs/taiphoon-agent-interface.md) 3.3 節。
+
 Windows 開發環境可用 PowerShell 執行小場域驗證（需 Docker Desktop、原生 Compose、
 Git Bash、既有 dev 映像與可寫入的開發建置 volumes；Git Bash 僅調度 Docker，ROS2 在容器內執行）：
 

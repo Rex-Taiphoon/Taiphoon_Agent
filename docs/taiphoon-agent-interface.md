@@ -262,6 +262,14 @@ Agent 姿態訊息，由 `basic_controller_node` 發布。
 排序後的 `member_agent_ids` 與位置陣列、parent assignment、`snapshot_hash`、
 `creation_stamp` 與 `valid`。
 
+採用規則（2026-10-15 起）：
+- `sequence` 較新的 epoch 即使 parent 與本機 accepted epoch 不同也可成為候選，
+  避免 Agent 在 epoch 切換途中關閉後，存活成員停在不同 parent 而互相拒絕。
+- 含有已穩定確認離線成員的 epoch 不採用；候選 epoch 15 秒內未收齊全員 `ADOPTED`
+  即丟棄並記錄，heartbeat 不會再把它帶回，之後以目前存活成員重新提案。
+- 只有收到本趟飛行編隊命令的 Agent 會送出 epoch；非既有成員需近 3 秒內送出過 epoch
+  才會被納入重組，因此飛行中重新啟動的 Agent 需重新下達 `FORMATION_*` 才會加入。
+
 ### 3.3 NedTarget (`taiphoon_agent/msg/NedTarget`)
 
 既有 NED 絕對目標位置訊息。EGO-Swarm 取代舊任務／直線軌跡執行鏈後，僅作相容或
@@ -478,7 +486,10 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   North/East 水平側向折線，Z 僅沿起點到目標線性插值，禁止以額外的上／下偏移繞行。
   無安全水平候選時維持 terminal hold，等前序 Agent 到位後依 deterministic 順序放行。
 - Agent 失效或重新上線會在 discovery 成員集合連續兩次穩定後建立下一代 FormationEpoch，
-  移除或納回成員並重新計算 assignment；新 epoch 採用前先維持安全 hold。
+  移除或納回成員並重新計算 assignment。既有成員離開時，新 epoch 採用前先維持安全 hold；
+  新成員加入時既有成員繼續維持目前槽位，直到新 epoch 全員 `ADOPTED`。
+- 飛行中重新啟動的 Agent 不會自動採用既有編隊，需重新下達 `FORMATION_*`；
+  存活成員不會因等待它而停止。
 - 同儕避碰的距離定義為機體中心到機體中心的三維直線距離，不加計機體半徑。
 - 最小距離不得在文件或實作中硬編碼為 3 公尺；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
@@ -599,6 +610,8 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 > **EGO-Swarm 編隊基準點**：收到 `FORMATION_*` 指令後，由 `ego_swarm_planner`
 > 使用 WGS84 位置交換與各自固定 Home 的 local NED 計算共同參考點與虛擬編隊槽位；每台 Agent 自行規劃前往
 > 自己的槽位。既有命令字串與廣播 Topic 保持不變。成員掃描週期為 3 秒。
+> 編隊高度（`<altitude>`）一律以提案 Agent 的 Home 高度為基準；即使先移動再下達編隊，
+> 初次中心也只取成員目標的水平平均，不會再疊加目前飛行高度。
 
 #### 相容性簡寫
 

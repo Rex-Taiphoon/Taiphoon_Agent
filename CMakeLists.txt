@@ -287,6 +287,22 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 初次編隊中心高度純邏輯測試
+  ament_add_gtest(test_formation_center_policy
+    test/formation_center_policy_test.cpp
+  )
+  target_include_directories(test_formation_center_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # FormationEpoch 成員重組與重新加入純邏輯測試
+  ament_add_gtest(test_formation_epoch_policy
+    test/formation_epoch_policy_test.cpp
+  )
+  target_include_directories(test_formation_epoch_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # Planner Feature Flags 純邏輯測試
   ament_add_gtest(test_planner_feature_flags
     test/planner_feature_flags_test.cpp

@@ -50,6 +50,10 @@ docker compose exec uav_1_agent bash -c \
 > 編隊命令必須透過 **`/uav_all_agent/command`** 廣播；Planner 會以 Epoch 去重，
 > 相同 config 與成員 snapshot 的重複命令不會建立新 epoch；單機 MOVE 或取消編隊後重送
 > 相同編隊命令會重新啟用既有 Epoch，保留 center 與 slot assignment。
+>
+> `<高度>` 以 Home 為基準：第一次編隊若成員已先移動，中心只取成員目標的水平平均，
+> 高度仍為 Home，不會疊加目前飛行高度。Agent 關閉後存活成員會自動重組；飛行中重新
+> 啟動的 Agent 需再次發送 `FORMATION_*` 才會加入，其他成員期間維持目前編隊。
 
 
 ### 簡寫命令

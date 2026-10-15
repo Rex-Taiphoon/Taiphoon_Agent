@@ -652,6 +652,7 @@ void EgoSwarmPlannerNode::clear_grounded_mission()
     accepted_formation_epoch_ = taiphoon_agent::msg::FormationEpoch{};
     candidate_formation_epoch_ = taiphoon_agent::msg::FormationEpoch{};
     candidate_adopted_agents_.clear();
+    expired_formation_epochs_.clear();
     last_epoch_publish_s_ = 0.0;
     has_target_yaw_ = false;
     goal_position_ = ego_swarm::Vector3{};
@@ -1157,8 +1158,8 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
     }
 
     formation_command_pending_ = true;
-    formation_membership_change_pending_ =
-        members != accepted_formation_epoch_.member_agent_ids;
+    formation_membership_change_pending_ = ego_swarm::is_membership_departure(
+        accepted_formation_epoch_.member_agent_ids, members);
     formation_initial_plan_pending_ = true;
     preserve_altitude_ = false;
     invalidate_active_plan();
@@ -1724,7 +1725,8 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
 
     double latitude_sum = 0.0;
     double longitude_sum = 0.0;
-    ego_swarm::Vector3 target_position_sum{0.0, 0.0, 0.0};
+    std::vector<ego_swarm::Vector3> member_targets;
+    member_targets.reserve(members.size());
     bool all_member_targets_available = true;
     for (const int member_id : members)
     {
@@ -1785,8 +1787,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         // 的情況下才回退到同步位置中心，避免混用 target／current。
         if (member_target_available)
         {
-            target_position_sum = ego_swarm::add_vectors(
-                target_position_sum, member_target);
+            member_targets.push_back(member_target);
         }
         all_member_targets_available = all_member_targets_available &&
             member_target_available;
@@ -1810,11 +1811,13 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         }
         else if (all_member_targets_available)
         {
-            const double count = static_cast<double>(members.size());
-            const ego_swarm::Vector3 target_center_ned =
-                ego_swarm::scale_vector(target_position_sum, 1.0 / count);
+            // 目標位於飛行高度；中心高度必須固定為 Home，否則槽位會再疊加
+            // 一次編隊高度，造成「先移動再編隊」時高度加倍。
+            ego_swarm::Vector3 target_center_ned{};
             ego_swarm::GeoCoordinate target_center{};
-            if (!planner_frame_.from_local_ned(
+            if (!ego_swarm::make_formation_center_from_targets(
+                    member_targets, target_center_ned) ||
+                !planner_frame_.from_local_ned(
                     target_center_ned, target_center))
             {
                 RCLCPP_WARN(
@@ -1838,9 +1841,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
     }
     proposal.snapshot_hash = formation_epoch_hash(proposal);
 
-    candidate_formation_epoch_ = proposal;
-    has_candidate_formation_epoch_ = true;
-    candidate_adopted_agents_.clear();
+    set_candidate_formation_epoch(proposal);
     candidate_adopted_agents_.insert(agent_index_);
     publish_formation_epoch(taiphoon_agent::msg::FormationEpoch::PROPOSAL);
     publish_formation_epoch(taiphoon_agent::msg::FormationEpoch::ADOPTED);
@@ -1926,6 +1927,25 @@ void EgoSwarmPlannerNode::adopt_formation_epoch(
         RCLCPP_WARN(get_logger(), "Rejecting invalid FormationEpoch message");
         return;
     }
+    if (expired_formation_epochs_.contains(ego_swarm::FormationEpochKey{
+            epoch.sequence, epoch.snapshot_hash, epoch.proposer_agent_id}))
+    {
+        return;
+    }
+    // 包含已確認離線成員的 epoch 永遠收不齊 ADOPTED；不能讓存活成員
+    // 透過 heartbeat 互相把它傳回來而永久 hold。
+    if (!(has_accepted_formation_epoch_ &&
+          epoch_is_same_snapshot(epoch, accepted_formation_epoch_)) &&
+        ego_swarm::has_departed_member(
+            epoch.member_agent_ids, discovery_candidate_members_,
+            agent_index_, is_member_view_stable()))
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 3000,
+            "Ignoring FormationEpoch seq=%u: it includes a departed member",
+            epoch.sequence);
+        return;
+    }
     bool is_same_sequence_higher_priority = false;
     if (has_accepted_formation_epoch_ &&
         !epoch_is_same_snapshot(epoch, accepted_formation_epoch_))
@@ -1954,9 +1974,14 @@ void EgoSwarmPlannerNode::adopt_formation_epoch(
     // 狀態；FormationEpoch 本身已攜帶完整 snapshot，因此可先接受
     // 這份 proposal 作為候選並保持 hold，等全體 members ADOPTED 後
     // 才啟用。否則新 Agent 若錯過 parent heartbeat 會永久卡住。
+    // Agent 在 epoch 切換途中關閉時，存活成員可能停在不同 accepted
+    // epoch；sequence 較新的 epoch 即使 parent 不同也接受，避免互相拒絕。
     if (has_accepted_formation_epoch_ && !is_same_sequence_higher_priority &&
         !epoch_is_same_snapshot(epoch, accepted_formation_epoch_) &&
-        !epoch_parent_matches_current(epoch))
+        !ego_swarm::is_epoch_lineage_acceptable(
+            has_accepted_formation_epoch_,
+            accepted_formation_epoch_.sequence,
+            epoch_parent_matches_current(epoch), epoch.sequence))
     {
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 3000,
@@ -1968,9 +1993,7 @@ void EgoSwarmPlannerNode::adopt_formation_epoch(
     if (!has_candidate_formation_epoch_ ||
         epoch_is_higher_priority(epoch, candidate_formation_epoch_))
     {
-        candidate_formation_epoch_ = epoch;
-        has_candidate_formation_epoch_ = true;
-        candidate_adopted_agents_.clear();
+        set_candidate_formation_epoch(epoch);
     }
     if (!epoch_is_same_snapshot(epoch, candidate_formation_epoch_))
     {
@@ -2005,6 +2028,14 @@ void EgoSwarmPlannerNode::formation_epoch_cb(
     {
         RCLCPP_WARN(get_logger(), "formation_epoch_cb received nullptr");
         return;
+    }
+    // 只有收到本趟編隊命令的 Agent 才會送出 epoch；以此作為新成員
+    // 已準備加入的訊號，不需擴充對外訊息格式。
+    if (msg->sender_agent_id > 0 && msg->sender_agent_id != agent_index_ &&
+        epoch_is_valid(*msg))
+    {
+        formation_ready_signal_time_[msg->sender_agent_id] =
+            std::chrono::steady_clock::now();
     }
     if (flight_mission_lifecycle_.can_adopt_formation())
     {
@@ -2066,6 +2097,69 @@ void EgoSwarmPlannerNode::maybe_activate_formation_epoch()
         accepted_formation_epoch_.sequence,
         accepted_formation_epoch_.snapshot_hash,
         formation_assignment_.at(agent_index_));
+}
+
+void EgoSwarmPlannerNode::set_candidate_formation_epoch(
+    const taiphoon_agent::msg::FormationEpoch& epoch)
+{
+    candidate_formation_epoch_ = epoch;
+    has_candidate_formation_epoch_ = true;
+    candidate_adopted_agents_.clear();
+    candidate_epoch_since_ = std::chrono::steady_clock::now();
+}
+
+void EgoSwarmPlannerNode::discard_candidate_formation_epoch(const char* reason)
+{
+    if (reason == nullptr)
+    {
+        RCLCPP_ERROR(get_logger(), "discard_candidate_formation_epoch received nullptr");
+        return;
+    }
+    if (!has_candidate_formation_epoch_)
+    {
+        return;
+    }
+    expired_formation_epochs_.remember(ego_swarm::FormationEpochKey{
+        candidate_formation_epoch_.sequence,
+        candidate_formation_epoch_.snapshot_hash,
+        candidate_formation_epoch_.proposer_agent_id});
+    RCLCPP_WARN(
+        get_logger(), "Discarding FormationEpoch candidate seq=%u hash=%u: %s",
+        candidate_formation_epoch_.sequence,
+        candidate_formation_epoch_.snapshot_hash, reason);
+    has_candidate_formation_epoch_ = false;
+    candidate_adopted_agents_.clear();
+    if (has_accepted_formation_epoch_)
+    {
+        // 恢復 accepted snapshot 作為 heartbeat，讓其他成員仍能確認本機狀態。
+        set_candidate_formation_epoch(accepted_formation_epoch_);
+        candidate_adopted_agents_.insert(
+            accepted_formation_epoch_.member_agent_ids.begin(),
+            accepted_formation_epoch_.member_agent_ids.end());
+    }
+}
+
+void EgoSwarmPlannerNode::expire_stalled_formation_epoch()
+{
+    if (!has_candidate_formation_epoch_ ||
+        (has_accepted_formation_epoch_ &&
+         epoch_is_same_snapshot(
+             candidate_formation_epoch_, accepted_formation_epoch_)))
+    {
+        return;
+    }
+    const double candidate_age_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - candidate_epoch_since_).count();
+    if (ego_swarm::is_epoch_proposal_expired(candidate_age_s))
+    {
+        discard_candidate_formation_epoch(
+            "not all members ADOPTED before proposal timeout");
+    }
+}
+
+bool EgoSwarmPlannerNode::is_member_view_stable() const
+{
+    return discovery_same_scan_count_ >= formation_member_stable_scan_count_;
 }
 
 void EgoSwarmPlannerNode::publish_formation_epoch(const uint8_t status)
@@ -2291,6 +2385,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, has_localization, false, now);
         return;
     }
+    expire_stalled_formation_epoch();
     if (has_candidate_formation_epoch_ &&
         (!std::isfinite(last_epoch_publish_s_) ||
          now_s - last_epoch_publish_s_ >= FORMATION_EPOCH_HEARTBEAT_PERIOD_S))
@@ -3146,6 +3241,7 @@ void EgoSwarmPlannerNode::scan_peers_cb()
                 peers_.erase(removed_id);
                 peer_trajectories_.erase(removed_id);
                 discovery_absent_scan_count_.erase(removed_id);
+                formation_ready_signal_time_.erase(removed_id);
                 iterator = peer_subscriptions_.erase(iterator);
             }
             else
@@ -3176,11 +3272,33 @@ void EgoSwarmPlannerNode::scan_peers_cb()
         }
         const double age = std::chrono::duration<double>(
             now - peer_iterator->second.last_arrival).count();
-        if (std::isfinite(age) && age >= 0.0 &&
-            age <= peer_trajectory_timeout_s_)
+        if (!std::isfinite(age) || age < 0.0 ||
+            age > peer_trajectory_timeout_s_)
         {
-            candidate_members.push_back(index);
+            continue;
         }
+        // 編隊進行中時，非既有成員須先送出 epoch（已收到本趟編隊命令）
+        // 才列入重組；否則重新啟動的 Agent 不會 ADOPTED，存活成員會永久等待。
+        if (has_accepted_formation_epoch_ && has_formation_)
+        {
+            const auto& accepted_members =
+                accepted_formation_epoch_.member_agent_ids;
+            const auto ready_iterator = formation_ready_signal_time_.find(index);
+            const bool has_ready_signal =
+                ready_iterator != formation_ready_signal_time_.end();
+            const double ready_age_s = has_ready_signal
+                ? std::chrono::duration<double>(
+                      now - ready_iterator->second).count()
+                : 0.0;
+            if (!ego_swarm::can_include_formation_peer(
+                    std::binary_search(
+                        accepted_members.begin(), accepted_members.end(), index),
+                    has_ready_signal, ready_age_s))
+            {
+                continue;
+            }
+        }
+        candidate_members.push_back(index);
     }
     std::sort(candidate_members.begin(), candidate_members.end());
     candidate_members.erase(
@@ -3188,11 +3306,15 @@ void EgoSwarmPlannerNode::scan_peers_cb()
         candidate_members.end());
     if (has_accepted_formation_epoch_ && has_formation_)
     {
-        if (candidate_members != accepted_formation_epoch_.member_agent_ids)
+        // 只有既有成員離開才需 hold 等待重組；新成員加入時既有槽位
+        // 仍有效，繼續維持目前編隊直到新 epoch 全員 ADOPTED。
+        if (ego_swarm::is_membership_departure(
+                accepted_formation_epoch_.member_agent_ids, candidate_members))
         {
             formation_membership_change_pending_ = true;
         }
-        else if (!has_candidate_formation_epoch_ ||
+        else if (candidate_members != accepted_formation_epoch_.member_agent_ids ||
+                 !has_candidate_formation_epoch_ ||
                  epoch_is_same_snapshot(
                      candidate_formation_epoch_, accepted_formation_epoch_))
         {
@@ -3228,6 +3350,18 @@ void EgoSwarmPlannerNode::scan_peers_cb()
             "returned to accepted set");
         has_candidate_formation_epoch_ = false;
         candidate_adopted_agents_.clear();
+    }
+    // 候選 epoch 若包含已確認離線的成員，永遠無法全員 ADOPTED；丟棄並
+    // 記錄為逾時，讓下方以目前存活成員重新提案。
+    if (has_candidate_formation_epoch_ &&
+        !(has_accepted_formation_epoch_ &&
+          epoch_is_same_snapshot(
+              candidate_formation_epoch_, accepted_formation_epoch_)) &&
+        ego_swarm::has_departed_member(
+            candidate_formation_epoch_.member_agent_ids, candidate_members,
+            agent_index_, is_member_view_stable()))
+    {
+        discard_candidate_formation_epoch("candidate includes a departed member");
     }
     // stable_members_ 可能在上一輪 discovery 已先收斂，之後才完成
     // FormationEpoch。不能只依賴 stable_members_ 再次變動，否則 Agent
