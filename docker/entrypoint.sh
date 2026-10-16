@@ -92,6 +92,40 @@ build_agent_workspace() {
     )
 }
 
+# ---- Docker Desktop 模擬：DDS 同儕單播轉送 ----
+# 所有 Agent 公告同一個主機 IP 時，CycloneDDS 會把同儕 locator 改寫成本機容器 IP，
+# Agent 之間便互相看不到。只有設定 TAIPHOON_DDS_PEER_RELAY_FORWARD（主機區網 IPv4）
+# 時才啟動轉送程式，把這些封包轉給同儕容器（無法解析時退回主機埠映射）；
+# 實機與 Linux Docker Engine 不受影響。
+DDS_PEER_RELAY_BIN="${TAIPHOON_WS}/install/taiphoon_agent/lib/taiphoon_agent/dds_peer_relay"
+DDS_PEER_RELAY_PID=""
+# 預設值含大括號，不能直接寫在 ${VAR:-...} 內；compose 服務名稱為 uav_<N>_agent
+DDS_PEER_RELAY_DEFAULT_HOST_FORMAT='uav_{N}_agent'
+
+start_dds_peer_relay() {
+    if [ -z "${TAIPHOON_DDS_PEER_RELAY_FORWARD:-}" ] || [ -n "${DDS_PEER_RELAY_PID}" ]; then
+        return 0
+    fi
+    if [ ! -x "${DDS_PEER_RELAY_BIN}" ]; then
+        echo "[Entrypoint] 提示：dds_peer_relay 尚未建置，建置完成後再啟動"
+        return 1
+    fi
+    local bind_address
+    bind_address="$(hostname -i 2>/dev/null | awk '{print $1}')"
+    if [ -z "${bind_address}" ]; then
+        echo "[Entrypoint] 錯誤：無法取得容器 IPv4，Agent 之間將無法互相發現"
+        return 1
+    fi
+    "${DDS_PEER_RELAY_BIN}" --bind "${bind_address}" \
+        --forward "${TAIPHOON_DDS_PEER_RELAY_FORWARD}" \
+        --domain "${ROS_DOMAIN_ID:-0}" \
+        --instance "${TAIPHOON_DDS_PEER_RELAY_INSTANCE:-${TARGET_SYSTEM}}" \
+        --count "${TAIPHOON_DDS_PEER_RELAY_COUNT:-4}" \
+        --peer-host-format "${TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT:-${DDS_PEER_RELAY_DEFAULT_HOST_FORMAT}}" &
+    DDS_PEER_RELAY_PID=$!
+    echo "[Entrypoint] DDS 同儕轉送已啟動 (PID=${DDS_PEER_RELAY_PID})"
+}
+
 echo "============================================"
 echo " Taiphoon_Agent Docker 容器啟動"
 echo "   UXRCE_PORT=${UXRCE_PORT}"
@@ -138,6 +172,8 @@ else
 fi
 
 # ---- Step 4: 啟動 MicroXRCEAgent (uXRCE-DDS 橋接) ----
+# 轉送程式需早於 MicroXRCEAgent 綁定同儕埠，避免其 Fast DDS participant 先占用。
+start_dds_peer_relay || true
 echo "[Entrypoint] 啟動 uXRCE-DDS 橋接 (port=${UXRCE_PORT})..."
 
 MicroXRCEAgent udp4 -p "${UXRCE_PORT}" &
@@ -176,6 +212,7 @@ if ! build_agent_workspace; then
     exit 1
 fi
 echo "[Entrypoint] taiphoon_agent 建置完成"
+start_dds_peer_relay || true
 
 # ---- Step 6: 啟動 Agent 節點；PX4 data 未到時由 Node 自行報告 not ready ----
 echo "[Entrypoint] 啟動 Agent 節點（namespace=${AGENT_NAMESPACE}）；不等待 PX4 odometry..."

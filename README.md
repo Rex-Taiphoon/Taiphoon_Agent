@@ -106,7 +106,11 @@ Docker Desktop（Windows／macOS）的容器位於 NAT 之後，主機收不到�
   `Taiphoon_QGCS.exe --interface <GCS IP> --no-multicast --peer <主機IP> --participant-index 50`。
   QGCS 必須固定 participant index 50，且該電腦需允許 UDP 7510／7511 入站。
 
-此時 Agent 之間的 DDS 資料也會經主機埠轉送，只用於 GCS 連線與功能測試，不作為編隊時序驗證。
+所有 Agent 公告同一個主機 IP 時，CycloneDDS 會把同儕位址改寫成自己的容器 IP，Agent 之間便互相看不到、
+各自組成單機編隊。因此此模式下每台 Agent 另啟動 `dds_peer_relay`，在本機容器 IP 綁定其他 Agent 的
+埠段，把同儕封包轉給 `Taiphoon_Net` 上的對應 Agent 容器（無法解析時退回主機埠映射）；不需要特權，
+實機與 Linux Docker Engine 不受影響。此模式可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證。
+套用此修正需要重新編譯的 Agent（開發 compose 會自動編譯；Release 映像需重新建置）。
 主機 IP 改變（例如更換 Wi-Fi）後執行 `taiphoon_agent restart`。Linux Docker Engine 模擬不使用 `dds_peers`；
 GCS IPv4 不可填 `127.x`。
 網路不存在時啟動會失敗；stop 不會移除此外部網路。不要混用相同 UAV 編號與 domain 的模擬及實機。
@@ -131,7 +135,7 @@ QGCS 固定使用 participant index 50（7510/7511），Agent 經 `host.docker.i
 Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50
 ```
 
-此模式的 DDS 單播會經 Docker Desktop 埠轉送，只用於 GCS 連線測試，不作為編隊時序驗證；
+此模式的 Agent 之間單播經 `dds_peer_relay` 轉送（見上節），可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證；
 預設 `docker compose up -d` 與實機部署不受影響。同一時間只能有一組使用相同 UAV 編號的模擬環境。
 
 ## 常用指令

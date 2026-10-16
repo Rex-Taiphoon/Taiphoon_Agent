@@ -122,9 +122,18 @@ ament_target_dependencies(obstacle_cloud_simulator
 
 target_link_libraries(obstacle_cloud_simulator ${cpp_typesupport_target})
 
+# --- Docker Desktop 模擬 DDS 同儕單播轉送（部署工具，不連結 ROS2）---
+add_executable(dds_peer_relay
+  src/main_dds_peer_relay.cpp
+)
+
+target_include_directories(dds_peer_relay PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # --- 安裝 ---
 install(TARGETS basic_controller agent_supervisor ego_swarm_planner
-  obstacle_cloud_simulator
+  obstacle_cloud_simulator dds_peer_relay
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -234,6 +243,15 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_agent_naming PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # Docker Desktop 模擬 DDS 同儕轉送埠段純邏輯測試
+  ament_add_gtest(test_dds_peer_relay_plan
+    test/dds_peer_relay_plan_test.cpp
+  )
+
+  target_include_directories(test_dds_peer_relay_plan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

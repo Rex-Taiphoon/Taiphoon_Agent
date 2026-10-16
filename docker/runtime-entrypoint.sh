@@ -34,6 +34,25 @@ for setup in /opt/ros/humble/setup.bash \
     source "${setup}"
 done
 
+# Docker Desktop 模擬：所有 Agent 公告同一個主機 IP 時，CycloneDDS 會把同儕 locator
+# 改寫成本機容器 IP。轉送程式需早於 MicroXRCEAgent 綁定同儕埠，把封包轉給同儕容器。
+if [ -n "${TAIPHOON_DDS_PEER_RELAY_FORWARD:-}" ]; then
+    # 預設值含大括號，不能直接寫在 ${VAR:-...} 內
+    DDS_PEER_RELAY_DEFAULT_HOST_FORMAT='agent_{N}'
+    relay_bind_address="$(hostname -i 2>/dev/null | awk '{print $1}')"
+    if [ -z "${relay_bind_address}" ]; then
+        echo "[Runtime] 無法取得容器 IPv4，Agent 之間將無法互相發現" >&2
+    else
+        "${TAIPHOON_WS}/install/taiphoon_agent/lib/taiphoon_agent/dds_peer_relay" \
+            --bind "${relay_bind_address}" --forward "${TAIPHOON_DDS_PEER_RELAY_FORWARD}" \
+            --domain "${ROS_DOMAIN_ID:-0}" \
+            --instance "${TAIPHOON_DDS_PEER_RELAY_INSTANCE:-${TARGET_SYSTEM}}" \
+            --count "${TAIPHOON_DDS_PEER_RELAY_COUNT:-4}" \
+            --peer-host-format "${TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT:-${DDS_PEER_RELAY_DEFAULT_HOST_FORMAT}}" &
+        CHILDREN+=("$!")
+    fi
+fi
+
 case "${XRCE_TRANSPORT}" in
     udp)
         MicroXRCEAgent udp4 -p "${UXRCE_PORT}" &

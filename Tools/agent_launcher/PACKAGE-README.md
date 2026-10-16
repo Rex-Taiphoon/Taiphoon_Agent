@@ -78,7 +78,8 @@ Taiphoon_QGCS.exe --interface <GCS IP> --no-multicast --peer <主機IP> --partic
 
 該電腦的 QGCS 必須固定 participant index 50，並允許 UDP 7510／7511 入站。
 主機有多張網卡或取錯位址時，於 `settings.ini` 設定 `lan_address=<主機IPv4>`；更換網路後執行 restart。
-此模式的 Agent 間資料經主機埠轉送，只用於 GCS 連線測試，不作為編隊時序驗證。
+此模式的 Agent 間資料由各 Agent 內的 `dds_peer_relay` 轉送（CycloneDDS 會把相同的主機 IP 改寫成自己的容器 IP），
+可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證。
 Linux Docker Engine 的模擬維持原設定：GCS 接入 `Taiphoon_Net` 並使用相同 ROS domain，不映射主機 DDS 埠。
 
 ## 設定與排查

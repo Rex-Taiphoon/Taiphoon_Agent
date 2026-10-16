@@ -9,10 +9,14 @@
 #        uav_1 7410-7433、uav_2 7434-7457、uav_3 7458-7481、uav_4 7482-7505
 #      （每台 12 個 participant index；QGCS 固定 index 50 → 7510/7511）。
 #   3. 主動向 QGCS（host.docker.internal 192.168.65.254:7510）送出 discovery。
-# Agent 之間仍透過 Taiphoon_Net multicast 互相發現；PX4 SITL 不受影響。
+#   4. CycloneDDS 收到「等於自己外部位址」的同儕 locator 時會改寫成本機容器 IP，
+#      Agent 之間因此互相看不到；entrypoint 會依 TAIPHOON_DDS_PEER_RELAY_* 啟動
+#      dds_peer_relay，在本機 IP 綁定其他 Agent 的埠段並轉給該 Agent 容器。
+# Agent 之間的 SPDP 仍透過 Taiphoon_Net multicast 互相發現；PX4 SITL 不受影響。
 #
-# 注意：此模式下 DDS 單播會經 Docker Desktop 埠轉送回到容器，僅供 GCS
-# 連線測試，不作為編隊壓力或時序驗證環境。實機部署不使用本檔。
+# 注意：此模式下 Agent 之間的 DDS 單播會經 dds_peer_relay 轉送到同儕容器，
+# 可用於 GCS 連線與編隊功能測試，不作為編隊壓力或時序驗證環境。
+# 實機部署不使用本檔。
 #
 # 建議使用 AutoTest/scripts/start_local_qgcs_agents.ps1 啟動；手動方式：
 #   $env:TAIPHOON_HOST_IP = '<主機區網 IPv4>'
@@ -22,24 +26,44 @@
 services:
   uav_1_agent:
     environment:
+      # 同儕單播轉送：CycloneDDS 會把公告為主機 IP 的同儕改寫成本機 IP，需轉給同儕容器。
+      TAIPHOON_DDS_PEER_RELAY_FORWARD: '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}'
+      TAIPHOON_DDS_PEER_RELAY_INSTANCE: '1'
+      TAIPHOON_DDS_PEER_RELAY_COUNT: '4'
+      TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: 'uav_{N}_agent'
       CYCLONEDDS_URI: '<General><AllowMulticast>true</AllowMulticast><ExternalNetworkAddress>${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}</ExternalNetworkAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>11</MaxAutoParticipantIndex><Peers><Peer Address="127.0.0.1"/><Peer Address="${TAIPHOON_QGCS_PEER:-192.168.65.254:7510}"/></Peers><Ports><UnicastMetaOffset>10</UnicastMetaOffset><UnicastDataOffset>11</UnicastDataOffset></Ports></Discovery>'
     ports:
       - '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}:7410-7433:7410-7433/udp'
 
   uav_2_agent:
     environment:
+      # 同儕單播轉送：CycloneDDS 會把公告為主機 IP 的同儕改寫成本機 IP，需轉給同儕容器。
+      TAIPHOON_DDS_PEER_RELAY_FORWARD: '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}'
+      TAIPHOON_DDS_PEER_RELAY_INSTANCE: '2'
+      TAIPHOON_DDS_PEER_RELAY_COUNT: '4'
+      TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: 'uav_{N}_agent'
       CYCLONEDDS_URI: '<General><AllowMulticast>true</AllowMulticast><ExternalNetworkAddress>${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}</ExternalNetworkAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>11</MaxAutoParticipantIndex><Peers><Peer Address="127.0.0.1"/><Peer Address="${TAIPHOON_QGCS_PEER:-192.168.65.254:7510}"/></Peers><Ports><UnicastMetaOffset>34</UnicastMetaOffset><UnicastDataOffset>35</UnicastDataOffset></Ports></Discovery>'
     ports:
       - '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}:7434-7457:7434-7457/udp'
 
   uav_3_agent:
     environment:
+      # 同儕單播轉送：CycloneDDS 會把公告為主機 IP 的同儕改寫成本機 IP，需轉給同儕容器。
+      TAIPHOON_DDS_PEER_RELAY_FORWARD: '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}'
+      TAIPHOON_DDS_PEER_RELAY_INSTANCE: '3'
+      TAIPHOON_DDS_PEER_RELAY_COUNT: '4'
+      TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: 'uav_{N}_agent'
       CYCLONEDDS_URI: '<General><AllowMulticast>true</AllowMulticast><ExternalNetworkAddress>${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}</ExternalNetworkAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>11</MaxAutoParticipantIndex><Peers><Peer Address="127.0.0.1"/><Peer Address="${TAIPHOON_QGCS_PEER:-192.168.65.254:7510}"/></Peers><Ports><UnicastMetaOffset>58</UnicastMetaOffset><UnicastDataOffset>59</UnicastDataOffset></Ports></Discovery>'
     ports:
       - '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}:7458-7481:7458-7481/udp'
 
   uav_4_agent:
     environment:
+      # 同儕單播轉送：CycloneDDS 會把公告為主機 IP 的同儕改寫成本機 IP，需轉給同儕容器。
+      TAIPHOON_DDS_PEER_RELAY_FORWARD: '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}'
+      TAIPHOON_DDS_PEER_RELAY_INSTANCE: '4'
+      TAIPHOON_DDS_PEER_RELAY_COUNT: '4'
+      TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: 'uav_{N}_agent'
       CYCLONEDDS_URI: '<General><AllowMulticast>true</AllowMulticast><ExternalNetworkAddress>${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}</ExternalNetworkAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>11</MaxAutoParticipantIndex><Peers><Peer Address="127.0.0.1"/><Peer Address="${TAIPHOON_QGCS_PEER:-192.168.65.254:7510}"/></Peers><Ports><UnicastMetaOffset>82</UnicastMetaOffset><UnicastDataOffset>83</UnicastDataOffset></Ports></Discovery>'
     ports:
       - '${TAIPHOON_HOST_IP:?請設定 TAIPHOON_HOST_IP 為主機區網 IPv4}:7482-7505:7482-7505/udp'

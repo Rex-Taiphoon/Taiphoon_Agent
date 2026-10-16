@@ -195,7 +195,8 @@ int main()
         host_gcs["lan_address"] = "192.168.1.30";
         const auto engine_sim = deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory);
         require(engine_sim.find("ports:") == std::string::npos
-            && engine_sim.find("cyclonedds_1.xml") == std::string::npos,
+            && engine_sim.find("cyclonedds_1.xml") == std::string::npos
+            && engine_sim.find("TAIPHOON_DDS_PEER_RELAY") == std::string::npos,
             "Linux Engine 模擬不應改變既有網路設定");
         require(deployment::renderCycloneDds(host_gcs) == deployment::renderCycloneDds(host_gcs, false, 3)
             && deployment::renderCycloneDds(host_gcs).find("<MaxAutoParticipantIndex>40<") != std::string::npos
@@ -216,6 +217,13 @@ int main()
             require(service.find("cyclonedds_" + std::to_string(instance) + ".xml") != std::string::npos
                 && service.find("    networks:\n      - taiphoon_net") != std::string::npos,
                 "Agent " + std::to_string(instance) + " 未使用專屬 DDS 設定或未接入 Taiphoon_Net");
+            // 同一主機 IP 會被 CycloneDDS 改寫成本機容器 IP，必須啟用同儕轉送才能互相發現。
+            require(service.find("TAIPHOON_DDS_PEER_RELAY_FORWARD: \"192.168.1.30\"") != std::string::npos
+                && service.find("TAIPHOON_DDS_PEER_RELAY_INSTANCE: \"" + std::to_string(instance) + "\"")
+                    != std::string::npos
+                && service.find("TAIPHOON_DDS_PEER_RELAY_COUNT: \"4\"") != std::string::npos
+                && service.find("TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: \"agent_{N}\"") != std::string::npos,
+                "Agent " + std::to_string(instance) + " 未啟用 DDS 同儕轉送");
             const auto offset = std::to_string(10 + 24 * (instance - 1));
             const auto host_xml = deployment::renderCycloneDds(host_gcs, true, instance);
             require(host_xml.find("<ExternalNetworkAddress>192.168.1.30<") != std::string::npos

@@ -625,8 +625,17 @@ std::string renderCompose(const Settings& settings, const std::string& image,
             << "      XRCE_TRANSPORT: " << yamlString(settings.at("transport")) << "\n"
             << "      XRCE_SERIAL_DEVICE: " << yamlString(settings.at("serial_device")) << "\n"
             << "      XRCE_SERIAL_BAUD: " << yamlString(settings.at("serial_baud")) << "\n"
-            << "      ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"" << (is_simulation ? "true" : "false") << "\"\n"
-            << "    volumes:\n      - type: bind\n        source: "
+            << "      ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"" << (is_simulation ? "true" : "false") << "\"\n";
+        if (uses_host_gcs)
+        {
+            // 所有 Agent 公告同一個主機 IP，CycloneDDS 會把同儕 locator 改寫成本機容器 IP；
+            // 由 runtime-entrypoint 啟動 dds_peer_relay 把同儕封包轉給 agent_<N> 容器。
+            yaml << "      TAIPHOON_DDS_PEER_RELAY_FORWARD: " << yamlString(settings.at("lan_address")) << "\n"
+                << "      TAIPHOON_DDS_PEER_RELAY_INSTANCE: \"" << instance << "\"\n"
+                << "      TAIPHOON_DDS_PEER_RELAY_COUNT: \"" << count << "\"\n"
+                << "      TAIPHOON_DDS_PEER_RELAY_HOST_FORMAT: \"agent_{N}\"\n";
+        }
+        yaml << "    volumes:\n      - type: bind\n        source: "
             << yamlString((home / (uses_host_gcs ? "cyclonedds_" + std::to_string(instance) + ".xml"
                 : std::string("cyclonedds.xml"))).u8string())
             << "\n        target: /home/taiphoon/deployment/cyclonedds.xml\n        read_only: true\n";
