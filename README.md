@@ -1,6 +1,6 @@
 # Taiphoon Agent
 
-目前版本：`v1.3.0-rc.4` 預發布版，詳見 [版本說明](docs/releases/v1.3.0-rc.4.md)。
+目前版本：`v1.3.0-rc.7` 預發布版，詳見 [版本說明](docs/releases/v1.3.0-rc.7.md)。
 
 以 ROS2 Humble 整合飛控、任務規劃、感測器與影像。每個 Agent 只控制自己對應的飛控；
 日常啟動統一使用 `taiphoon_agent`，不需要附加參數，不會自動 Arm 或起飛。
