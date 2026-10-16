@@ -49,7 +49,8 @@ def main():
         compose = ['docker', 'compose', '--project-name', 'taiphoon_agent', '--file',
                    str(root / f'config-{count}' / 'compose.yaml')]
         try:
-            execute([str(executable), 'start'], env=environment, input=f'sim\n{count}\n', timeout=180)
+            # 第三行為其他電腦的 QGCS IPv4，留空不設定
+            execute([str(executable), 'start'], env=environment, input=f'sim\n{count}\n\n', timeout=180)
             for instance in range(1, count + 1):
                 container = execute(compose + ['ps', '--quiet', f'agent_{instance}'],
                                     capture_output=True).stdout.strip()
