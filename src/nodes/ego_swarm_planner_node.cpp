@@ -914,7 +914,8 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
 
     if (parsed.command != utils::AgentCommand::FORMATION_CIRCLE &&
         parsed.command != utils::AgentCommand::FORMATION_HORI_LINEAR &&
-        parsed.command != utils::AgentCommand::FORMATION_VERT_LINEAR)
+        parsed.command != utils::AgentCommand::FORMATION_VERT_LINEAR &&
+        parsed.command != utils::AgentCommand::FORMATION_V_SHAPE)
     {
         return;
     }
@@ -942,6 +943,12 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         requested_config.spacing_m = parsed.param_value;
         requested_config.vertical_offset_m = -parsed.param2;
     }
+    else if (parsed.command == utils::AgentCommand::FORMATION_V_SHAPE)
+    {
+        requested_config.type = ego_swarm::FormationType::V_SHAPE;
+        requested_config.spacing_m = parsed.param_value;
+        requested_config.vertical_offset_m = -parsed.param2;
+    }
     else
     {
         requested_config.type = ego_swarm::FormationType::VERT_LINEAR;
@@ -960,11 +967,30 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         return;
     }
 
-    flight_mission_lifecycle_.accept_formation_command();
-    preserve_altitude_ = false;
     std::vector<int> members = stable_member_ids();
     std::sort(members.begin(), members.end());
     members.erase(std::unique(members.begin(), members.end()), members.end());
+    // 編隊至少需要 2 台；單機下達編隊會被帶往虛擬槽位，因此直接拒絕而不排隊，
+    // 避免之後其他 Agent 起飛時才突然執行舊命令。
+    if (members.size() < ego_swarm::FORMATION_MIN_MEMBER_COUNT)
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting formation command: %zu stable member(s), at least %zu required",
+            members.size(), ego_swarm::FORMATION_MIN_MEMBER_COUNT);
+        return;
+    }
+    if (!is_formation_geometry_safe(requested_config, members.size()))
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejecting formation command: slot center distance below %.2f m",
+            formation_min_distance_m_);
+        return;
+    }
+
+    flight_mission_lifecycle_.accept_formation_command();
+    preserve_altitude_ = false;
     const bool accepted_epoch_matches = has_accepted_formation_epoch_ &&
         formation_config_matches(requested_config, previous_config) &&
         accepted_formation_epoch_.member_agent_ids == members;
@@ -1169,6 +1195,62 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         return true;
     }
     return false;
+}
+
+bool EgoSwarmPlannerNode::is_formation_geometry_safe(
+    const ego_swarm::FormationConfig& config,
+    const std::size_t member_count) const
+{
+    std::vector<ego_swarm::Vector3> offsets;
+    if (!ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+            member_count, config, offsets))
+    {
+        return false;
+    }
+    // 圓形相位只旋轉整個隊形，不改變槽位間距，因此以相位 0 檢查即可。
+    std::vector<ego_swarm::FormationSlot> slots;
+    slots.reserve(offsets.size());
+    for (std::size_t index = 0U; index < offsets.size(); ++index)
+    {
+        ego_swarm::FormationSlot slot;
+        slot.rank = index;
+        slot.offset_ned = offsets.at(index);
+        slot.is_valid = true;
+        slots.push_back(slot);
+    }
+    return ego_swarm::FormationSlotPlanner::are_slots_safe(
+        slots, formation_min_distance_m_);
+}
+
+void EgoSwarmPlannerNode::dissolve_formation_to_hold(const char* reason)
+{
+    if (reason == nullptr)
+    {
+        RCLCPP_ERROR(get_logger(), "dissolve_formation_to_hold received nullptr");
+        return;
+    }
+    // 只剩一台時沒有隊形可言；改以目前位置作為一般任務目標原地懸停，
+    // 不飛往單機虛擬槽位，也保留 occupancy heartbeat 供重新加入的 Agent 迴避。
+    ego_swarm::Vector3 current{};
+    const bool has_current = has_own_state_ && update_planner_frame() &&
+        get_position_in_planner_frame(own_state_, current);
+    has_formation_ = false;
+    formation_command_pending_ = false;
+    formation_membership_change_pending_ = false;
+    formation_initial_plan_pending_ = false;
+    preserve_altitude_ = false;
+    if (has_current)
+    {
+        goal_position_ = current;
+        has_goal_ = true;
+        has_position_target_ = true;
+    }
+    else
+    {
+        has_goal_ = false;
+    }
+    invalidate_active_plan();
+    RCLCPP_WARN(get_logger(), "Formation dissolved, holding current position: %s", reason);
 }
 
 bool EgoSwarmPlannerNode::formation_config_matches(
@@ -1591,7 +1673,7 @@ bool EgoSwarmPlannerNode::epoch_is_valid(
     {
         return false;
     }
-    if (epoch.formation_type > taiphoon_agent::msg::FormationEpoch::VERT_LINEAR ||
+    if (epoch.formation_type > taiphoon_agent::msg::FormationEpoch::V_SHAPE ||
         !std::isfinite(epoch.radius_m) || !std::isfinite(epoch.spacing_m) ||
         !std::isfinite(epoch.vertical_offset_m) || epoch.radius_m < 0.0 ||
         epoch.spacing_m < 0.0 || !std::isfinite(epoch.center_latitude_deg) ||
@@ -1673,6 +1755,13 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
     {
         RCLCPP_WARN(get_logger(),
                     "Formation proposal requires this Agent to be a member");
+        return false;
+    }
+    if (members.size() < ego_swarm::FORMATION_MIN_MEMBER_COUNT)
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Formation proposal requires at least %zu members",
+                    ego_swarm::FORMATION_MIN_MEMBER_COUNT);
         return false;
     }
 
@@ -1860,6 +1949,19 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
     {
         return false;
     }
+    const ego_swarm::GeoCoordinate center_geo{
+        accepted_formation_epoch_.center_latitude_deg,
+        accepted_formation_epoch_.center_longitude_deg,
+        accepted_formation_epoch_.center_altitude_m};
+    // assignment 輸入改用以 epoch center 為原點的 canonical NED：各 Agent 的
+    // planner Home 不同，若先轉成本機 NED 再相減，浮點誤差可能讓近似同成本的
+    // 槽位或圓形相位在不同 Agent 得到不同結果。canonical 輸入只取決於 epoch
+    // 內容，所有 Agent 的 assignment 逐位元相同。
+    ego_swarm::LocalNedFrame canonical_frame;
+    if (!canonical_frame.set_origin(center_geo))
+    {
+        return false;
+    }
     std::vector<int> ids;
     std::vector<ego_swarm::Vector3> positions;
     ids.reserve(accepted_formation_epoch_.member_agent_ids.size());
@@ -1869,7 +1971,7 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
     {
         ids.push_back(accepted_formation_epoch_.member_agent_ids.at(index));
         ego_swarm::Vector3 position{};
-        if (!planner_frame_.to_local_ned(ego_swarm::GeoCoordinate{
+        if (!canonical_frame.to_local_ned(ego_swarm::GeoCoordinate{
                 accepted_formation_epoch_.member_latitudes_deg.at(index),
                 accepted_formation_epoch_.member_longitudes_deg.at(index),
                 accepted_formation_epoch_.member_altitudes_m.at(index)}, position))
@@ -1879,17 +1981,9 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
         positions.push_back(position);
     }
     ego_swarm::Vector3 center{};
-    if (!planner_frame_.to_local_ned(ego_swarm::GeoCoordinate{
-            accepted_formation_epoch_.center_latitude_deg,
-            accepted_formation_epoch_.center_longitude_deg,
-            accepted_formation_epoch_.center_altitude_m}, center))
+    if (!planner_frame_.to_local_ned(center_geo, center))
     {
         return false;
-    }
-    const ego_swarm::Vector3 canonical_position = center;
-    for (auto& position : positions)
-    {
-        position = ego_swarm::subtract_vectors(position, canonical_position);
     }
     std::map<int, std::size_t> previous_assignment;
     for (std::size_t index = 0U;
@@ -1914,6 +2008,7 @@ bool EgoSwarmPlannerNode::update_formation_assignment()
         return false;
     }
     formation_assignment_ = assignment.agent_to_slot;
+    formation_config_.rotation_rad = assignment.rotation_rad;
     formation_center_ = center;
     has_formation_center_target_ = true;
     return true;
@@ -2079,6 +2174,7 @@ void EgoSwarmPlannerNode::maybe_activate_formation_epoch()
     formation_config_.spacing_m = accepted_formation_epoch_.spacing_m;
     formation_config_.vertical_offset_m =
         accepted_formation_epoch_.vertical_offset_m;
+    formation_config_.rotation_rad = 0.0;
     if (!update_formation_assignment())
     {
         accepted_formation_epoch_ = previous_epoch;
@@ -2423,7 +2519,15 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     if (formation_command_pending_ && !has_candidate_formation_epoch_ &&
         (!has_accepted_formation_epoch_ || !has_formation_))
     {
-        if (make_formation_proposal(stable_member_ids()))
+        const std::vector<int> pending_members = stable_member_ids();
+        if (pending_members.size() < ego_swarm::FORMATION_MIN_MEMBER_COUNT)
+        {
+            RCLCPP_WARN(get_logger(),
+                        "Dropping pending formation command: fewer than %zu members",
+                        ego_swarm::FORMATION_MIN_MEMBER_COUNT);
+            formation_command_pending_ = false;
+        }
+        else if (make_formation_proposal(pending_members))
         {
             formation_command_pending_ = false;
         }
@@ -3367,6 +3471,13 @@ void EgoSwarmPlannerNode::scan_peers_cb()
     // FormationEpoch。不能只依賴 stable_members_ 再次變動，否則 Agent
     // 失效後會永遠保留舊 epoch；只要目前穩定集合仍與 accepted epoch
     // 不同，且尚未存在相同成員候選，就建立新的 parent-child epoch。
+    if (discovery_same_scan_count_ >= formation_member_stable_scan_count_ &&
+        has_accepted_formation_epoch_ && has_formation_ &&
+        candidate_members.size() < ego_swarm::FORMATION_MIN_MEMBER_COUNT)
+    {
+        dissolve_formation_to_hold("only this Agent remains in the formation");
+        return;
+    }
     const bool membership_requires_reconfiguration =
         has_accepted_formation_epoch_ && has_formation_ &&
         candidate_members != accepted_formation_epoch_.member_agent_ids;

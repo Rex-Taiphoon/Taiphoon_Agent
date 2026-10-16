@@ -31,21 +31,25 @@ struct GeoCoordinate
     double altitude_m{0.0};
 };
 
-/// 編隊槽位類型。
+/// 編隊槽位類型；數值與 FormationEpoch.formation_type 常數一致。
 enum class FormationType
 {
     CIRCLE = 0,
-    HORI_LINEAR,
-    VERT_LINEAR
+    HORI_LINEAR = 1,
+    VERT_LINEAR = 2,
+    V_SHAPE = 3   ///< V 字（燕行）：頂點朝 North，兩翼向後展開
 };
 
-/// 編隊槽位參數；圓形使用 radius_m，直線使用 spacing_m。
+/// 編隊槽位參數；圓形使用 radius_m，直線與 V 字使用 spacing_m。
 struct FormationConfig
 {
     FormationType type{FormationType::CIRCLE};
     double radius_m{5.0};
     double spacing_m{3.0};
     double vertical_offset_m{0.0};
+    /// 圓形槽位相位（rad，自 North 往 East 量）。由 assignment 依 epoch snapshot
+    /// 決定以縮短總移動距離，不經訊息傳遞；其他隊形固定為 0。
+    double rotation_rad{0.0};
 };
 
 /// 浮點計算容差，避免在安全距離判斷中受微小數值誤差影響。

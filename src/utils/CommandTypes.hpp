@@ -44,7 +44,8 @@ enum class AgentCommand : uint8_t
     FORMATION_CIRCLE,   ///< 環形編隊 (參數: 半徑 高度)
     FORMATION_HORI_LINEAR, ///< 水平直列編隊 (參數: 間距 高度)
     FORMATION_VERT_LINEAR, ///< 垂直直列編隊 (參數: 間距)
-    FORMATION_CANCEL      ///< 取消當前編隊任務
+    FORMATION_CANCEL,     ///< 取消當前編隊任務
+    FORMATION_V_SHAPE     ///< V 字（燕行）編隊 (參數: 翼上間距 高度)；列舉值附加於尾端以維持既有數值
 };
 
 /**
@@ -344,6 +345,24 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             }
         }
     }
+    else if (cmd_name == "FORMATION_V_SHAPE")
+    {
+        result.command = AgentCommand::FORMATION_V_SHAPE;
+        if (tokens.size() >= 3)
+        {
+            try
+            {
+                result.param_value = std::stof(tokens[1]);  // 翼上相鄰兩機間距
+                result.param2 = std::stof(tokens[2]);        // 高度
+                result.has_param = true;
+                result.has_multi_params = true;
+            }
+            catch (...)
+            {
+                result.param_value = 0.0F;
+            }
+        }
+    }
     else if (cmd_name == "FORMATION_CANCEL")
     {
         result.command = AgentCommand::FORMATION_CANCEL;
@@ -385,6 +404,7 @@ inline const char* agent_command_to_string(AgentCommand cmd)
         case AgentCommand::FORMATION_HORI_LINEAR: return "FORMATION_HORI_LINEAR";
         case AgentCommand::FORMATION_VERT_LINEAR: return "FORMATION_VERT_LINEAR";
         case AgentCommand::FORMATION_CANCEL:      return "FORMATION_CANCEL";
+        case AgentCommand::FORMATION_V_SHAPE:     return "FORMATION_V_SHAPE";
         default:                                   return "UNKNOWN";
     }
 }

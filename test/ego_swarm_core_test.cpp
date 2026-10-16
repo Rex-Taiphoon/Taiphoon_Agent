@@ -10,9 +10,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <array>
 #include <utility>
 #include <vector>
@@ -447,6 +449,179 @@ TEST(FormationAssignmentTest, RejectsInvalidInputAsAWhole)
         config, {}, 2.0, result));
     EXPECT_FALSE(result.is_valid);
     EXPECT_TRUE(result.agent_to_slot.empty());
+}
+
+TEST(FormationSlotPlannerTest, VShapeApexLeadsNorthAndWingsTrailCentered)
+{
+    constexpr double SPACING_M = 4.0;
+    const double wing_offset = SPACING_M * std::sqrt(0.5);
+    FormationConfig config;
+    config.type = FormationType::V_SHAPE;
+    config.spacing_m = SPACING_M;
+    config.vertical_offset_m = -8.0;
+
+    std::vector<Vector3> offsets;
+    ASSERT_TRUE(FormationSlotPlanner::compute_slot_offsets(3U, config, offsets));
+    ASSERT_EQ(offsets.size(), 3U);
+    // 3 台：頂點在前，左右翼各一台；中心為三點平均。
+    const double centroid_north = -2.0 * wing_offset / 3.0;
+    EXPECT_NEAR(offsets.at(0).at(0), -centroid_north, 1.0e-9);
+    EXPECT_NEAR(offsets.at(0).at(1), 0.0, 1.0e-9);
+    EXPECT_NEAR(offsets.at(1).at(0), -wing_offset - centroid_north, 1.0e-9);
+    EXPECT_NEAR(offsets.at(1).at(1), -wing_offset, 1.0e-9);
+    EXPECT_NEAR(offsets.at(2).at(1), wing_offset, 1.0e-9);
+    for (const auto& offset : offsets)
+    {
+        EXPECT_NEAR(offset.at(2), -8.0, 1.0e-9);
+    }
+    EXPECT_NEAR(distance_between_centers(offsets.at(0), offsets.at(1)), SPACING_M, 1.0e-9);
+    EXPECT_NEAR(distance_between_centers(offsets.at(1), offsets.at(2)), 2.0 * wing_offset, 1.0e-9);
+}
+
+TEST(FormationSlotPlannerTest, VShapeKeepsSpacingForTwoToFourMembers)
+{
+    FormationConfig config;
+    config.type = FormationType::V_SHAPE;
+    config.spacing_m = 3.0;
+    for (std::size_t count = 2U; count <= 4U; ++count)
+    {
+        std::vector<Vector3> offsets;
+        ASSERT_TRUE(FormationSlotPlanner::compute_slot_offsets(count, config, offsets));
+        double north_sum = 0.0;
+        double east_sum = 0.0;
+        std::vector<FormationSlot> slots;
+        for (std::size_t index = 0U; index < offsets.size(); ++index)
+        {
+            north_sum += offsets.at(index).at(0);
+            east_sum += offsets.at(index).at(1);
+            FormationSlot slot;
+            slot.rank = index;
+            slot.offset_ned = offsets.at(index);
+            slot.is_valid = true;
+            slots.push_back(slot);
+        }
+        EXPECT_NEAR(north_sum, 0.0, 1.0e-9) << count;
+        EXPECT_NEAR(east_sum, 0.0, 1.0e-9) << count;
+        EXPECT_TRUE(FormationSlotPlanner::are_slots_safe(slots, 3.0)) << count;
+        EXPECT_FALSE(FormationSlotPlanner::are_slots_safe(slots, 3.1)) << count;
+    }
+    // 4 台時左翼第二台在最後方
+    std::vector<Vector3> offsets;
+    ASSERT_TRUE(FormationSlotPlanner::compute_slot_offsets(4U, config, offsets));
+    EXPECT_LT(offsets.at(3).at(0), offsets.at(1).at(0));
+    EXPECT_LT(offsets.at(3).at(1), offsets.at(1).at(1));
+}
+
+TEST(FormationSlotPlannerTest, RejectsNonFiniteCircleRotation)
+{
+    FormationConfig config;
+    config.type = FormationType::CIRCLE;
+    config.rotation_rad = std::numeric_limits<double>::quiet_NaN();
+    std::vector<Vector3> offsets;
+    EXPECT_FALSE(FormationSlotPlanner::compute_slot_offsets(3U, config, offsets));
+    EXPECT_TRUE(offsets.empty());
+}
+
+TEST(FormationAssignmentTest, CircleRotationMinimizesTotalTravelAfterMemberLoss)
+{
+    // 四機環形（北、東、南、西）北方那台離線：固定相位會讓三台各移動
+    // 5.2／10／14.1 m；旋轉到 60° 後只有東、西兩台各移動約 5.2 m。
+    constexpr double RADIUS_M = 10.0;
+    const std::vector<int> ids{2, 3, 4};
+    const std::vector<Vector3> positions{
+        Vector3{0.0, RADIUS_M, -10.0}, Vector3{-RADIUS_M, 0.0, -10.0},
+        Vector3{0.0, -RADIUS_M, -10.0}};
+    FormationConfig config;
+    config.type = FormationType::CIRCLE;
+    config.radius_m = RADIUS_M;
+    config.vertical_offset_m = -10.0;
+    const std::map<int, std::size_t> previous{{1, 0U}, {2, 1U}, {3, 2U}, {4, 3U}};
+
+    FormationAssignmentResult result;
+    ASSERT_TRUE(FormationAssignment::assign(ids, positions, config, previous, 2.0, 10.0, result));
+    ASSERT_TRUE(result.is_valid);
+    const double chord_30_deg = 2.0 * RADIUS_M * std::sin(taiphoon::ego_swarm::EGO_SWARM_PI / 12.0);
+    EXPECT_NEAR(result.total_cost, 2.0 * chord_30_deg, 1.0e-6);
+    EXPECT_NEAR(std::fmod(result.rotation_rad, 2.0 * taiphoon::ego_swarm::EGO_SWARM_PI / 3.0),
+                taiphoon::ego_swarm::EGO_SWARM_PI / 3.0, 1.0e-9);
+    for (const auto& slot : result.slots)
+    {
+        if (slot.agent_id == 3)
+        {
+            EXPECT_NEAR(distance_between_centers(slot.offset_ned, positions.at(1)), 0.0, 1.0e-6);
+        }
+    }
+}
+
+TEST(FormationAssignmentTest, CircleAssignmentIsDeterministicForSameSnapshot)
+{
+    const std::vector<int> ids{1, 2, 3, 4};
+    const std::vector<Vector3> positions{
+        Vector3{0.3, -11.5, -5.0}, Vector3{-0.1, -3.8, -5.0},
+        Vector3{0.2, 3.9, -5.0}, Vector3{0.0, 11.4, -5.0}};
+    FormationConfig config;
+    config.type = FormationType::CIRCLE;
+    config.radius_m = 10.0;
+    config.vertical_offset_m = -10.0;
+    FormationAssignmentResult first;
+    FormationAssignmentResult second;
+    ASSERT_TRUE(FormationAssignment::assign(ids, positions, config, {}, 2.0, 10.0, first));
+    ASSERT_TRUE(FormationAssignment::assign(ids, positions, config, {}, 2.0, 10.0, second));
+    EXPECT_EQ(first.agent_to_slot, second.agent_to_slot);
+    EXPECT_DOUBLE_EQ(first.rotation_rad, second.rotation_rad);
+
+    // 相位搜尋的結果不得比固定相位 0 更長。
+    std::vector<Vector3> fixed_offsets;
+    ASSERT_TRUE(FormationSlotPlanner::compute_slot_offsets(4U, config, fixed_offsets));
+    double best_fixed = std::numeric_limits<double>::infinity();
+    std::vector<std::size_t> order{0U, 1U, 2U, 3U};
+    do
+    {
+        double total = 0.0;
+        for (std::size_t row = 0U; row < order.size(); ++row)
+        {
+            total += distance_between_centers(positions.at(row), fixed_offsets.at(order.at(row)));
+        }
+        best_fixed = std::min(best_fixed, total);
+    } while (std::next_permutation(order.begin(), order.end()));
+    EXPECT_LE(first.total_cost, best_fixed + 1.0e-9);
+}
+
+TEST(FormationAssignmentTest, SwitchPenaltyOnlyAppliesWhenSlotCountIsUnchanged)
+{
+    const std::vector<int> ids{1, 2};
+    const std::vector<Vector3> positions{
+        Vector3{0.0, 0.5, 0.0}, Vector3{0.0, -0.5, 0.0}};
+    FormationConfig config;
+    config.type = FormationType::HORI_LINEAR;
+    config.spacing_m = 4.0;
+
+    FormationAssignmentResult same_count;
+    ASSERT_TRUE(FormationAssignment::assign(
+        ids, positions, config, {{1, 0U}, {2, 1U}}, 2.0, 10.0, same_count));
+    EXPECT_EQ(same_count.agent_to_slot.at(1), 0U);
+
+    // parent 有 3 個槽位時，索引與目前 2 個槽位的幾何無關，只以距離決定。
+    FormationAssignmentResult changed_count;
+    ASSERT_TRUE(FormationAssignment::assign(
+        ids, positions, config, {{1, 0U}, {2, 1U}, {3, 2U}}, 2.0, 10.0, changed_count));
+    EXPECT_EQ(changed_count.agent_to_slot.at(1), 1U);
+    EXPECT_EQ(changed_count.agent_to_slot.at(2), 0U);
+}
+
+TEST(CommandParserTest, ParsesVShapeFormationParameters)
+{
+    const auto v_shape = taiphoon::utils::parse_command_string("formation_v_shape 4 8");
+    EXPECT_EQ(v_shape.command, taiphoon::utils::AgentCommand::FORMATION_V_SHAPE);
+    EXPECT_TRUE(v_shape.has_param);
+    EXPECT_TRUE(v_shape.has_multi_params);
+    EXPECT_FLOAT_EQ(v_shape.param_value, 4.0F);
+    EXPECT_FLOAT_EQ(v_shape.param2, 8.0F);
+    EXPECT_STREQ(taiphoon::utils::agent_command_to_string(v_shape.command), "FORMATION_V_SHAPE");
+
+    const auto missing = taiphoon::utils::parse_command_string("FORMATION_V_SHAPE 4");
+    EXPECT_EQ(missing.command, taiphoon::utils::AgentCommand::FORMATION_V_SHAPE);
+    EXPECT_FALSE(missing.has_multi_params);
 }
 
 TEST(FormationTransitionTest, AllowsStationaryFreshPredecessorWithoutTerminalFlag)

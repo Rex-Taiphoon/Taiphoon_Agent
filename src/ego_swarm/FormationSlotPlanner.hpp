@@ -23,6 +23,9 @@ namespace taiphoon
 namespace ego_swarm
 {
 
+/// V 字（燕行）兩翼相對機頭方向（North）的半角，單位 rad（45 度）。
+constexpr double FORMATION_V_SHAPE_HALF_ANGLE_RAD = EGO_SWARM_PI / 4.0;
+
 /// 編隊槽位結果。
 struct FormationSlot
 {
@@ -194,6 +197,30 @@ public:
 
 private:
     /**
+     * @brief 計算 V 字槽位相對頂點的水平偏移
+     *
+     * rank 0 為頂點；之後奇數 rank 依序排在左翼（-East），偶數 rank 排在右翼，
+     * 同一翼相鄰兩機距離為 spacing_m，因此 2 台時為斜一字、3 台為標準 V 字。
+     *
+     * @param rank 幾何 rank
+     * @param spacing_m 同一翼相鄰兩機距離
+     * @return 相對頂點的 NED 偏移（Down 為 0）
+     */
+    static Vector3 v_shape_raw_offset(const std::size_t rank, const double spacing_m)
+    {
+        if (rank == 0U)
+        {
+            return Vector3{0.0, 0.0, 0.0};
+        }
+        const double wing_index = static_cast<double>((rank + 1U) / 2U);
+        const double side = (rank % 2U) == 1U ? -1.0 : 1.0;
+        return Vector3{
+            -wing_index * spacing_m * std::cos(FORMATION_V_SHAPE_HALF_ANGLE_RAD),
+            side * wing_index * spacing_m * std::sin(FORMATION_V_SHAPE_HALF_ANGLE_RAD),
+            0.0};
+    }
+
+    /**
      * @brief 排序並檢查 Agent ID 列表
      *
      * @param agent_ids 原始 Agent ID 列表
@@ -244,7 +271,11 @@ private:
         {
             case FormationType::CIRCLE:
             {
-                const double angle = 2.0 * EGO_SWARM_PI *
+                if (!is_finite(config.rotation_rad))
+                {
+                    return false;
+                }
+                const double angle = config.rotation_rad + 2.0 * EGO_SWARM_PI *
                     static_cast<double>(rank) / static_cast<double>(count);
                 out_offset = Vector3{
                     config.radius_m * std::cos(angle),
@@ -272,6 +303,26 @@ private:
                     0.0,
                     config.vertical_offset_m + config.spacing_m *
                         (static_cast<double>(rank) - midpoint)};
+                break;
+            }
+            case FormationType::V_SHAPE:
+            {
+                // 以全部槽位的幾何中心為編隊中心，讓初次編隊（中心取成員平均位置）
+                // 與全體 MOVE 的中心平移語意和其他隊形一致。
+                double north_sum = 0.0;
+                double east_sum = 0.0;
+                for (std::size_t index = 0U; index < count; ++index)
+                {
+                    const Vector3 raw = v_shape_raw_offset(index, config.spacing_m);
+                    north_sum += raw.at(0);
+                    east_sum += raw.at(1);
+                }
+                const Vector3 raw = v_shape_raw_offset(rank, config.spacing_m);
+                const double count_value = static_cast<double>(count);
+                out_offset = Vector3{
+                    raw.at(0) - north_sum / count_value,
+                    raw.at(1) - east_sum / count_value,
+                    config.vertical_offset_m};
                 break;
             }
             default:

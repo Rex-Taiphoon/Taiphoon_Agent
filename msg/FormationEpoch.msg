@@ -12,9 +12,10 @@ uint8 status                                  # PROPOSAL 或 ADOPTED
 uint8 CIRCLE=0                                # formation_type
 uint8 HORI_LINEAR=1
 uint8 VERT_LINEAR=2
+uint8 V_SHAPE=3                               # V 字（燕行），頂點朝 North
 uint8 formation_type
 float64 radius_m                              # CIRCLE 幾何參數
-float64 spacing_m                             # 線性編隊間距
+float64 spacing_m                             # 線性編隊間距；V_SHAPE 為同一翼相鄰兩機距離
 float64 vertical_offset_m                     # 編隊相對中心的 NED down offset
 float64 center_latitude_deg                    # WGS84 latitude
 float64 center_longitude_deg                   # WGS84 longitude

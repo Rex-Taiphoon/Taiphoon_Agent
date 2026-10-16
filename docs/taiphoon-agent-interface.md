@@ -50,6 +50,10 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `obstacle_cloud_simulator` | 依 YAML 障礙物描述發布 PointCloud2 模擬資料 | 選配 |
 | `agent_supervisor` | Agent 容器生命週期管理，提供失效模擬服務 | ✅ |
 
+Docker Desktop 模擬＋主機 QGCS 單播模式另會啟動 `dds_peer_relay`。它不是 ROS2 節點、不建立任何
+Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 CycloneDDS 改寫成本機 IP 的同儕
+封包轉給對應 Agent 容器；實機與 Linux Docker Engine 不啟動。
+
 `mission_planner` 與 `trajectory_controller` 已由 EGO-Swarm 執行鏈取代；若舊程式仍
 存在，僅可作為純邏輯測試或過渡期間的非控制實作，不能再視為新的 PX4 控制資料流。
 
@@ -138,7 +142,7 @@ ObstacleCloudSimulator ──▶ /{agent_namespace}/perception/obstacles
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 相容參數名稱；WGS84 投影至本機 planner-local NED 的到達容許誤差 |
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
-| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本 |
+| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本；只在 parent 與目前槽位數相同時加計 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 | `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
@@ -480,8 +484,16 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - 單機命令只有尚未建立 target yaw 的第一個水平命令需要新鮮 AgentAttitude；後續命令
   不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
 - `YAW` 的相對角度累加到保存的 target yaw；`MOVE_POINT` 的絕對 yaw 會重設 target yaw。
-- 編隊 assignment 使用 FormationEpoch center 建立的 canonical NED、距離加換槽 penalty
-  的 deterministic Hungarian；成員 discovery 連續兩次穩定後自動重編隊。
+- 編隊 assignment 的基礎條件是總移動距離最短：以 FormationEpoch center 為原點的
+  canonical NED（只取決於 epoch 內容，各 Agent 逐位元相同）計算三維距離，加上換槽
+  penalty（僅 parent 與目前槽位數相同時）做 deterministic Hungarian，再以 crossing
+  penalty 減少水平交叉。CIRCLE 的槽位相位不影響隊形，另以 0.5° 解析度搜尋總成本最低
+  的相位（同成本取較小相位），因此成員減少時存活成員只做最短的移動，不會整圈換位。
+  成員 discovery 連續兩次穩定後自動重編隊。
+- 編隊至少需要 2 台穩定成員：少於 2 台的 `FORMATION_*` 直接拒絕、不排隊；編隊中成員
+  只剩本機時解散編隊並以目前位置原地懸停，不飛往單機虛擬槽位。
+- 槽位中心距離小於 `formation_min_distance_m` 的編隊參數（例如半徑過小）會在命令階段
+  拒絕，不會在飛行中才因目標無效而煞停。
 - 編隊 transition 每次只釋放一台安全前序 Agent；路徑優先使用直線，受阻時只允許
   North/East 水平側向折線，Z 僅沿起點到目標線性插值，禁止以額外的上／下偏移繞行。
   無安全水平候選時維持 terminal hold，等前序 Agent 到位後依 deterministic 順序放行。
@@ -599,8 +611,11 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 |----------|------|------|
 | `FORMATION_CIRCLE <radius> <altitude>` | 半徑 (公尺), 高度 (公尺) | 環形編隊 |
 | `FORMATION_HORI_LINEAR <spacing> <altitude>` | 間距 (公尺), 高度 (公尺) | 水平一字編隊 |
-| `FORMATION_VERT_LINEAR <spacing>` | 間距 (公尺) | 垂直一字編隊 |
+| `FORMATION_VERT_LINEAR <spacing>` | 間距 (公尺) | 垂直一字編隊（Taiphoon_QGCS 暫未提供此按鈕） |
+| `FORMATION_V_SHAPE <spacing> <altitude>` | 翼上間距 (公尺), 高度 (公尺) | 燕行（V 字）編隊：頂點朝 North，其餘機依序左、右交替排在後方兩翼，半角 45°；同一翼相鄰兩機距離為 `spacing`，2 台時為斜一字 |
 | `FORMATION_CANCEL` | 無 | 取消編隊 |
+
+> 編隊至少需要 2 台已起飛的穩定成員；少於 2 台時 Agent 拒絕 `FORMATION_*`。
 
 > 全體 `MOVE_*`／`MOVE_POINT` 必須在已啟用 FormationEpoch 時使用；全體相對命令的方向
 > 固定為 `FORWARD=+North`、`BACKWARD=-North`、`RIGHT=+East`、`LEFT=-East`、

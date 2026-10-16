@@ -29,6 +29,7 @@
 | `FORMATION_CIRCLE <半徑> <高度>` | `param_value`: 半徑 (m), `param2`: 高度 (m) | 環形編隊，等角分布於質心周圍 |
 | `FORMATION_HORI_LINEAR <間距> <高度>` | `param_value`: 間距 (m), `param2`: 高度 (m) | 水平直列，沿 NED Y 軸排列 |
 | `FORMATION_VERT_LINEAR <間距>` | `param_value`: 間距 (m) | 垂直直列，沿 NED Z 軸排列 |
+| `FORMATION_V_SHAPE <間距> <高度>` | `param_value`: 翼上間距 (m), `param2`: 高度 (m) | 燕行（V 字），頂點朝 North、兩翼 45° 向後，中心為各槽位平均 |
 | `FORMATION_CANCEL` | 無參數 | 取消編隊，停止發布 NED 目標 |
 
 全體 `/uav_all_agent/command` 的 `MOVE_FORWARD/BACKWARD/LEFT/RIGHT/UP/DOWN` 只在編隊

@@ -867,6 +867,7 @@ void BasicControllerNode::on_agent_command(
         case utils::AgentCommand::FORMATION_CIRCLE:
         case utils::AgentCommand::FORMATION_HORI_LINEAR:
         case utils::AgentCommand::FORMATION_VERT_LINEAR:
+        case utils::AgentCommand::FORMATION_V_SHAPE:
         case utils::AgentCommand::FORMATION_CANCEL:
             // 編隊命令由 EgoSwarmPlannerNode 唯一處理；BasicController
             // 不發布 PX4 setpoint，也不建立第二份 mission intent。

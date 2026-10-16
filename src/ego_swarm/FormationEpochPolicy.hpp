@@ -32,6 +32,9 @@ constexpr double FORMATION_JOIN_READY_TIMEOUT_S = 3.0;
 /// 記住已逾時候選 epoch 的數量上限，避免 heartbeat 把它重新帶回。
 constexpr std::size_t FORMATION_EXPIRED_EPOCH_HISTORY_SIZE = 16U;
 
+/// 編隊最少成員數；只剩一台時解散編隊並原地懸停，不飛往單機虛擬槽位。
+constexpr std::size_t FORMATION_MIN_MEMBER_COUNT = 2U;
+
 /**
  * @brief 判斷候選 epoch 的 lineage 是否可被考慮。
  *

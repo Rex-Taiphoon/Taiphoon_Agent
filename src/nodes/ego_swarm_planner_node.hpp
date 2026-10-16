@@ -168,6 +168,20 @@ private:
     bool is_member_view_stable() const;
     void publish_formation_epoch(uint8_t status);
     std::vector<int> stable_member_ids() const;
+    /**
+     * @brief 檢查指定成員數的槽位中心距離是否不小於 formation_min_distance_m
+     * @param config 編隊幾何
+     * @param member_count 成員數
+     * @return true 表示槽位幾何有效且安全
+     */
+    bool is_formation_geometry_safe(
+        const ego_swarm::FormationConfig& config,
+        std::size_t member_count) const;
+    /**
+     * @brief 成員不足時解散編隊，以目前位置作為懸停目標
+     * @param reason 寫入日誌的原因
+     */
+    void dissolve_formation_to_hold(const char* reason);
     bool formation_config_matches(
         const ego_swarm::FormationConfig& first,
         const ego_swarm::FormationConfig& second) const;

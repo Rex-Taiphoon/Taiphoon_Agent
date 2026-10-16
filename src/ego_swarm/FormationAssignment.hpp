@@ -20,12 +20,17 @@ namespace taiphoon
 namespace ego_swarm
 {
 
+/// 圓形相位搜尋解析度（rad，0.5 度）；n 台時只需搜尋一個 2π/n 週期。
+constexpr double FORMATION_CIRCLE_ROTATION_STEP_RAD = EGO_SWARM_PI / 360.0;
+
 struct FormationAssignmentResult
 {
     bool is_valid{false};
     std::vector<FormationSlot> slots{};
     std::map<int, std::size_t> agent_to_slot{};
     double total_cost{0.0};
+    /// 採用的圓形槽位相位；非圓形固定為 0，呼叫端需寫回 FormationConfig。
+    double rotation_rad{0.0};
 };
 
 /**
@@ -54,9 +59,11 @@ public:
     /**
      * @brief 以 slot-switch 與水平 crossing penalty 建立 assignment。
      *
-     * Hungarian 先求 distance/switch 的基準解，再以 deterministic pairwise
-     * swap refinement 降低交叉成本，避免把 pairwise crossing state 塞進
-     * Hungarian 的淺層輸入矩陣。
+     * 基礎條件是總移動距離最短：Hungarian 先求 distance/switch 的基準解，
+     * 再以 deterministic pairwise swap refinement 降低交叉成本，避免把
+     * pairwise crossing state 塞進 Hungarian 的淺層輸入矩陣。圓形的相位不影響
+     * 隊形，因此另外以固定解析度搜尋總成本最低的相位；同成本取較小相位。
+     * 換槽成本只在 parent 與目前槽位數相同時才有意義，數量不同時不加計。
      *
      * @param agent_ids Agent ID
      * @param agent_positions_ned canonical NED 位置
@@ -110,54 +117,67 @@ public:
             }
         }
 
-        std::vector<Vector3> slot_offsets;
-        if (!FormationSlotPlanner::compute_slot_offsets(
-                sorted_agents.size(), config, slot_offsets) ||
-            slot_offsets.size() != sorted_agents.size())
+        const std::size_t count = sorted_agents.size();
+        const double effective_switch_penalty_m =
+            previous_assignment.size() == count ? slot_switch_penalty_m : 0.0;
+        std::size_t rotation_steps = 1U;
+        double rotation_step_rad = 0.0;
+        if (config.type == FormationType::CIRCLE)
         {
-            return false;
+            const double period_rad = 2.0 * EGO_SWARM_PI / static_cast<double>(count);
+            rotation_steps = static_cast<std::size_t>(
+                std::lround(period_rad / FORMATION_CIRCLE_ROTATION_STEP_RAD));
+            rotation_steps = std::max<std::size_t>(rotation_steps, 1U);
+            rotation_step_rad = period_rad / static_cast<double>(rotation_steps);
         }
 
-        const std::size_t count = sorted_agents.size();
-        std::vector<std::vector<double>> costs(
-            count, std::vector<double>(count, 0.0));
-        for (std::size_t row = 0U; row < count; ++row)
+        bool has_candidate = false;
+        double best_objective = std::numeric_limits<double>::infinity();
+        FormationConfig best_config = config;
+        std::vector<Vector3> slot_offsets;
+        std::vector<std::vector<double>> costs;
+        std::vector<std::size_t> row_to_column;
+        for (std::size_t step = 0U; step < rotation_steps; ++step)
         {
-            for (std::size_t column = 0U; column < count; ++column)
+            FormationConfig candidate_config = config;
+            candidate_config.rotation_rad = config.type == FormationType::CIRCLE
+                ? rotation_step_rad * static_cast<double>(step) : 0.0;
+            std::vector<Vector3> candidate_offsets;
+            std::vector<std::vector<double>> candidate_costs;
+            std::vector<std::size_t> candidate_columns;
+            if (!solve_for_config(
+                    sorted_agents, candidate_config, previous_assignment,
+                    effective_switch_penalty_m, crossing_penalty_m,
+                    candidate_offsets, candidate_costs, candidate_columns))
             {
-                const double distance = distance_between_centers(
-                    sorted_agents.at(row).second, slot_offsets.at(column));
-                if (!is_finite(distance))
-                {
-                    return false;
-                }
-                double cost = distance;
-                const auto previous = previous_assignment.find(
-                    sorted_agents.at(row).first);
-                if (previous != previous_assignment.end() &&
-                    previous->second != column)
-                {
-                    cost += slot_switch_penalty_m;
-                }
-                if (!is_finite(cost))
-                {
-                    return false;
-                }
-                costs.at(row).at(column) = cost;
+                return false;
+            }
+            const double objective = assignment_objective(
+                candidate_costs, candidate_columns, crossing_penalty_m,
+                sorted_agents, candidate_offsets);
+            if (!is_finite(objective))
+            {
+                return false;
+            }
+            // 輸入來自同一份 epoch snapshot，各 Agent 計算結果逐位元相同；
+            // 嚴格小於才更新，使同成本時固定採用較小相位。
+            if (!has_candidate || objective < best_objective)
+            {
+                has_candidate = true;
+                best_objective = objective;
+                best_config = candidate_config;
+                slot_offsets = candidate_offsets;
+                costs = candidate_costs;
+                row_to_column = candidate_columns;
             }
         }
-
-        std::vector<std::size_t> row_to_column;
-        if (!hungarian(costs, row_to_column))
+        if (!has_candidate)
         {
             return false;
         }
 
-        refine_crossings(
-            sorted_agents, slot_offsets, costs, crossing_penalty_m,
-            row_to_column);
-
         FormationAssignmentResult result;
+        result.rotation_rad = best_config.rotation_rad;
         result.slots.reserve(count);
         for (std::size_t row = 0U; row < count; ++row)
         {
@@ -183,6 +203,71 @@ public:
     }
 
 private:
+    /**
+     * @brief 在指定幾何下求 Hungarian 解並降低交叉
+     *
+     * @param sorted_agents 依 ID 排序的 Agent 與 canonical 位置
+     * @param config 本次候選幾何
+     * @param previous_assignment parent epoch assignment
+     * @param slot_switch_penalty_m 換槽位成本
+     * @param crossing_penalty_m 水平路徑 crossing 成本
+     * @param[out] out_offsets 槽位偏移
+     * @param[out] out_costs 成本矩陣
+     * @param[out] out_row_to_column 每個 Agent 的槽位
+     * @return true 表示取得完整解
+     */
+    static bool solve_for_config(
+        const std::vector<std::pair<int, Vector3>>& sorted_agents,
+        const FormationConfig& config,
+        const std::map<int, std::size_t>& previous_assignment,
+        const double slot_switch_penalty_m,
+        const double crossing_penalty_m,
+        std::vector<Vector3>& out_offsets,
+        std::vector<std::vector<double>>& out_costs,
+        std::vector<std::size_t>& out_row_to_column)
+    {
+        const std::size_t count = sorted_agents.size();
+        if (!FormationSlotPlanner::compute_slot_offsets(count, config, out_offsets) ||
+            out_offsets.size() != count)
+        {
+            return false;
+        }
+        out_costs.assign(count, std::vector<double>(count, 0.0));
+        for (std::size_t row = 0U; row < count; ++row)
+        {
+            for (std::size_t column = 0U; column < count; ++column)
+            {
+                const double distance = distance_between_centers(
+                    sorted_agents.at(row).second, out_offsets.at(column));
+                if (!is_finite(distance))
+                {
+                    return false;
+                }
+                double cost = distance;
+                const auto previous = previous_assignment.find(
+                    sorted_agents.at(row).first);
+                if (previous != previous_assignment.end() &&
+                    previous->second != column)
+                {
+                    cost += slot_switch_penalty_m;
+                }
+                if (!is_finite(cost))
+                {
+                    return false;
+                }
+                out_costs.at(row).at(column) = cost;
+            }
+        }
+        if (!hungarian(out_costs, out_row_to_column))
+        {
+            return false;
+        }
+        refine_crossings(
+            sorted_agents, out_offsets, out_costs, crossing_penalty_m,
+            out_row_to_column);
+        return true;
+    }
+
     static double orientation_2d(
         const Vector3& first,
         const Vector3& second,
