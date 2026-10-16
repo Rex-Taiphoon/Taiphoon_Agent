@@ -1664,7 +1664,8 @@ bool EgoSwarmPlannerNode::epoch_is_valid(
         epoch.sender_agent_id <= 0 ||
         (epoch.status != taiphoon_agent::msg::FormationEpoch::PROPOSAL &&
          epoch.status != taiphoon_agent::msg::FormationEpoch::ADOPTED) ||
-        epoch.member_agent_ids.empty() ||
+        // 與提案端相同的最少成員數；單機 epoch 會把該機帶往虛擬槽位，不得採用。
+        epoch.member_agent_ids.size() < ego_swarm::FORMATION_MIN_MEMBER_COUNT ||
         epoch.member_agent_ids.size() != epoch.member_latitudes_deg.size() ||
         epoch.member_agent_ids.size() != epoch.member_longitudes_deg.size() ||
         epoch.member_agent_ids.size() != epoch.member_altitudes_m.size() ||
