@@ -233,11 +233,34 @@ int main()
             && desktop_sim.find("PX4_AGENT_HOST: agent_4") != std::string::npos, "Desktop 模擬 PX4 服務改變");
         requireRejected([&host_gcs] { deployment::renderCycloneDds(host_gcs, true, 5); });
         requireRejected([&host_gcs] { deployment::renderCycloneDds(host_gcs, true, 0); });
+        // 其他電腦的 QGCS：每台 Agent 都主動送 discovery 到 GCS 的 index 50，並保留主機 QGCS。
+        host_gcs["dds_peers"] = "192.168.1.40, 192.168.1.41";
+        for (unsigned int instance = 1; instance <= 4; ++instance)
+        {
+            const auto remote_xml = deployment::renderCycloneDds(host_gcs, true, instance);
+            require(remote_xml.find("<Peer Address=\"127.0.0.1\"/><Peer Address=\"192.168.65.254:7510\"/>"
+                "<Peer Address=\"192.168.1.40:7510\"/><Peer Address=\"192.168.1.41:7510\"/></Peers>")
+                    != std::string::npos,
+                "Agent " + std::to_string(instance) + " 未主動向其他電腦的 QGCS 送出 discovery");
+        }
+        require(deployment::renderCycloneDds(host_gcs).find("192.168.1.40") == std::string::npos,
+            "Linux Engine 模擬不應沿用外部 GCS peer");
+        require(deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory, true)
+                .find("\"192.168.1.30:7410-7433:7410-7433/udp\"") != std::string::npos,
+            "外部 GCS peer 不應改變主機埠映射");
+        for (const auto* loopback : {"127.0.0.1", "192.168.1.40,127.0.1.1"})
+        {
+            auto rejected = host_gcs;
+            rejected["dds_peers"] = loopback;
+            requireRejected([&rejected] { deployment::validateSettings(rejected); });
+        }
         host_gcs["domain_id"] = "1";
         require(deployment::renderCycloneDds(host_gcs, true, 1).find("192.168.65.254:7760") != std::string::npos
+            && deployment::renderCycloneDds(host_gcs, true, 1).find("192.168.1.40:7760") != std::string::npos
             && deployment::renderCompose(host_gcs, "taiphoon-agent:test", "amd64", directory, true)
                 .find("192.168.1.30:7660-7683:7660-7683/udp") != std::string::npos,
             "非 0 domain 埠號未平移");
+        host_gcs["dds_peers"] = "";
         for (const auto& unresolved : {"auto", ""})
         {
             host_gcs["lan_address"] = unresolved;

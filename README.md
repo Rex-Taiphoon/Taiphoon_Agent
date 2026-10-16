@@ -71,7 +71,7 @@ macOS 首次開啟依系統提供的核准流程操作；目前套件未公證�
 | 樹莓派單機實機 | deploy → 無人機編號 → 選填 GCS IP | 一個 Agent，Wi-Fi／UDP 飛控 |
 | 單組本機模擬 | sim → 1 | 一個 PX4＋一個 Agent |
 | 多組本機模擬 | sim → 2～4 | 對應數量 PX4＋Agent，先 Agent 後 PX4 |
-| 模擬與本機 QGCS | sim → 1～4 | Docker Desktop 上由同機原生 Taiphoon_QGCS 以單播連線 |
+| 模擬與 QGCS | sim → 1～4 → 選填其他電腦 QGCS IP | Docker Desktop 上由同機或其他電腦的原生 Taiphoon_QGCS 以單播連線 |
 | 開發 | dev → 原始碼目錄 → sim 或 real | 容器內編譯；sim 可選 1～4 組 |
 
 實機預設飛控 IP 為 **192.168.1.14**；這不是 Agent 主機 IP。工具每次啟動自動取得
@@ -101,9 +101,14 @@ Docker Desktop（Windows／macOS）的容器位於 NAT 之後，主機收不到�
   agent_3 7458-7481、agent_4 7482-7505；domain 每加 1，所有埠號加 250。
 - 啟動成功後印出 QGCS 參數，例如：
   `Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50`
+- QGCS 在**其他電腦**時，`config` 選 sim 後填入該電腦 IPv4（保存於 `dds_peers`，多個以逗號分隔，
+  輸入 `-` 清除）。每台 Agent 會再主動向 `<GCS IP>:7510`（domain 0）送出 discovery，啟動後另印出該電腦的參數：
+  `Taiphoon_QGCS.exe --interface <GCS IP> --no-multicast --peer <主機IP> --participant-index 50`。
+  QGCS 必須固定 participant index 50，且該電腦需允許 UDP 7510／7511 入站。
 
 此時 Agent 之間的 DDS 資料也會經主機埠轉送，只用於 GCS 連線與功能測試，不作為編隊時序驗證。
-主機 IP 改變（例如更換 Wi-Fi）後執行 `taiphoon_agent restart`。`dds_peers` 在模擬模式下不生效。
+主機 IP 改變（例如更換 Wi-Fi）後執行 `taiphoon_agent restart`。Linux Docker Engine 模擬不使用 `dds_peers`；
+GCS IPv4 不可填 `127.x`。
 網路不存在時啟動會失敗；stop 不會移除此外部網路。不要混用相同 UAV 編號與 domain 的模擬及實機。
 ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
 首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。

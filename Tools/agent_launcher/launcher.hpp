@@ -81,6 +81,9 @@ std::string sha256(const fs::path& path);
 std::string renderCompose(const Settings& settings, const std::string& image,
     const std::string& architecture, const fs::path& home, bool is_desktop = false);
 /** @brief 產生 CycloneDDS 設定。
+ *
+ * 原生 GCS 模式（Desktop 模擬）的 Agent 會主動向主機 QGCS 與 dds_peers 中每個 GCS IPv4 的
+ * 固定 index 50 discovery 埠送出探索；Linux Engine 模擬仍忽略 dds_peers。
  * @param settings 已驗證設定；原生 GCS 模式的 lan_address 必須已解析為 IPv4。
  * @param is_desktop Docker daemon 是否為 Desktop。
  * @param instance 模擬 Agent 序號，決定原生 GCS 模式的單播埠段。

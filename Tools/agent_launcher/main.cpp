@@ -100,6 +100,13 @@ std::string prompt(const std::string& label, const std::string& fallback)
     return value.empty() ? fallback : value;
 }
 
+/** @brief 讀取 GCS IPv4 清單；空白沿用原值，「-」清除，避免舊位址無法移除。 */
+std::string promptPeers(const std::string& label, const std::string& fallback)
+{
+    const auto value = prompt(label + "；輸入 - 清除", fallback);
+    return value == "-" ? std::string() : value;
+}
+
 /** @brief 避免在服務執行時改寫其模式、映像或資料掛載。 */
 void requireStopped(const fs::path& home)
 {
@@ -141,6 +148,8 @@ void initialize(const fs::path& home)
         settings["network"] = "local";
         std::cout << "模擬 Agent 透過 Docker 網路 Taiphoon_Net 互相通訊；Docker Desktop 上由本機原生"
             " Taiphoon_QGCS 經主機區網 IPv4 連線。\n";
+        settings["dds_peers"] = promptPeers("其他電腦的 Taiphoon_QGCS IPv4（選填，僅 Docker Desktop 模擬；"
+            "多個以逗號分隔）", settings.at("dds_peers"));
     }
     else
     {
@@ -154,7 +163,7 @@ void initialize(const fs::path& home)
     }
     if (settings.at("network") == "wifi")
     {
-        settings["dds_peers"] = prompt("GCS IPv4（選填，多個以逗號分隔）", settings.at("dds_peers"));
+        settings["dds_peers"] = promptPeers("GCS IPv4（選填，多個以逗號分隔）", settings.at("dds_peers"));
     }
     deployment::validateSettings(settings);
     std::ostringstream text;
@@ -606,7 +615,6 @@ int main(int argc, char* argv[])
                     throw std::runtime_error("無法取得主機區網 IPv4；請確認網路已連線，"
                         "或在 settings.ini 指定 lan_address 後重新啟動");
                 }
-                settings["dds_peers"] = "";
                 std::cout << "本機 Taiphoon_QGCS 連線用主機 IPv4：" << settings.at("lan_address")
                     << "（多網卡選錯時請在 settings.ini 指定 lan_address）\n";
             }
@@ -641,6 +649,17 @@ int main(int argc, char* argv[])
             std::cout << "本機 Taiphoon_QGCS 啟動參數（ROS domain " << settings.at("domain_id") << "）：\n"
                 << "  --interface " << settings.at("lan_address") << " --external-address 192.168.65.254"
                 << " --no-multicast --peer " << settings.at("lan_address") << " --participant-index 50\n";
+            std::istringstream gcs_list(settings.at("dds_peers"));
+            std::string gcs;
+            while (std::getline(gcs_list, gcs, ','))
+            {
+                gcs.erase(0, gcs.find_first_not_of(' '));
+                gcs.erase(gcs.find_last_not_of(' ') + 1);
+                // 其他電腦不在 Docker NAT 之後，不需 --external-address；Agent 已主動送 discovery 至其 index 50。
+                std::cout << "其他電腦 " << gcs << " 的 Taiphoon_QGCS 啟動參數：\n"
+                    << "  --interface " << gcs << " --no-multicast --peer " << settings.at("lan_address")
+                    << " --participant-index 50\n";
+            }
         }
         std::cout << "使用 taiphoon_agent status 查看飛控連線，logs 查看日誌。\n";
         return 0;

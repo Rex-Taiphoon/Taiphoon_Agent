@@ -170,6 +170,12 @@ unsigned int hostGcsUnicastOffset(unsigned int instance)
     return DDS_UNICAST_OFFSET + HOST_GCS_AGENT_PORT_SPAN * (instance - 1);
 }
 
+/** @brief 固定 index 的 Taiphoon_QGCS 單播 discovery 埠；Agent 由此主動送出 discovery。 */
+unsigned int hostGcsDiscoveryPort(const Settings& settings)
+{
+    return ddsDomainBase(settings) + DDS_UNICAST_OFFSET + DDS_PARTICIPANT_PORT_STEP * HOST_GCS_PARTICIPANT_INDEX;
+}
+
 /** @brief SHA256 定義的 32 位元循環右移。 */
 std::uint32_t rotate(std::uint32_t value, unsigned int amount)
 {
@@ -350,7 +356,14 @@ void validateSettings(const Settings& settings)
     {
         throw std::runtime_error("lan_address 必須是本機 LAN IPv4");
     }
-    peers(settings.at("dds_peers"));
+    for (const auto& peer : peers(settings.at("dds_peers")))
+    {
+        // 容器內的 loopback 指向容器本身；同機 QGCS 已由 host.docker.internal 涵蓋。
+        if (isSimulation(settings) && peer.rfind("127.", 0) == 0)
+        {
+            throw std::runtime_error("模擬模式的 GCS IPv4 不可為 127.x；同機 Taiphoon_QGCS 不需填寫");
+        }
+    }
     if (settings.count("network") != 0 && settings.at("network") != "local" && settings.at("network") != "wifi")
     {
         throw std::runtime_error("network 必須是 local 或 wifi");
@@ -498,7 +511,7 @@ std::string renderCycloneDds(const Settings& settings, bool is_desktop, unsigned
         << "<AllowMulticast>true</AllowMulticast>";
     if (usesHostGcs(settings, is_desktop))
     {
-        // Desktop 主機收不到容器 multicast：公告主機 IP＋專屬埠段，並主動向主機 QGCS 單播 discovery。
+        // Desktop 主機收不到容器 multicast：公告主機 IP＋專屬埠段，並主動向主機與 dds_peers 的 QGCS 單播 discovery。
         if (!isIpv4(settings.at("lan_address")))
         {
             throw std::runtime_error("模擬 Agent 需要主機區網 IPv4 供本機 Taiphoon_QGCS 連線；"
@@ -508,14 +521,19 @@ std::string renderCycloneDds(const Settings& settings, bool is_desktop, unsigned
         {
             throw std::runtime_error("模擬 Agent 序號超出 count");
         }
-        const auto base = ddsDomainBase(settings);
         const auto offset = hostGcsUnicastOffset(instance);
+        const auto gcs_port = hostGcsDiscoveryPort(settings);
         xml << "<ExternalNetworkAddress>" << settings.at("lan_address") << "</ExternalNetworkAddress>"
             << "</General><Discovery><ParticipantIndex>auto</ParticipantIndex>"
             << "<MaxAutoParticipantIndex>" << HOST_GCS_MAX_PARTICIPANT_INDEX << "</MaxAutoParticipantIndex>"
-            << "<Peers><Peer Address=\"127.0.0.1\"/><Peer Address=\"" << DESKTOP_HOST_GATEWAY << ':'
-            << base + DDS_UNICAST_OFFSET + DDS_PARTICIPANT_PORT_STEP * HOST_GCS_PARTICIPANT_INDEX
-            << "\"/></Peers><Ports><UnicastMetaOffset>" << offset << "</UnicastMetaOffset>"
+            << "<Peers><Peer Address=\"127.0.0.1\"/><Peer Address=\"" << DESKTOP_HOST_GATEWAY << ':' << gcs_port
+            << "\"/>";
+        // 其他電腦的 QGCS 不在 Agent 埠段探測範圍內，需指定其固定 index 的 discovery 埠。
+        for (const auto& peer : peers(settings.at("dds_peers")))
+        {
+            xml << "<Peer Address=\"" << peer << ':' << gcs_port << "\"/>";
+        }
+        xml << "</Peers><Ports><UnicastMetaOffset>" << offset << "</UnicastMetaOffset>"
             << "<UnicastDataOffset>" << offset + 1 << "</UnicastDataOffset></Ports>"
             << "</Discovery></Domain></CycloneDDS>\n";
         return xml.str();

@@ -198,11 +198,16 @@ def main():
     run_cli(executable, environment, 'stop')
     # Docker Desktop 模擬：每台 Agent 各自單播埠段與 DDS 設定，供同機原生 Taiphoon_QGCS 連線。
     engine_settings = settings_file.read_text()
+    assert 'dds_peers=\n' in engine_settings
     settings_file.write_text(engine_settings.replace('count=1', 'count=2')
-                             .replace('lan_address=auto', 'lan_address=192.168.1.30'))
+                             .replace('lan_address=auto', 'lan_address=192.168.1.30')
+                             .replace('dds_peers=\n', 'dds_peers=192.168.1.40\n'))
     result = run_cli(executable, environment)
     assert '--interface 192.168.1.30 --external-address 192.168.65.254' in result.stdout
     assert '--participant-index 50' in result.stdout
+    # 其他電腦的 QGCS 不在 NAT 之後，啟動參數不含 --external-address。
+    assert ('--interface 192.168.1.40 --no-multicast --peer 192.168.1.30 --participant-index 50'
+            in result.stdout)
     description = yaml.safe_load((config / 'compose.yaml').read_text())
     for instance, ports, offset in ((1, '7410-7433', 10), (2, '7434-7457', 34)):
         agent = description['services'][f'agent_{instance}']
@@ -213,6 +218,7 @@ def main():
         xml = (config / f'cyclonedds_{instance}.xml').read_text()
         assert '<ExternalNetworkAddress>192.168.1.30</ExternalNetworkAddress>' in xml
         assert '<Peer Address="192.168.65.254:7510"/>' in xml
+        assert '<Peer Address="192.168.1.40:7510"/>' in xml
         assert f'<UnicastMetaOffset>{offset}</UnicastMetaOffset>' in xml
         assert description['services'][f'px4_{instance}']['environment']['PX4_AGENT_HOST'] == f'agent_{instance}'
     run_cli(executable, environment, 'stop')
