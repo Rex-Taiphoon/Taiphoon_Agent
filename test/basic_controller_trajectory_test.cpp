@@ -540,6 +540,46 @@ TEST_F(BasicControllerTrajectoryTest,
 }
 
 TEST_F(BasicControllerTrajectoryTest,
+       YawAfterTrajectoryCompletionHoldsEndpointInsteadOfStaleTarget)
+{
+    // set_ned_target 留下 (2, 0, -2) 的舊 target；軌跡完成於 (10, 20, -3)。
+    ASSERT_TRUE(controller_->set_ned_target(2.0F, 0.0F, -2.0F, 0.0F));
+    auto completed_trajectory = make_linear_trajectory(
+        node_->now() - rclcpp::Duration::from_seconds(2.0));
+    completed_trajectory.trajectory_id = 30U;
+    completed_trajectory.duration_s = 1.0F;
+    ASSERT_TRUE(controller_->update_timed_trajectory(completed_trajectory));
+    publish_until_setpoint_received();
+    ASSERT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::HOVER);
+
+    // YAW 純旋轉的重送必須維持軌跡終點，不得把機體拉回舊 target。
+    ASSERT_TRUE(controller_->rotate_yaw(90.0F));
+    int yaw_setpoint_count = 0;
+    for (int cycle = 0; cycle < 5; ++cycle)
+    {
+        has_setpoint_ = false;
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+        if (!has_setpoint_)
+        {
+            continue;
+        }
+        ++yaw_setpoint_count;
+        EXPECT_NEAR(latest_setpoint_.position[0], 10.0F, POSITION_EPSILON_M);
+        EXPECT_NEAR(latest_setpoint_.position[1], 20.0F, POSITION_EPSILON_M);
+        EXPECT_NEAR(latest_setpoint_.position[2], -3.0F, POSITION_EPSILON_M);
+        for (const float value : latest_setpoint_.velocity)
+        {
+            EXPECT_FLOAT_EQ(value, 0.0F);
+        }
+        EXPECT_GT(latest_setpoint_.yawspeed, 0.0F);
+        expect_finite_setpoint_fields();
+    }
+    EXPECT_EQ(yaw_setpoint_count, 5);
+}
+
+TEST_F(BasicControllerTrajectoryTest,
        CompletedTrajectoryRejectsStaleIdAndAcceptsNewId)
 {
     ASSERT_TRUE(controller_->set_ned_target(2.0F, 0.0F, -2.0F, 0.0F));

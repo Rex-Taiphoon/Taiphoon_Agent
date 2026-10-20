@@ -21,6 +21,10 @@ UXRCE_PORT="${UXRCE_PORT:-8888}"
 TARGET_SYSTEM="${TARGET_SYSTEM:-1}"
 AGENT_NAMESPACE="${AGENT_NAMESPACE:-uav_1_agent}"
 
+# ---- BasicController 部署參數 ----
+# 偏航角速率上限（度/秒）；需小於等於 PX4 MC_YAWRATE_MAX
+BASIC_CONTROLLER_YAW_RATE_LIMIT_DEG_S="${BASIC_CONTROLLER_YAW_RATE_LIMIT_DEG_S:-30.0}"
+
 # ---- EGO-Swarm 部署參數（僅傳入 Node 已宣告參數）----
 EGO_SWARM_PLANNING_RATE_HZ="${EGO_SWARM_PLANNING_RATE_HZ:-10.0}"
 EGO_SWARM_FORMATION_MIN_DISTANCE_M="${EGO_SWARM_FORMATION_MIN_DISTANCE_M:-2.0}"
@@ -224,6 +228,7 @@ ros2 launch taiphoon_agent basic_controller.launch.py \
     target_system:="${TARGET_SYSTEM}" \
     agent_namespace:="${AGENT_NAMESPACE}" \
     auto_start_sequence:=false \
+    yaw_rate_limit_deg_s:="${BASIC_CONTROLLER_YAW_RATE_LIMIT_DEG_S}" \
     planning_rate_hz:="${EGO_SWARM_PLANNING_RATE_HZ}" \
     formation_min_distance_m:="${EGO_SWARM_FORMATION_MIN_DISTANCE_M}" \
     knot_interval_s:="${EGO_SWARM_KNOT_INTERVAL_S}" \

@@ -382,6 +382,11 @@ EGO-Swarm Planner 狀態與安全指標。
 
 > **注意**：Topic 名稱為相對路徑，實際解析後會加上節點命名空間，例如 `/uav_1/fmu/in/offboard_control_mode`。
 
+> **偏航**：PX4 Offboard 位置模式不套用 `MPC_YAWRAUTO_MAX`，因此 `TrajectorySetpoint.yaw`
+> 由 BasicController 以 `yaw_rate_limit_deg_s`（預設 30 deg/s）每個控制週期沿最短角度逼近目標航向，
+> `yawspeed` 填入前饋角速度（rad/s，收斂後為 0）；偏航未到達前即使沒有軌跡也會逐週期重送，
+> 位置沿用上一筆已送出的 setpoint。地面起飛鎖定當下航向，目標航向未設定時的防呆值為目前航向（不再送 0／正北）。
+
 ### 4.2 Agent 對外 Topic（GCS 關注重點）
 
 這些是 **GCS 應直接訂閱與發布** 的 Topic。
@@ -490,6 +495,9 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - 單機命令只有尚未建立 target yaw 的第一個水平命令需要新鮮 AgentAttitude；後續命令
   不會因實際 yaw 或 odometry 暫態改變而改寫既有目標。
 - `YAW` 的相對角度累加到保存的 target yaw；`MOVE_POINT` 的絕對 yaw 會重設 target yaw。
+  BasicController 與 planner 都以「最終 target yaw」為累加基準，BasicController 只把實際送出的
+  yaw 限速逼近；逼近期間下達的水平 MOVE 依最終航向計算位移，機頭仍在轉屬預期行為。
+  地面起飛時 BasicController 鎖定當下航向，planner 也在落地時清除 target yaw、下次由 attitude 初始化，兩者一致。
 - 編隊 assignment 的基礎條件是總移動距離最短：以 FormationEpoch center 為原點的
   canonical NED（只取決於 epoch 內容，各 Agent 逐位元相同）計算三維距離，加上換槽
   penalty（僅 parent 與目前槽位數相同時）做 deterministic Hungarian，再以 crossing
@@ -600,8 +608,8 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 | `MOVE_RIGHT <x>` | 距離 (公尺) | 向右移動 |
 | `MOVE_UP <x>` | 距離 (公尺) | 向上移動 |
 | `MOVE_DOWN <x>` | 距離 (公尺) | 向下移動 |
-| `YAW <angle>` | 相對角度 (度) | 以目前航向為基準順時針旋轉，由 BasicController 直接發布 |
-| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 單機時為 Agent 目標；全體編隊時由 proposal Agent 的 planner-local NED 解讀 Formation center，yaw 由 BasicController 直接設定 |
+| `YAW <angle>` | 相對角度 (度) | 累加到保存的目標航向（順時針為正），由 BasicController 以 `yaw_rate_limit_deg_s` 限速沿最短角度轉向 |
+| `MOVE_POINT <x> <y> <z> <yaw>` | NED 座標 + 絕對偏航 | 單機時為 Agent 目標；全體編隊時由 proposal Agent 的 planner-local NED 解讀 Formation center，yaw 由 BasicController 設定並限速轉向 |
 
 #### 基礎控制命令
 

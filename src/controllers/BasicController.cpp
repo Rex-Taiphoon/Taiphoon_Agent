@@ -161,6 +161,10 @@ void BasicController::stop_offboard_session()
     offboard_mode_request_time_ = rclcpp::Time(
         static_cast<int64_t>(0), RCL_ROS_TIME);
     trajectory_setpoint_pending_.store(false);
+    // Offboard 中斷期間機頭可能被手動或 failsafe 改變；重新進入後從實際
+    // 航向逼近目標，不可沿用中斷前的送出值造成瞬間跳轉。
+    commanded_yaw_rad_ = std::numeric_limits<float>::quiet_NaN();
+    has_last_setpoint_position_ = false;
     clear_timed_trajectory();
 }
 
@@ -251,6 +255,12 @@ bool BasicController::takeoff(float altitude_m)
     target_altitude_m_.store(altitude_m);
     target_position_ned_ = current_position_ned_;
     target_position_ned_.at(2) = -altitude_m;
+    // 地面起飛鎖定當下航向：舊行為在目標航向未設定時送出 yaw=0，起飛後
+    // 機頭會轉向正北。空中重送 TAKEOFF 則保留目標航向，與 planner 一致。
+    if (!utils::is_valid_float(target_yaw_rad_) || is_landed_.load())
+    {
+        lock_heading_to_current_yaw();
+    }
     const auto takeoff_epoch_start = node_->now();
     flight_state_.store(FlightState::TAKEOFF);
     takeoff_start_time_ = takeoff_epoch_start;
@@ -268,9 +278,22 @@ bool BasicController::takeoff(float altitude_m)
     trajectory_setpoint_pending_.store(true);
     altitude_log_counter_ = 0;
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                "Takeoff to %.2f meters (target_system=%d)",
-                altitude_m, target_system_);
+                "Takeoff to %.2f meters, heading %.1f deg (target_system=%d)",
+                altitude_m,
+                static_cast<double>(target_yaw_rad_ / YAW_DEG_TO_RAD),
+                target_system_);
     return true;
+}
+
+void BasicController::lock_heading_to_current_yaw()
+{
+    float heading_rad = current_yaw_rad_.load();
+    if (!utils::is_valid_float(heading_rad))
+    {
+        heading_rad = 0.0F;
+    }
+    target_yaw_rad_ = wrap_yaw_rad(heading_rad);
+    commanded_yaw_rad_ = target_yaw_rad_;
 }
 
 bool BasicController::hold_position(float duration_s)
@@ -616,13 +639,11 @@ bool BasicController::rotate_yaw(float degrees)
         return false;
     }
 
-    constexpr float PI = 3.14159265358979323846F;
-    constexpr float TWO_PI = 2.0F * PI;
-    constexpr float DEG_TO_RAD = PI / 180.0F;
-    const float delta_rad = degrees * DEG_TO_RAD;
+    const float delta_rad = degrees * YAW_DEG_TO_RAD;
 
     // YAW 為相對目前航向的命令。PX4 NED yaw 的正方向是順時針，
     // 與 move_forward/move_right 使用的 NED 幾何一致，因此使用 +=。
+    // 累加在最終目標而非逼近中的送出值，與 planner 的 target yaw 同基準。
     if (!utils::is_valid_float(target_yaw_rad_))
     {
         target_yaw_rad_ = current_yaw_rad_.load();
@@ -631,18 +652,15 @@ bool BasicController::rotate_yaw(float degrees)
             target_yaw_rad_ = 0.0F;
         }
     }
-    target_yaw_rad_ += delta_rad;
-    target_yaw_rad_ = std::fmod(target_yaw_rad_ + PI, TWO_PI);
-    if (target_yaw_rad_ < 0.0F)
-    {
-        target_yaw_rad_ += TWO_PI;
-    }
-    target_yaw_rad_ -= PI;
-    trajectory_setpoint_pending_.store(true);
+    target_yaw_rad_ = wrap_yaw_rad(target_yaw_rad_ + delta_rad);
+    // 不設定 pending：未到達目標時 should_publish_trajectory_setpoint()
+    // 會逐週期重送，位置沿用上一筆已送出的 setpoint。
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                "Yaw rotation %.1f deg, target yaw: %.1f deg (target_system=%d)",
-                degrees, target_yaw_rad_ / DEG_TO_RAD, target_system_);
+                "Yaw rotation %.1f deg, target yaw: %.1f deg at %.1f deg/s "
+                "(target_system=%d)",
+                degrees, target_yaw_rad_ / YAW_DEG_TO_RAD,
+                get_yaw_rate_limit_deg_s(), target_system_);
     return true;
 }
 
@@ -661,20 +679,84 @@ bool BasicController::set_absolute_yaw(float degrees)
         return false;
     }
 
-    constexpr float PI = 3.14159265358979323846F;
-    constexpr float TWO_PI = 2.0F * PI;
-    constexpr float DEG_TO_RAD = PI / 180.0F;
-    target_yaw_rad_ = std::fmod(degrees * DEG_TO_RAD + PI, TWO_PI);
-    if (target_yaw_rad_ < 0.0F)
-    {
-        target_yaw_rad_ += TWO_PI;
-    }
-    target_yaw_rad_ -= PI;
+    target_yaw_rad_ = wrap_yaw_rad(degrees * YAW_DEG_TO_RAD);
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
-                "Absolute yaw target %.1f deg (target_system=%d)",
-                target_yaw_rad_ / DEG_TO_RAD, target_system_);
+                "Absolute yaw target %.1f deg at %.1f deg/s (target_system=%d)",
+                target_yaw_rad_ / YAW_DEG_TO_RAD,
+                get_yaw_rate_limit_deg_s(), target_system_);
     return true;
+}
+
+bool BasicController::set_yaw_rate_limit(
+    const float rate_deg_s, const float control_period_s)
+{
+    if (!utils::is_valid_float(rate_deg_s) ||
+        !utils::is_valid_float(control_period_s) ||
+        static_cast<double>(rate_deg_s) < MIN_YAW_RATE_LIMIT_DEG_S ||
+        static_cast<double>(rate_deg_s) > MAX_YAW_RATE_LIMIT_DEG_S ||
+        control_period_s <= 0.0F)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "Yaw rate limit %.3f deg/s or control period %.3f s invalid; "
+                     "keeping %.1f deg/s",
+                     static_cast<double>(rate_deg_s),
+                     static_cast<double>(control_period_s),
+                     static_cast<double>(get_yaw_rate_limit_deg_s()));
+        return false;
+    }
+
+    yaw_rate_limit_rad_s_ = rate_deg_s * YAW_DEG_TO_RAD;
+    yaw_slew_period_s_ = control_period_s;
+    return true;
+}
+
+float BasicController::get_yaw_rate_limit_deg_s() const
+{
+    return yaw_rate_limit_rad_s_ / YAW_DEG_TO_RAD;
+}
+
+bool BasicController::is_yaw_slew_pending() const
+{
+    if (!utils::is_valid_float(target_yaw_rad_))
+    {
+        return false;
+    }
+    if (!utils::is_valid_float(commanded_yaw_rad_))
+    {
+        return true;
+    }
+    return is_yaw_short_of_target(commanded_yaw_rad_, target_yaw_rad_);
+}
+
+YawSlewStep BasicController::advance_commanded_yaw()
+{
+    if (!utils::is_valid_float(commanded_yaw_rad_))
+    {
+        const float current_yaw = current_yaw_rad_.load();
+        commanded_yaw_rad_ = utils::is_valid_float(current_yaw)
+            ? wrap_yaw_rad(current_yaw)
+            : 0.0F;
+    }
+    // 目標未設定時鎖定目前送出航向；舊行為退回 0 會讓機頭轉向正北。
+    if (!utils::is_valid_float(target_yaw_rad_))
+    {
+        target_yaw_rad_ = commanded_yaw_rad_;
+    }
+
+    YawSlewStep step = step_yaw_toward(
+        commanded_yaw_rad_, target_yaw_rad_,
+        yaw_rate_limit_rad_s_, yaw_slew_period_s_);
+    if (!step.is_valid)
+    {
+        // 正常情況不會發生（輸入皆已檢查）；保持目前送出航向且不給前饋。
+        step.yaw_rad = commanded_yaw_rad_;
+        step.yawspeed_rad_s = 0.0F;
+        step.is_converged = true;
+        step.is_valid = true;
+    }
+    commanded_yaw_rad_ = step.yaw_rad;
+    return step;
 }
 
 bool BasicController::set_ned_target(float x, float y, float z, float yaw_deg)
@@ -952,6 +1034,13 @@ void BasicController::publish_control_commands()
         return;
     }
 
+    // 只因偏航逼近而重送時，位置必須維持上一筆已送出的 setpoint；
+    // 狀態處理函式使用的 target_position_ned_ 在軌跡完成後可能仍是舊目標。
+    const bool is_yaw_only_refresh =
+        !trajectory_setpoint_pending_.load() &&
+        !trajectory_setpoint_active_.load() &&
+        has_last_setpoint_position_;
+
     auto msg = px4_msgs::msg::TrajectorySetpoint();
     msg.timestamp = timestamp;
     const auto hold_position = get_safe_hold_position();
@@ -964,7 +1053,6 @@ void BasicController::publish_control_commands()
         msg.acceleration[index] = 0.0F;
         msg.jerk[index] = 0.0F;
     }
-    msg.yaw = 0.0F;
     msg.yawspeed = 0.0F;
 
     switch (current_state)
@@ -1032,10 +1120,17 @@ void BasicController::publish_control_commands()
             sample_result == TimedTrajectorySampleResult::COMPLETED;
     }
 
-    if (utils::is_valid_float(target_yaw_rad_))
+    if (is_yaw_only_refresh)
     {
-        msg.yaw = target_yaw_rad_;
+        msg.position[0] = last_setpoint_position_ned_[0];
+        msg.position[1] = last_setpoint_position_ned_[1];
+        msg.position[2] = last_setpoint_position_ned_[2];
     }
+
+    // PX4 Offboard 不套用 MPC_YAWRAUTO_MAX，因此由此處限速逼近並給前饋。
+    const YawSlewStep yaw_step = advance_commanded_yaw();
+    msg.yaw = yaw_step.yaw_rad;
+    msg.yawspeed = yaw_step.yawspeed_rad_s;
 
     for (std::size_t index = 0U; index < 3U; ++index)
     {
@@ -1058,7 +1153,14 @@ void BasicController::publish_control_commands()
     }
     if (!utils::is_valid_float(msg.yaw))
     {
-        msg.yaw = 0.0F;
+        // 防呆值使用目前航向而非 0，避免機頭被拉向正北。
+        msg.yaw = current_yaw_rad_.load();
+        if (!utils::is_valid_float(msg.yaw))
+        {
+            msg.yaw = 0.0F;
+        }
+        msg.yawspeed = 0.0F;
+        commanded_yaw_rad_ = msg.yaw;
     }
     if (!utils::is_valid_float(msg.yawspeed))
     {
@@ -1067,6 +1169,8 @@ void BasicController::publish_control_commands()
 
     trajectory_setpoint_pub_->publish(msg);
     trajectory_setpoint_pending_.store(false);
+    last_setpoint_position_ned_ = {msg.position[0], msg.position[1], msg.position[2]};
+    has_last_setpoint_position_ = true;
 
     if (trajectory_completed &&
         complete_timed_trajectory(sampled_trajectory_id))
@@ -1876,8 +1980,10 @@ bool BasicController::should_publish_trajectory_setpoint() const
         return false;
     }
 
+    // 偏航未到達目標時逐週期重送，讓 PX4 收到限速後的中間航向。
     return trajectory_setpoint_pending_.load() ||
-        trajectory_setpoint_active_.load();
+        trajectory_setpoint_active_.load() ||
+        is_yaw_slew_pending();
 }
 
 }  // namespace controllers

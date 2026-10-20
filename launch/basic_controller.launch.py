@@ -118,6 +118,9 @@ def launch_nodes(context, *args, **kwargs):
                     "target_altitude_m")},
                 {"hover_duration_s": LaunchConfiguration(
                     "hover_duration_s")},
+                {"yaw_rate_limit_deg_s": ParameterValue(
+                    LaunchConfiguration("yaw_rate_limit_deg_s"),
+                    value_type=float)},
                 {"target_system": i},
                 {"agent_namespace": agent_ns},
             ],
@@ -281,6 +284,12 @@ def generate_launch_description():
             "hover_duration_s",
             default_value="3.0",
             description="BasicController 預設懸停時間（秒）"),
+        DeclareLaunchArgument(
+            "yaw_rate_limit_deg_s",
+            default_value="30.0",
+            description=(
+                "BasicController 偏航角速率上限（度/秒，1～180）；"
+                "PX4 Offboard 不套用 MPC_YAWRAUTO_MAX，需小於等於 MC_YAWRATE_MAX")),
         # 舊版 entrypoint 仍會傳入此參數；保留 launch 介面相容性，但
         # 不讀取、不傳給 BasicController，也不再提供自動啟動流程。
         DeclareLaunchArgument(

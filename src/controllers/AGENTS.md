@@ -10,6 +10,7 @@
 |------|------|
 | `BasicController.hpp/.cpp` | 實作 `core::IBasicFlightController`，透過 PX4 Offboard 控制無人機；內含飛行狀態機 `FlightState` |
 | `Px4LinkFreshness.hpp` | 純邏輯：PX4 狀態新鮮度（單調時鐘）與 Offboard 輸出持續／停止決策 |
+| `YawSlewLimiter.hpp` | 純邏輯：偏航角正規化、最短角度與逐週期限速逼近（含 yawspeed 前饋） |
 | `AgentCommandHandler.hpp/.cpp` | 訂閱 `/{agent_namespace}/command` 與 `/uav_all_agent/command`，解析命令字串後以 callback 交回節點執行 |
 
 ## 核心原則

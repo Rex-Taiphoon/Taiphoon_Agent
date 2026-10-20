@@ -29,6 +29,7 @@
 #include "controllers/FlightState.hpp"
 #include "controllers/FlightStateResolver.hpp"
 #include "controllers/Px4LinkFreshness.hpp"
+#include "controllers/YawSlewLimiter.hpp"
 
 namespace taiphoon
 {
@@ -37,6 +38,9 @@ namespace controllers
 
 /// 進入 Offboard 前必須完成的 OffboardControlMode 心跳數。
 constexpr uint32_t OFFBOARD_PRESTREAM_COUNT = 10U;
+
+/// 預設控制週期（秒），對應節點 10 Hz 控制迴圈；偏航逼近每次推進此時間
+constexpr float DEFAULT_CONTROL_PERIOD_S = 0.1F;
 
 /// 模式切換後 VehicleCommand 回應超時 (毫秒)
 constexpr int VEHICLE_CMD_ECHO_TIMEOUT_MS = 3000;
@@ -129,7 +133,15 @@ public:
     /** @brief 發送 Disarm (上鎖) 命令 */
     bool disarm() override;
 
-    /** @brief 起飛至指定高度 (公尺) */
+    /**
+     * @brief 起飛至指定高度 (公尺)
+     *
+     * 地面起飛（PX4 回報落地或尚未設定目標航向）時鎖定當下航向；
+     * 空中重送 TAKEOFF 保留既有目標航向，避免與 planner 的 target yaw 分歧。
+     *
+     * @param altitude_m 起飛高度 (公尺)，必須為正
+     * @return true 起飛命令設定成功
+     */
     bool takeoff(float altitude_m) override;
 
     /** @brief 在空中停留指定秒數 */
@@ -220,7 +232,9 @@ public:
     /**
      * @brief 旋轉至指定偏航角 (相對目前方向)
      *
-     * 正值為順時針旋轉。角度以度為單位，內部轉為弧度。
+     * 正值為順時針旋轉。角度累加在保存的目標航向上（與 ego_swarm_planner
+     * 的 target yaw 相同基準）；實際送出的 yaw 由控制迴圈以
+     * set_yaw_rate_limit() 設定的角速率沿最短角度逼近。
      *
      * @param degrees 旋轉角度 (度)
      * @return true 旋轉命令設定成功
@@ -231,12 +245,28 @@ public:
      * @brief 設定絕對偏航角，不改變目前的位置目標
      *
      * 供 MOVE_POINT 的 yaw 欄位使用；與 rotate_yaw() 的相對角度
-     * 語意不同。PX4 NED yaw 以順時針為正。
+     * 語意不同。PX4 NED yaw 以順時針為正；送出時同樣限速逼近。
      *
      * @param degrees 絕對偏航角 (度)
      * @return true 目標設定成功
      */
     bool set_absolute_yaw(float degrees);
+
+    /**
+     * @brief 設定偏航角速率上限與每次 publish_control_commands() 代表的控制週期
+     *
+     * @param rate_deg_s 角速率上限（度/秒），必須介於
+     *        MIN_YAW_RATE_LIMIT_DEG_S 與 MAX_YAW_RATE_LIMIT_DEG_S
+     * @param control_period_s 控制週期（秒），必須大於 0
+     * @return true 設定成功；false 參數非法並保留原設定
+     */
+    bool set_yaw_rate_limit(float rate_deg_s, float control_period_s);
+
+    /**
+     * @brief 取得目前偏航角速率上限
+     * @return 角速率上限（度/秒）
+     */
+    float get_yaw_rate_limit_deg_s() const;
 
     /**
      * @brief 設定 NED 絕對座標目標位置與航向
@@ -624,6 +654,29 @@ private:
     bool is_timed_trajectory_allowed_in_current_epoch(
         const TimedTrajectory& trajectory) const;
 
+    /**
+     * @brief 將目標與送出偏航鎖定在目前航向
+     *
+     * 地面起飛使用：避免沿用 NaN 防呆（北）或上一趟飛行留下的舊目標航向。
+     */
+    void lock_heading_to_current_yaw();
+
+    /**
+     * @brief 判斷送出偏航是否尚未到達目標，需要持續重送設定點
+     * @return true 目標航向有效且送出偏航尚未初始化或未到達
+     */
+    bool is_yaw_slew_pending() const;
+
+    /**
+     * @brief 推進本控制週期的送出偏航
+     *
+     * 送出偏航未初始化時由目前航向開始；目標航向未設定時鎖定為送出偏航，
+     * 不使用 0（北）作為防呆值。
+     *
+     * @return 本週期 PX4 yaw 與 yawspeed 前饋
+     */
+    YawSlewStep advance_commanded_yaw();
+
     // ==================== 成員變數 ====================
 
     /// ROS2 節點指標
@@ -732,8 +785,25 @@ private:
     /// Offboard 控制已停止旗標 (RTL 落地後)
     bool has_offboard_stopped_{false};
 
-    /// 目標偏航角 (弧度)，NaN 表示不控制偏航
+    /// 目標偏航角 (弧度)：YAW／MOVE_POINT 的最終航向與相對 YAW 的累加基準；
+    /// NaN 表示尚未鎖定，送出時以目前航向補上
     float target_yaw_rad_{std::numeric_limits<float>::quiet_NaN()};
+
+    /// 實際送出給 PX4 的偏航角 (弧度)，每週期限速逼近 target_yaw_rad_；
+    /// NaN 表示需由目前航向重新初始化（Offboard session 停止後）
+    float commanded_yaw_rad_{std::numeric_limits<float>::quiet_NaN()};
+
+    /// 偏航角速率上限 (弧度/秒)
+    float yaw_rate_limit_rad_s_{
+        static_cast<float>(DEFAULT_YAW_RATE_LIMIT_DEG_S) * YAW_DEG_TO_RAD};
+
+    /// 每次 publish_control_commands() 推進的偏航逼近時間 (秒)
+    float yaw_slew_period_s_{DEFAULT_CONTROL_PERIOD_S};
+
+    /// 上一筆已送出的 TrajectorySetpoint 位置；YAW 純旋轉重送時沿用，
+    /// 因為軌跡完成後 target_position_ned_ 可能仍是舊目標
+    std::array<float, 3> last_setpoint_position_ned_{0.0F, 0.0F, 0.0F};
+    bool has_last_setpoint_position_{false};
 
     /// Hold 模式命令已發送旗標
     bool hold_cmd_sent_{false};

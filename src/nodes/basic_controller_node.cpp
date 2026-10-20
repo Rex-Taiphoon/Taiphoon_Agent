@@ -40,6 +40,8 @@ BasicControllerNode::BasicControllerNode()
     this->declare_parameter<double>("state_publish_rate_hz", DEFAULT_STATE_PUBLISH_RATE_HZ);
     this->declare_parameter<double>("position_deviation_threshold_m",
                                     DEFAULT_POSITION_DEVIATION_THRESHOLD_M);
+    this->declare_parameter<double>("yaw_rate_limit_deg_s",
+                                    controllers::DEFAULT_YAW_RATE_LIMIT_DEG_S);
 
     target_altitude_m_ = this->get_parameter("target_altitude_m").as_double();
     hover_duration_s_ = this->get_parameter("hover_duration_s").as_double();
@@ -84,6 +86,32 @@ BasicControllerNode::BasicControllerNode()
         RCLCPP_ERROR(this->get_logger(), "Controller init failed");
         return;
     }
+
+    // --- 偏航角速率上限：PX4 Offboard 不套用 MPC_YAWRAUTO_MAX，由 Agent 限速 ---
+    const double requested_yaw_rate_deg_s =
+        this->get_parameter("yaw_rate_limit_deg_s").as_double();
+    double yaw_rate_limit_deg_s = controllers::DEFAULT_YAW_RATE_LIMIT_DEG_S;
+    if (controllers::normalize_yaw_rate_limit_deg_s(
+            requested_yaw_rate_deg_s, yaw_rate_limit_deg_s) !=
+        controllers::YawRateLimitStatus::ACCEPTED)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Requested yaw rate limit %.3f deg/s is invalid or outside "
+                    "[%.1f, %.1f]; using %.1f deg/s",
+                    requested_yaw_rate_deg_s,
+                    controllers::MIN_YAW_RATE_LIMIT_DEG_S,
+                    controllers::MAX_YAW_RATE_LIMIT_DEG_S,
+                    yaw_rate_limit_deg_s);
+    }
+    if (!controller_->set_yaw_rate_limit(
+            static_cast<float>(yaw_rate_limit_deg_s),
+            static_cast<float>(1.0 / CONTROL_LOOP_RATE_HZ)))
+    {
+        RCLCPP_ERROR(this->get_logger(), "Yaw rate limit configuration failed");
+        return;
+    }
+    RCLCPP_INFO(this->get_logger(), "Yaw rate limit %.1f deg/s",
+                yaw_rate_limit_deg_s);
 
     // --- 初始化位置安全監控器 ---
     position_safety_monitor_ = safety::PositionSafetyMonitor(

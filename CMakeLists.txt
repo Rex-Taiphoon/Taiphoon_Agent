@@ -384,6 +384,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 偏航設定點限速逼近純邏輯測試
+  ament_add_gtest(test_yaw_slew_limiter
+    test/yaw_slew_limiter_test.cpp
+  )
+
+  target_include_directories(test_yaw_slew_limiter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # 同儕主機時鐘差診斷估計測試
   ament_add_gtest(test_peer_clock_skew_monitor
     test/peer_clock_skew_monitor_test.cpp

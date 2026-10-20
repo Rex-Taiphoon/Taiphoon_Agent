@@ -75,8 +75,8 @@ ros2 run taiphoon_agent formation_node --ros-args \
 | `MOVE_RIGHT` | `MOVE_RIGHT [距離]` | 向右移動指定距離（公尺） |
 | `MOVE_UP` | `MOVE_UP [距離]` | 向上移動指定距離（公尺），相對位移 |
 | `MOVE_DOWN` | `MOVE_DOWN [距離]` | 向下移動指定距離（公尺），最低不低於 1m |
-| `YAW` | `YAW [角度]` | 順時針旋轉指定角度（度），相對目前方向 |
-| `MOVE_POINT` | `MOVE_POINT x y z yaw` | 移動至指定 NED 絕對位置（x/y/z/yaw） |
+| `YAW` | `YAW [角度]` | 順時針旋轉指定角度（度），累加到目標航向；以 `yaw_rate_limit_deg_s`（預設 30 deg/s）限速轉向 |
+| `MOVE_POINT` | `MOVE_POINT x y z yaw` | 移動至指定 NED 絕對位置（x/y/z/yaw）；yaw 同樣限速轉向 |
 
 ### 編隊命令（FormationNode 處理，僅限 `/uav_all_agent/command`）
 
@@ -160,8 +160,11 @@ source install/setup.bash
 ```bash
 ros2 run taiphoon_agent basic_controller --ros-args \
     -p target_altitude_m:=5.0 \
-    -p hover_duration_s:=10.0
+    -p hover_duration_s:=10.0 \
+    -p yaw_rate_limit_deg_s:=30.0
 ```
+
+Launch 也接受同名參數，例如 `ros2 launch taiphoon_agent basic_controller.launch.py yaw_rate_limit_deg_s:=45.0`。
 
 ### FormationNode 參數命令列
 
@@ -217,6 +220,37 @@ BasicController 以 PX4 的 `VehicleStatus` 確認 Offboard 狀態，並以 `Veh
 中止、未收到與時間倒退）；`test/basic_controller_setpoint_test.cpp` 以真實等待確認 3 秒無狀態
 仍維持 Offboard、超過 5 秒停止；SITL 以 `basic_controller_offboard_validation.sh` 與
 `dual_agent_regression_sitl_validation.sh --count 3`（三機）驗證。
+
+## 偏航限速與起飛航向
+
+**背景：** 實機試飛發現兩個偏航問題。(1) 起飛後機頭自動轉向正北：目標航向尚未設定時，
+TrajectorySetpoint 的 yaw 以 0 送出。(2) YAW 命令轉向過急造成瞬間拉高：yaw setpoint 一次
+跳到最終角度，PX4 Offboard 位置模式不套用 `MPC_YAWRAUTO_MAX`，以 `MC_YAWRATE_MAX` 全速
+追趕；偏航飽和時 Airmode 會提高總推力換取偏航權限。
+
+**行為（`controllers/YawSlewLimiter.hpp`，純邏輯）：**
+
+| 情況 | 行為 |
+|---|---|
+| 地面起飛（PX4 回報落地或尚未設定目標航向） | 目標與送出航向都鎖定為當下航向，機頭不轉向 |
+| 空中重送 `TAKEOFF` | 保留既有目標航向，與 planner 的 target yaw 一致 |
+| `YAW`／`MOVE_POINT` yaw | 累加或設定最終目標航向；每個 10 Hz 控制週期沿最短角度推進 `yaw_rate_limit_deg_s × 0.1 s`，`yawspeed` 填入前饋，最後一步送出目標並把前饋歸零 |
+| 偏航未到達且沒有軌跡 | 逐週期重送 setpoint，位置沿用上一筆已送出的 setpoint（不使用可能過期的移動目標） |
+| 目標航向未設定 | 防呆值為目前航向，不再送 0（正北） |
+| Offboard 中斷後重新進入 | 送出航向從實際航向重新開始，限速轉回目標航向，不會瞬間跳轉 |
+| 正好相差 180 度 | 取順時針，與 YAW 正方向一致 |
+
+預設 30 deg/s 時，`YAW 90` 約需 3 秒。
+
+**實機檢查（PX4 參數）：**
+
+- `MC_AIRMODE`：2（Roll/Pitch/Yaw）在偏航飽和時會提高總推力，造成瞬間拉高；建議 0 或 1。
+- `MC_YAWRATE_MAX`：Offboard 位置模式的偏航角速率上限；`yaw_rate_limit_deg_s` 應小於等於此值。
+
+**驗證：** `test/yaw_slew_limiter_test.cpp`（正規化、最短路徑、跨 ±180 度、收斂與參數防呆）；
+`test/basic_controller_setpoint_test.cpp`（起飛鎖航向、限速逼近、連續 YAW 累加、重入 Offboard、
+二次起飛重鎖）；`test/basic_controller_trajectory_test.cpp`（軌跡完成後 YAW 維持終點）；SITL 以
+`dual_agent_regression_sitl_validation.sh --count 3` 的 yaw 步驟量測轉向時間、峰值角速率與高度偏差。
 
 ## 預期行為（編隊）
 

@@ -57,6 +57,9 @@ class MultiAgentRegression(Node):
         self.agent_ids = tuple(range(1, args.agents + 1))
         self.states: Dict[int, AgentState] = {}
         self.yaw_deg: Dict[int, float] = {}
+        # YAW 步驟期間記錄 (PX4 時間戳秒, yaw 度)，用來估計轉向角速率。
+        self.yaw_trace: Optional[List[Tuple[float, float]]] = None
+        self.yaw_trace_agent = 2
         self.reasons: Dict[int, str] = {}
         self.reference: Optional[Tuple[float, float]] = None
         self.ground_altitude_m: Dict[int, float] = {}
@@ -104,6 +107,10 @@ class MultiAgentRegression(Node):
     def attitude_cb(self, msg: AgentAttitude, agent_id: int) -> None:
         if all(math.isfinite(float(v)) for v in msg.q):
             self.yaw_deg[agent_id] = quaternion_yaw_deg(list(msg.q))
+            if (self.yaw_trace is not None and
+                    agent_id == self.yaw_trace_agent):
+                stamp_s = msg.stamp.sec + msg.stamp.nanosec * 1.0e-9
+                self.yaw_trace.append((stamp_s, self.yaw_deg[agent_id]))
 
     def status_cb(self, msg: PlannerStatus, agent_id: int) -> None:
         self.reasons[agent_id] = msg.reason
@@ -254,25 +261,71 @@ class MultiAgentRegression(Node):
             f"others_drift_m={others} "
             f"uav_1_reason='{self.reasons.get(1, '')}'")
 
+    @staticmethod
+    def peak_yaw_rate_deg_s(trace: List[Tuple[float, float]],
+                            window_s: float) -> float:
+        """以 window_s 秒滑動視窗估計峰值偏航角速率，降低 10 Hz 取樣抖動。"""
+        peak = 0.0
+        start = 0
+        for end in range(1, len(trace)):
+            while (start < end and
+                   trace[end][0] - trace[start + 1][0] >= window_s):
+                start += 1
+            elapsed = trace[end][0] - trace[start][0]
+            if elapsed < window_s:
+                continue
+            swept = sum(wrap_degrees(trace[i][1] - trace[i - 1][1])
+                        for i in range(start + 1, end + 1))
+            peak = max(peak, abs(swept) / elapsed)
+        return peak
+
     def step_yaw(self) -> bool:
         start_yaw = self.yaw_deg[2]
         start_altitude = self.position(2)[2]
+        self.yaw_trace = []
+        command_time = time.monotonic()
         self.send_agent(2, f"YAW {self.args.yaw_deg}")
         max_altitude_deviation = 0.0
+        reached_time: Optional[float] = None
 
         def rotated() -> bool:
-            nonlocal max_altitude_deviation
+            nonlocal max_altitude_deviation, reached_time
             max_altitude_deviation = max(
                 max_altitude_deviation,
                 abs(self.position(2)[2] - start_altitude))
             change = wrap_degrees(self.yaw_deg[2] - start_yaw)
-            return abs(change - self.args.yaw_deg) <= 5.0
+            is_reached = abs(change - self.args.yaw_deg) <= 5.0
+            if is_reached and reached_time is None:
+                reached_time = time.monotonic()
+            return is_reached
 
-        passed = self.wait_until(rotated, 20.0, hold_s=1.0)
+        passed = self.wait_until(rotated, 30.0, hold_s=1.0)
         change = wrap_degrees(self.yaw_deg[2] - start_yaw)
+        trace = self.yaw_trace
+        self.yaw_trace = None
+        if trace:
+            # 保留轉向軌跡供離線檢查 PX4 追蹤暫態（相對時間秒, yaw 度）。
+            origin = trace[0][0]
+            samples = " ".join(f"{t - origin:.2f}:{yaw:.1f}" for t, yaw in trace)
+            print(f"TRACE_YAW agent={self.yaw_trace_agent} {samples}", flush=True)
+        peak_rate = self.peak_yaw_rate_deg_s(trace, 0.5)
+        duration = (reached_time - command_time
+                    if reached_time is not None else math.nan)
+        # 限速的主要證據是轉向時間：到達容許誤差內至少需理論時間的 80%
+        # （瞬間跳轉時 PX4 以 MC_YAWRATE_MAX 追趕，遠短於此）。峰值角速率只作
+        # 上限防呆：SIH 實測 PX4 起步落後約 10 度後以約 1.5 倍限速追趕，故取 2 倍。
+        limit = self.args.yaw_rate_limit_deg_s
+        minimum_duration = 0.8 * max(abs(self.args.yaw_deg) - 5.0, 0.0) / limit
+        duration_ok = math.isfinite(duration) and duration >= minimum_duration
+        rate_ok = peak_rate <= limit * 2.0
+        altitude_ok = max_altitude_deviation <= self.args.max_yaw_altitude_deviation_m
         return self.record(
-            "yaw", passed,
+            "yaw", passed and duration_ok and rate_ok and altitude_ok,
             f"uav_2_yaw_change_deg={change:.1f} "
+            f"yaw_duration_s={duration:.2f} "
+            f"min_duration_s={minimum_duration:.2f} "
+            f"peak_yaw_rate_deg_s={peak_rate:.1f} "
+            f"yaw_rate_limit_deg_s={self.args.yaw_rate_limit_deg_s} "
             f"max_altitude_deviation_m={max_altitude_deviation:.3f}")
 
     def wait_formation_converged(self, timeout_s: float) -> bool:
@@ -407,6 +460,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hover-s", type=float, default=10.0)
     parser.add_argument("--move-m", type=float, default=5.0)
     parser.add_argument("--yaw-deg", type=float, default=90.0)
+    # 需與 Agent 的 yaw_rate_limit_deg_s 參數一致（預設 30 deg/s）。
+    parser.add_argument("--yaw-rate-limit-deg-s", type=float, default=30.0)
+    parser.add_argument("--max-yaw-altitude-deviation-m", type=float,
+                        default=0.5)
     parser.add_argument("--formation-spacing-m", type=float, default=4.0)
     parser.add_argument("--formation-altitude-m", type=float, default=10.0)
     parser.add_argument("--min-distance-m", type=float, default=2.0)

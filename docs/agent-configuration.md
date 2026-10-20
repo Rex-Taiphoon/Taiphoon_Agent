@@ -15,6 +15,7 @@
 | `target_system` | int | 1 | PX4 MAVLink 系統 ID |
 | `agent_namespace` | string | uav_1_agent | Agent 命令命名空間 |
 | `state_publish_rate_hz` | double | 10.0 | AgentState／AgentAttitude 名目發布頻率（Hz）；非法值或低於 10 時固定使用 10 Hz |
+| `yaw_rate_limit_deg_s` | double | 30.0 | YAW／MOVE_POINT 偏航角速率上限（度/秒）；每個 10 Hz 控制週期沿最短角度推進並填入 `yawspeed` 前饋。合法範圍 1～180，NaN／非正值改用 30 並 WARN，超出範圍夾到邊界。PX4 Offboard 不套用 `MPC_YAWRAUTO_MAX`，此值應小於等於 PX4 `MC_YAWRATE_MAX`；launch 參數同名，容器部署以環境變數 `BASIC_CONTROLLER_YAW_RATE_LIMIT_DEG_S` 設定 |
 | `collision_safety_margin_m` | double | 3.0 | 舊觀測式防撞參數；EGO-Swarm 取代後不作為新的規劃契約 |
 | `collision_peer_timeout_s` | double | 2.0 | 舊觀測式防撞參數；EGO-Swarm 取代後不作為新的規劃契約 |
 

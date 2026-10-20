@@ -19,8 +19,10 @@
 | `MOVE_RIGHT` | 依命令收到當下機頭方向向右移動 | 距離 (m) | `MOVE_RIGHT 3` |
 | `MOVE_UP` | 向上移動 | 距離 (m) | `MOVE_UP 5` |
 | `MOVE_DOWN` | 向下移動 | 距離 (m) | `MOVE_DOWN 2` |
-| `YAW` | 以目前航向為基準順時針旋轉（直接由 BasicController 發布 PX4 yaw） | 相對角度 (°) | `YAW 90` |
-| `MOVE_POINT` | 移動至指定 NED 絕對位置並設定絕對航向 | x y z yaw | `MOVE_POINT 10 5 -15 90` |
+| `YAW` | 累加到保存的目標航向並順時針旋轉；BasicController 以 `yaw_rate_limit_deg_s`（預設 30°/s）限速沿最短角度轉向 | 相對角度 (°) | `YAW 90` |
+| `MOVE_POINT` | 移動至指定 NED 絕對位置並設定絕對航向（同樣限速轉向） | x y z yaw | `MOVE_POINT 10 5 -15 90` |
+
+> 地面 `TAKEOFF` 會鎖定起飛當下的機頭航向，起飛過程不轉向。
 
 ### 編隊命令
 
