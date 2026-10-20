@@ -28,6 +28,7 @@
 #include "core/IBasicFlightController.hpp"
 #include "controllers/FlightState.hpp"
 #include "controllers/FlightStateResolver.hpp"
+#include "controllers/Px4LinkFreshness.hpp"
 
 namespace taiphoon
 {
@@ -57,9 +58,6 @@ constexpr int DEFAULT_QOS_DEPTH = 10;
 
 /// 預設目標系統 ID
 constexpr uint8_t DEFAULT_TARGET_SYSTEM = 1;
-
-/// PX4 飛行狀態資料逾時時間（毫秒）
-constexpr int PX4_STATE_TIMEOUT_MS = 2000;
 
 /**
  * @brief 可由軌跡規劃器提供的定時 B-spline 軌跡資料。
@@ -691,10 +689,10 @@ private:
     /// PX4 實際落地狀態（VehicleLandDetected.landed）
     std::atomic<bool> is_landed_{false};
 
-    /// 最新 VehicleStatus 回呼時間（ROS 時鐘奈秒）
+    /// 最新 VehicleStatus 回呼時間（單調時鐘奈秒，不受系統時間調整影響）
     std::atomic<int64_t> last_vehicle_status_ns_{0};
 
-    /// 最新 VehicleLandDetected 回呼時間（ROS 時鐘奈秒）
+    /// 最新 VehicleLandDetected 回呼時間（單調時鐘奈秒）
     std::atomic<int64_t> last_land_detected_ns_{0};
 
     /// RTL 命令已發送旗標

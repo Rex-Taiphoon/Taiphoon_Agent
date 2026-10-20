@@ -13,6 +13,7 @@
 #include "controllers/BasicController.hpp"
 #include "ego_swarm/BsplineTrajectory.hpp"
 #include "utils/math_utils.hpp"
+#include <chrono>
 #include <cmath>
 
 #include <limits>
@@ -21,6 +22,16 @@ namespace taiphoon
 {
 namespace controllers
 {
+
+namespace
+{
+/// PX4 狀態新鮮度使用單調時鐘，避免對時或手動改時間造成誤判。
+int64_t steady_now_ns()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
 
 // =============================================================================
 // 建構子
@@ -370,16 +381,11 @@ FlightStateObservation BasicController::get_flight_state_observation() const
         return observation;
     }
 
-    int64_t now_ns = node_->now().nanoseconds();
-    int64_t status_ns = last_vehicle_status_ns_.load();
-    int64_t landed_ns = last_land_detected_ns_.load();
-    constexpr int64_t PX4_STATE_TIMEOUT_NS =
-        static_cast<int64_t>(PX4_STATE_TIMEOUT_MS) * 1000000LL;
-
-    bool has_recent_status = status_ns > 0 && now_ns >= status_ns &&
-        now_ns - status_ns <= PX4_STATE_TIMEOUT_NS;
-    bool has_recent_land_detection = landed_ns > 0 && now_ns >= landed_ns &&
-        now_ns - landed_ns <= PX4_STATE_TIMEOUT_NS;
+    const int64_t now_ns = steady_now_ns();
+    const bool has_recent_status = is_px4_message_fresh(
+        last_vehicle_status_ns_.load(), now_ns, PX4_STATE_TIMEOUT_NS);
+    const bool has_recent_land_detection = is_px4_message_fresh(
+        last_land_detected_ns_.load(), now_ns, PX4_STATE_TIMEOUT_NS);
 
     observation.is_px4_state_valid =
         has_recent_status && has_recent_land_detection;
@@ -848,14 +854,33 @@ void BasicController::publish_control_commands()
     // Offboard session 成功後，任何外部模式切換都必須先關閉兩個 PX4
     // setpoint publisher。OFFBOARD_INIT 期間的非 Offboard nav_state 是
     // 預期狀態，不能在尚未送出模式命令前誤判為外部離開。
-    if (offboard_session_active_.load() && !is_px4_offboard_confirmed())
+    // 狀態只是暫時未到達時不立即停止：無線連線偶發遺失會讓 PX4 觸發
+    // Offboard 遺失 failsafe，比繼續輸出更危險。
+    if (offboard_session_active_.load())
     {
-        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
-                    "PX4 left Offboard or VehicleStatus became stale; "
-                    "stopping Offboard output");
-        stop_offboard_session();
-        flight_state_.store(FlightState::IDLE);
-        has_offboard_stopped_ = true;
+        const auto decision = evaluate_offboard_output(
+            last_vehicle_status_ns_.load(), px4_nav_state_.load(),
+            steady_now_ns(), PX4_STATE_TIMEOUT_NS);
+        if (decision != OffboardOutputDecision::CONTINUE)
+        {
+            if (decision == OffboardOutputDecision::STOP_LEFT_OFFBOARD)
+            {
+                RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                            "PX4 left Offboard (nav_state=%u); "
+                            "stopping Offboard output",
+                            static_cast<unsigned int>(px4_nav_state_.load()));
+            }
+            else
+            {
+                RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                            "VehicleStatus not received for more than %d ms; "
+                            "stopping Offboard output",
+                            PX4_STATE_TIMEOUT_MS);
+            }
+            stop_offboard_session();
+            flight_state_.store(FlightState::IDLE);
+            has_offboard_stopped_ = true;
+        }
     }
 
     update_command_state_from_observation();
@@ -1735,7 +1760,17 @@ void BasicController::vehicle_status_cb(const px4_msgs::msg::VehicleStatus::Shar
         clear_timed_trajectory();
     }
     px4_nav_state_.store(msg->nav_state);
-    last_vehicle_status_ns_.store(node_->now().nanoseconds());
+    const int64_t received_ns = steady_now_ns();
+    const int64_t previous_ns = last_vehicle_status_ns_.exchange(received_ns);
+    if (is_px4_status_gap_notable(previous_ns, received_ns,
+                                  PX4_STATUS_GAP_WARN_NS))
+    {
+        RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("BasicController"), *node_->get_clock(), 5000,
+            "VehicleStatus gap %.2f s (stop above %.1f s); check PX4 link quality",
+            static_cast<double>(received_ns - previous_ns) * 1.0e-9,
+            static_cast<double>(PX4_STATE_TIMEOUT_MS) * 1.0e-3);
+    }
 }
 
 void BasicController::vehicle_land_detected_cb(
@@ -1752,7 +1787,7 @@ void BasicController::vehicle_land_detected_cb(
     {
         clear_timed_trajectory();
     }
-    last_land_detected_ns_.store(node_->now().nanoseconds());
+    last_land_detected_ns_.store(steady_now_ns());
 }
 
 void BasicController::update_command_state_from_observation()
@@ -1789,12 +1824,8 @@ bool BasicController::is_vehicle_status_fresh() const
         return false;
     }
 
-    const int64_t status_ns = last_vehicle_status_ns_.load();
-    const int64_t now_ns = node_->now().nanoseconds();
-    const int64_t timeout_ns =
-        static_cast<int64_t>(PX4_STATE_TIMEOUT_MS) * 1000000LL;
-    return status_ns > 0 && now_ns >= status_ns &&
-        now_ns - status_ns <= timeout_ns;
+    return is_px4_message_fresh(
+        last_vehicle_status_ns_.load(), steady_now_ns(), PX4_STATE_TIMEOUT_NS);
 }
 
 bool BasicController::is_px4_offboard_confirmed() const

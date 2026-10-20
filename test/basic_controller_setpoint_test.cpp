@@ -14,6 +14,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include "controllers/BasicController.hpp"
 #include "controllers/FlightStateResolver.hpp"
@@ -522,6 +523,42 @@ TEST_F(BasicControllerSetpointTest,
     EXPECT_EQ(offboard_control_mode_count_, 0U);
     EXPECT_GT(vehicle_command_count_, command_count_after_rtl);
     EXPECT_EQ(latest_vehicle_command_.command, 21U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       VehicleStatusGapKeepsOffboardUntilTimeoutThenStops)
+{
+    // 回歸：SITL 實測 VehicleStatus 最長間隔約 3.1 s，不得因此中止 Offboard。
+    offboard_control_mode_count_ = 0U;
+    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_ACTIVE);
+    EXPECT_GT(offboard_control_mode_count_, 0U);
+
+    // 超過 PX4_STATE_TIMEOUT_MS 仍未收到狀態才停止輸出。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        taiphoon::controllers::PX4_STATE_TIMEOUT_MS - 3200 + 300));
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::IDLE);
+
+    const auto heartbeats_after_stop = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(offboard_control_mode_count_, heartbeats_after_stop);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       LeavingOffboardStopsOutputWithoutWaitingForTimeout)
+{
+    publish_status(PX4_NAV_STATE_POSCTL);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::IDLE);
 }
 
 TEST_F(BasicControllerSetpointTest,

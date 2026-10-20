@@ -145,9 +145,12 @@ publish_command()
 {
     local topic="$1"
     local command="$2"
+    # 全體命令需等待所有訂閱者配對；只等 1 個時可能只配對到驗收監測程式，
+    # 單次發布的命令便無法送達部分 Agent。
+    local subscriptions="${3:-1}"
     docker exec -i uav_1_agent bash -lc \
         "source /opt/ros/humble/setup.bash && ros2 topic pub \
-        --wait-matching-subscriptions 1 --once ${topic} \
+        --wait-matching-subscriptions ${subscriptions} --once ${topic} \
         std_msgs/msg/String \"data: '${command}'\"" >/dev/null
 }
 
@@ -339,9 +342,10 @@ run_swarm()
          --mode 2 --agents 4 --timeout-s 90 --minimum-distance-m 3.0" &
     local monitor_pid=$!
     sleep 1
-    publish_command /uav_all_agent/command "FORMATION_CIRCLE 10 10"
+    # 4 台 Agent 各有 BasicController 與 planner 兩個訂閱者，另加驗收監測程式。
+    publish_command /uav_all_agent/command "FORMATION_CIRCLE 10 10" 9
     wait_for_formation_converged 4
-    publish_command /uav_all_agent/command "FORMATION_CANCEL"
+    publish_command /uav_all_agent/command "FORMATION_CANCEL" 9
     wait "${monitor_pid}"
 }
 

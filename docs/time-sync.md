@@ -43,7 +43,7 @@ SITL 的所有容器共用同一台主機時鐘，因此不會出現這個問題
 
 只在開機前三次更新允許跳時（`makestep 0.1 3`），之後只能以每秒 0.5 ms 以內的速度
 微調（`maxslewrate 500`）。飛行中的系統時間不會突然跳動，避免影響 BasicController
-的狀態逾時判斷與軌跡取樣。
+的軌跡取樣與同儕軌跡時間比對（PX4 狀態逾時判斷已改用單調時鐘，不受系統時間影響）。
 
 ## 介面
 
@@ -134,11 +134,12 @@ AgentTrajectory.stamp（發送端 now）──DDS──► trajectory_cb ─┤
    `bash AutoTest/scripts/time_sync_container_validation.sh <Linux 版 taiphoon_agent>`
    （Windows Git Bash 需先設定 `MSYS_NO_PATHCONV=1`）。`-x` 模式無法驗證 chrony 的實際跳時，
    此部分依 chrony 本身行為，需在樹莓派實機確認。
-3. SITL 回歸：`AutoTest/scripts/dual_agent_regression_sitl_validation.sh` 依序驗證雙機起飛懸停、
-   單機 MOVE、YAW、一字編隊、全體 MOVE、取消編隊、偏差注入與全體降落，並從 Agent 日誌確認
-   `Peer clock offset` 估計。四機編隊另用 `ego_route_planning_sitl_validation.sh --scenario swarm`。
+3. SITL 回歸：`AutoTest/scripts/dual_agent_regression_sitl_validation.sh --count 3`（最終展示以
+   三機驗收；`--count 2` 為雙機）依序驗證起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、
+   燕行隊形切換、取消編隊、偏差注入與全體降落，並從 Agent 日誌確認每對同儕的 `Peer clock offset`
+   估計。四機環形編隊另用 `ego_route_planning_sitl_validation.sh --scenario swarm`。
 4. SITL 偏差注入：發布一台不存在的同儕（agent 7）、`stamp` 早 3 秒且位於 1 km 外的終點佔位軌跡，
-   確認兩台 Agent 皆輸出 `Peer clock skew agent=7 offset=+3.000 s` WARN，且受測機不受影響。
+   確認每台 Agent 皆輸出 `Peer clock skew agent=7 offset=+3.000 s` WARN，且受測機不受影響。
 
 ## 外場操作順序
 

@@ -181,6 +181,43 @@ ros2 run taiphoon_agent formation_node --ros-args \
 3. **抵達目標高度後自動停懸**：維持高度直到秒數達標
 4. **降落（Land）**：設定目標高度為 0，降至地面後進入 IDLE
 
+## PX4 狀態新鮮度與 Offboard 中止
+
+BasicController 以 PX4 的 `VehicleStatus` 確認 Offboard 狀態，並以 `VehicleStatus`
+與 `VehicleLandDetected` 判斷 `px4_state_valid`。
+
+**背景：** PX4 以約 2 Hz 發布 `vehicle_status`。實測 Docker Desktop SITL 經 uXRCE-DDS
+到 Agent 只收到約 1.5 Hz，最長間隔 3.08 秒；原本 2 秒門檻會在狀態只是短暫遺失時就
+停止 Offboard 輸出，PX4 因 Offboard 訊號中斷觸發 failsafe（RTL）。實機飛控以 Wi-Fi UDP
+連線，同樣可能遺失封包。
+
+**判定規則（`controllers/Px4LinkFreshness.hpp`，純邏輯）：**
+
+| 情況 | 行為 |
+|---|---|
+| 收到 `VehicleStatus` 且 `nav_state` 不是 Offboard | 立即停止 Offboard 輸出並進入 IDLE（PX4 已離開 Offboard，例如遙控接管或 failsafe） |
+| `VehicleStatus` 超過 `PX4_STATE_TIMEOUT_MS`（5000 ms）未到達 | 停止 Offboard 輸出並進入 IDLE，log 標明為狀態過期 |
+| 間隔在門檻內 | 繼續輸出；間隔超過 1.5 秒時輸出節流 WARN，供外場判斷連線品質 |
+
+- 收到時間改用單調時鐘（steady clock），系統時間調整（對時、手動改時間）不會造成誤判。
+- `px4_state_valid` 使用同一門檻；`VehicleLandDetected` 約 1 Hz，5 秒可容忍連續遺失 4 筆。
+- 連線真的中斷時仍由 PX4 自身的 Offboard 遺失保護（`COM_OF_LOSS_T`）接手；Agent 端放寬門檻
+  只影響「Agent 主動停止輸出」的時機，不影響 PX4 的保護。
+
+**失效情境：**
+
+| 情境 | 結果 |
+|---|---|
+| 狀態短暫遺失（< 5 秒） | 持續 Offboard，不再誤觸發 failsafe |
+| PX4→Agent 單向中斷超過 5 秒 | Agent 停止輸出，PX4 依 Offboard 遺失保護處置 |
+| Agent→PX4 中斷 | PX4 在 `COM_OF_LOSS_T` 後依保護處置，與本修正無關 |
+| 遙控接管或 PX4 切換模式 | 收到新狀態即停止，不等待逾時 |
+
+**驗證：** `test/px4_link_freshness_test.cpp`（門檻邊界、3.1 秒間隔不中止、離開 Offboard 立即
+中止、未收到與時間倒退）；`test/basic_controller_setpoint_test.cpp` 以真實等待確認 3 秒無狀態
+仍維持 Offboard、超過 5 秒停止；SITL 以 `basic_controller_offboard_validation.sh` 與
+`dual_agent_regression_sitl_validation.sh --count 3`（三機）驗證。
+
 ## 預期行為（編隊）
 
 1. 啟動 Launch 後，每台無人機各自執行 BasicController 自動 Offboard → Arm → Takeoff

@@ -375,6 +375,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # PX4 狀態新鮮度與 Offboard 輸出決策純邏輯測試
+  ament_add_gtest(test_px4_link_freshness
+    test/px4_link_freshness_test.cpp
+  )
+
+  target_include_directories(test_px4_link_freshness PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # 同儕主機時鐘差診斷估計測試
   ament_add_gtest(test_peer_clock_skew_monitor
     test/peer_clock_skew_monitor_test.cpp

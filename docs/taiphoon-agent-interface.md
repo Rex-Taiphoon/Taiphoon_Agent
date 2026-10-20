@@ -224,7 +224,7 @@ Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 P
 | `armed` | `bool` | PX4 實際解鎖狀態 |
 | `landed` | `bool` | PX4 實際落地狀態 |
 | `px4_nav_state` | `uint8` | PX4 `VehicleStatus.nav_state` 原始值；Manual、Position、Offboard 等 PX4 原生模式由此欄位表示 |
-| `px4_state_valid` | `bool` | PX4 狀態欄位是否有效；只有此值為 `true` 時，`armed`、`landed` 與 `px4_nav_state` 才可信 |
+| `px4_state_valid` | `bool` | PX4 狀態欄位是否有效：`VehicleStatus` 與 `VehicleLandDetected` 皆在 5 秒內（單調時鐘）收到；只有此值為 `true` 時，`armed`、`landed` 與 `px4_nav_state` 才可信 |
 
 > **PX4 模式判讀**：`px4_nav_state` 不經 Agent 重新編碼，原樣對應 PX4
 > `VehicleStatus.nav_state`。GCS 應先確認 `px4_state_valid=true`，再依相同版本
