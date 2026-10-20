@@ -34,6 +34,7 @@ taiphoon_agent logs     最近日誌
 taiphoon_agent build    dev：容器內建置
 taiphoon_agent test     dev：建置與測試
 taiphoon_agent shell    dev：進入開發容器
+taiphoon_agent timesync 檢查本機主機對時狀態（實機多機）
 ```
 
 未安裝至 PATH 時加上 `./`，Windows 改用 `./taiphoon_agent.exe`。
@@ -58,6 +59,21 @@ PX4 也接入同一網路並連向對應 Agent。stop 不會移除此網路。�
 不要讓實體飛控連到模擬模式的 Agent，也不要混用相同 UAV 編號與 domain 的模擬及實機。
 ARM64 SITL 需要 Docker 的 AMD64 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
 首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
+
+## 實機多機時間同步
+
+多機飛行需要各台 Agent 主機時間一致（相差超過 1 秒時同儕軌跡會被拒收）。Linux 平台包附
+`setup_time_sync.sh`，在主機執行一次即可，不需要 QGCS 或地面站：
+
+```sh
+sudo bash setup_time_sync.sh master                # uav_1 的樹莓派：時間主機
+sudo bash setup_time_sync.sh client <uav_1 IPv4>   # 其他無人機的樹莓派
+```
+
+每次飛行先開 uav_1。`settings.ini` 的 `time_sync` 預設 `auto`：Linux 實機啟動前確認已對時
+（最多等待 60 秒，未就緒則停止啟動），Windows／macOS 實機只警告，模擬不檢查；也可設為
+`required`、`warn` 或 `off`（單機飛行）。`time_sync_max_offset_ms` 預設 50。
+`taiphoon_agent timesync` 可單獨查看對時狀態。
 
 ## 模擬與本機 Taiphoon_QGCS
 
@@ -86,7 +102,7 @@ Linux Docker Engine 的模擬維持原設定：GCS 接入 `Taiphoon_Net` 並使�
 
 設定在 Windows `%LOCALAPPDATA%\TaiphoonAgent\config`，Linux／Mac `~/.config/taiphoon_agent`。
 舊設定自動補預設值；Docker 或飛控暫時離線不會清除設定。容器 healthy 不代表可以起飛。
-進階 `settings.ini` 可設定 `domain_id`、`flight_ip`、`dds_peers`；`lan_address=auto` 每次啟動重新取得
+進階 `settings.ini` 可設定 `domain_id`、`flight_ip`、`dds_peers`、`time_sync`、`time_sync_max_offset_ms`；`lan_address=auto` 每次啟動重新取得
 位址，必要時可指定 IPv4。Linux serial 可設定 `transport=serial`、`serial_device`、`serial_baud`。
 `TAIPHOON_AGENT_HOME` 僅供使用者隔離不同設定目錄；一般操作不需要環境參數。
 

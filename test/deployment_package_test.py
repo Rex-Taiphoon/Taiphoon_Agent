@@ -23,7 +23,8 @@ def main():
     root = Path(tempfile.mkdtemp(prefix='taiphoon-package-test-'))
     for relative in ('docker/sitl-entrypoint.sh', 'Tools/agent_launcher/PACKAGE-README.md',
                      'Tools/agent_launcher/install.sh', 'Tools/agent_launcher/install.ps1',
-                     'Tools/agent_launcher/Start Taiphoon Agent.command', 'Tools/agent_launcher/package_release.py'):
+                     'Tools/agent_launcher/Start Taiphoon Agent.command', 'Tools/agent_launcher/package_release.py',
+                     'Tools/time_sync/setup_time_sync.sh'):
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / relative, destination)
@@ -82,6 +83,9 @@ def main():
                 assert not any(other_architecture in name and name.startswith('images/') for name in members)
                 if '-macos-' in path.name:
                     assert members['Start Taiphoon Agent.command'].mode & 0o111
+                    assert 'setup_time_sync.sh' not in members, 'macOS 不使用 chrony 設定腳本'
+                else:
+                    assert members['setup_time_sync.sh'].mode & 0o111, 'Linux 套件缺少主機對時腳本'
     home = root / 'home with 中文 spaces'
     home.mkdir()
     install_environment = dict(os.environ, HOME=str(home), SHELL='/bin/zsh')
@@ -92,7 +96,7 @@ def main():
     assert (home / '.local/bin/taiphoon_agent').is_file()
     assert (home / '.local/share/taiphoon_agent/images/taiphoon-agent-dev-linux-amd64.tar.gz').is_file()
     assert (home / '.zshrc').read_text().count('export PATH=') == 1, '安裝應可重複且不重複加入 PATH'
-    print('PASS: 五個自包含平台包、兩種映像、正確架構、執行權限、無獨立校驗檔')
+    print('PASS: 五個自包含平台包、兩種映像、正確架構、執行權限、Linux 對時腳本、無獨立校驗檔')
 
 
 if __name__ == '__main__':

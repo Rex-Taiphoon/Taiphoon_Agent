@@ -27,6 +27,7 @@
 | `swarm_origin_agent_index` | int | `1` | 保留的相容參數；WGS84 軌跡交換時各 Agent 以自己的固定 Home 建立 local NED |
 | `peer_trajectory_timeout_s` | double | `2.0` | 同儕未來軌跡 freshness timeout；逾時後不再交給 planner 使用 |
 | `max_peer_time_skew_s` | double | `1.0` | 同儕軌跡 message／start time 與本機 receive time 允許的最大時間偏差 |
+| `peer_clock_skew_warning_s` | double | `0.1` | 同儕主機時鐘差估計超過此值時輸出 WARN；只影響診斷，不改變規劃（見 [多機時間同步](time-sync.md)） |
 | `obstacle_cloud_timeout_s` | double | `1.0` | 局部障礙物地圖 freshness timeout；逾時後 planner 進入 HOLD |
 | `require_obstacle_cloud` | bool | `true` | 是否要求 fresh obstacle map；missing/stale 不會被當成 explicit empty |
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |

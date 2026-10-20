@@ -87,6 +87,29 @@ else:
 state.write_text(json.dumps(values))
 '''
 
+# chronyc 替身：FIXTURE_CHRONY 為 synced（預設）、unsynced、converging（第二次起才同步）或 down。
+CHRONYC_FIXTURE = r'''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['FIXTURE_HOME'])
+with (root / 'chrony_calls.jsonl').open('a') as stream:
+    stream.write(json.dumps(sys.argv[1:]) + '\n')
+mode = os.environ.get('FIXTURE_CHRONY', 'synced')
+counter = root / 'chrony_counter'
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+if mode == 'down':
+    print('506 Cannot talk to daemon', file=sys.stderr)
+    sys.exit(1)
+synced = 'C0A80165,192.168.1.101,9,1760000000.0,0.000012000,0,0,0,0,0,0.003,0.0005,4.0,Normal'
+unsynced = '00000000,,0,0.0,0.000000000,0,0,0,0,0,0,0,0,Not synchronised'
+if mode == 'unsynced' or (mode == 'converging' and count < 2):
+    print(unsynced)
+else:
+    print(synced)
+'''
+
+
 def run_cli(executable, environment, *arguments, input_text=None, expected=0):
     """執行真正的 C++ CLI，檢查回傳碼與錯誤輸出。"""
     result = subprocess.run([str(executable), *arguments], input=input_text,
@@ -94,6 +117,65 @@ def run_cli(executable, environment, *arguments, input_text=None, expected=0):
     if result.returncode != expected:
         raise AssertionError(f'{arguments}: code={result.returncode}\n{result.stdout}\n{result.stderr}')
     return result
+
+
+def count_lines(path):
+    """回傳替身紀錄檔行數；檔案不存在視為 0。"""
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+def compose_up_calls(root, before):
+    """回傳指定位置之後的 compose up 呼叫。"""
+    calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()][before:]
+    return [call for call in calls if call[0] == 'compose' and 'up' in call]
+
+
+def verify_time_sync_gate(executable, environment, root, no_chrony_fixture, settings_file):
+    """實機 start 前的對時閘門：已同步、等待收斂、未安裝、未啟動與 off／warn 策略。"""
+    result = run_cli(executable, environment, 'timesync')
+    assert '時間同步正常' in result.stdout and 'stratum 9' in result.stdout
+    result = run_cli(executable, dict(environment, FIXTURE_CHRONY='unsynced'), 'timesync', expected=1)
+    assert '時間同步未就緒' in result.stdout and 'Not synchronised' in result.stdout
+
+    # chronyd 未啟動：不等待，直接拒絕且不啟動任何服務。
+    before = count_lines(root / 'calls.jsonl')
+    result = run_cli(executable, dict(environment, FIXTURE_CHRONY='down'), 'start', expected=1)
+    assert 'chronyc 無法取得狀態' in result.stderr
+    assert not compose_up_calls(root, before)
+
+    # 未安裝 chrony：Linux 實機預設 required，拒絕啟動並指出設定腳本。
+    no_chrony = dict(environment, PATH=str(no_chrony_fixture) + os.pathsep + '/usr/bin:/bin')
+    before = count_lines(root / 'calls.jsonl')
+    result = run_cli(executable, no_chrony, 'start', expected=1)
+    assert '找不到 chronyc' in result.stderr and 'time_sync=off' in result.stderr
+    assert not compose_up_calls(root, before)
+    result = run_cli(executable, no_chrony, 'timesync', expected=1)
+    assert '找不到 chronyc' in result.stdout
+
+    # 客戶端開機後等待時間主機：第一次未同步，第二次同步後才啟動。
+    (root / 'chrony_counter').unlink(missing_ok=True)
+    before = count_lines(root / 'calls.jsonl')
+    result = run_cli(executable, dict(environment, FIXTURE_CHRONY='converging'), 'start')
+    assert '等待主機時間同步' in result.stdout and '時間同步：已同步' in result.stdout
+    assert compose_up_calls(root, before)
+    run_cli(executable, environment, 'stop')
+
+    original = settings_file.read_text()
+    assert 'time_sync=auto' in original and 'time_sync_max_offset_ms=50' in original
+    # 單機飛行可明確關閉；warn 只提示不阻擋。
+    settings_file.write_text(original.replace('time_sync=auto', 'time_sync=off'))
+    before = count_lines(root / 'calls.jsonl')
+    result = run_cli(executable, no_chrony, 'start')
+    assert '時間同步' not in result.stdout and compose_up_calls(root, before)
+    run_cli(executable, environment, 'stop')
+    settings_file.write_text(original.replace('time_sync=auto', 'time_sync=warn'))
+    result = run_cli(executable, no_chrony, 'start')
+    assert '警告：無法確認時間同步' in result.stdout
+    run_cli(executable, environment, 'stop')
+    settings_file.write_text(original.replace('time_sync=auto', 'time_sync=sometimes'))
+    result = run_cli(executable, environment, 'start', expected=1)
+    assert 'time_sync 必須是' in result.stderr
+    settings_file.write_text(original)
 
 
 def main():
@@ -121,10 +203,14 @@ def main():
     archive.write_bytes(b'test image archive')
     fixture = root / 'fixture'
     fixture.mkdir()
-    for name, text in (('docker', DOCKER_FIXTURE),):
+    for name, text in (('docker', DOCKER_FIXTURE), ('chronyc', CHRONYC_FIXTURE)):
         path = fixture / name
         path.write_text(text)
         path.chmod(0o755)
+    # 只有 Docker、沒有 chrony 的主機，用於驗證實機啟動前的對時閘門。
+    no_chrony_fixture = root / 'fixture-no-chrony'
+    no_chrony_fixture.mkdir()
+    shutil.copy2(fixture / 'docker', no_chrony_fixture / 'docker')
     environment = dict(os.environ, TAIPHOON_AGENT_HOME=str(root / 'config'), FIXTURE_HOME=str(root),
                        PATH=str(fixture) + os.pathsep + os.environ['PATH'],
                        FIXTURE_IMAGE_ID='sha256:' + 'b' * 64,
@@ -144,6 +230,7 @@ def main():
         assert not (root / 'config' / 'settings.ini').exists()
     result = run_cli(executable, environment, input_text='deploy\n1\n\n')
     assert '服務程序已啟動' in result.stdout
+    assert '時間同步：已同步：來源 192.168.1.101' in result.stdout
     config = root / 'config'
     description = yaml.safe_load((config / 'compose.yaml').read_text())
     assert description['services']['agent_1']['environment']['ENABLE_OBSTACLE_CLOUD_SIMULATOR'] == 'false'
@@ -170,6 +257,7 @@ def main():
     environment.pop('FIXTURE_LEGACY_NAME')
     run_cli(executable, environment, 'start')
     run_cli(executable, environment, 'stop')
+    verify_time_sync_gate(executable, environment, root, no_chrony_fixture, config / 'settings.ini')
     # 已保存 sim 模式遇到缺少 CLI／daemon 時保留原設定；修復後直接重新啟動。
     settings_file = config / 'settings.ini'
     settings_file.write_text(settings_file.read_text().replace('mode=deploy', 'mode=sim'))
@@ -183,7 +271,9 @@ def main():
     assert settings_file.read_bytes() == saved_settings
     # Linux Engine 模擬維持 Taiphoon_Net 原設定，不映射主機 DDS 埠。
     engine_environment = dict(environment, FIXTURE_DOCKER_OS='Ubuntu 22.04.4 LTS')
+    chrony_calls_before = count_lines(root / 'chrony_calls.jsonl')
     run_cli(executable, engine_environment)
+    assert count_lines(root / 'chrony_calls.jsonl') == chrony_calls_before, '模擬模式不應檢查主機對時'
     assert settings_file.read_bytes() == saved_settings
     assert 'px4_1' in yaml.safe_load((config / 'compose.yaml').read_text())['services']
     assert 'px4_2' not in yaml.safe_load((config / 'compose.yaml').read_text())['services']
@@ -289,7 +379,7 @@ def main():
     calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
     assert any(call[0] == 'compose' and 'down' in call for call in calls)
     assert not any('--force' in call or '-f' in call for call in calls if call[0] == 'rm')
-    print('PASS: Docker 依賴、映像識別、設定保留、關閉後清理與執行中容器保護')
+    print('PASS: Docker 依賴、映像識別、設定保留、關閉後清理、執行中容器保護與實機對時閘門')
 
 
 if __name__ == '__main__':

@@ -375,6 +375,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 同儕主機時鐘差診斷估計測試
+  ament_add_gtest(test_peer_clock_skew_monitor
+    test/peer_clock_skew_monitor_test.cpp
+  )
+
+  target_include_directories(test_peer_clock_skew_monitor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # 近距離 peer recovery planner 純 C++ 測試
   ament_add_gtest(test_peer_deconfliction_planner
     test/peer_deconfliction_planner_test.cpp

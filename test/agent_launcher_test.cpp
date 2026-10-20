@@ -7,6 +7,7 @@
 #include "launcher.hpp"
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -46,6 +47,92 @@ deployment::Settings defaults()
     return {{"mode", "deploy"}, {"agent_id", "1"}, {"count", "4"}, {"transport", "udp"},
         {"serial_device", ""}, {"serial_baud", "921600"}, {"domain_id", "0"}, {"workspace", ""},
         {"lan_address", ""}, {"dds_peers", ""}};
+}
+
+/** @brief 依 chronyc -c tracking 欄位順序組出測試資料。 */
+std::string tracking(const std::string& reference_id, const std::string& name, const std::string& stratum,
+    const std::string& offset, const std::string& leap_status)
+{
+    return reference_id + "," + name + "," + stratum + ",1760000000.123456789," + offset
+        + ",-0.000003000,0.000010000,-12.345,0.001,0.050,0.003000000,0.000500000,4.0," + leap_status + "\n";
+}
+
+/** @brief chrony 解析、判定與 time_sync 策略的正常、邊界與異常輸入。 */
+void testTimeSync()
+{
+    constexpr double MAX_OFFSET_S = 0.05;
+    const auto client = deployment::parseChronyTracking(
+        tracking("c0a80165", "192.168.1.101", "9", "0.000012345", "Normal"));
+    require(client.is_valid && client.reference_id == "C0A80165" && client.stratum == 9, "客戶端 tracking 解析錯誤");
+    const auto client_decision = deployment::evaluateTimeSync(client, MAX_OFFSET_S);
+    require(client_decision.is_ready && client_decision.reason.find("192.168.1.101") != std::string::npos,
+        "已同步客戶端未通過");
+
+    const auto master = deployment::parseChronyTracking(tracking("7F7F0101", "", "8", "0.000000000", "Normal"));
+    const auto master_decision = deployment::evaluateTimeSync(master, MAX_OFFSET_S);
+    require(master_decision.is_ready && master_decision.reason.find("本機基準") != std::string::npos,
+        "時間主機的本機基準未通過");
+
+    const auto unsynced = deployment::parseChronyTracking(
+        tracking("00000000", "", "0", "0.000000000", "Not synchronised"));
+    require(unsynced.is_valid && !deployment::evaluateTimeSync(unsynced, MAX_OFFSET_S).is_ready,
+        "未同步狀態被接受");
+    require(!deployment::evaluateTimeSync(deployment::parseChronyTracking(
+        tracking("C0A80165", "192.168.1.101", "16", "0.0", "Normal")), MAX_OFFSET_S).is_ready, "stratum 16 被接受");
+    require(deployment::evaluateTimeSync(deployment::parseChronyTracking(
+        tracking("C0A80165", "192.168.1.101", "9", "0.0", "Insert second")), MAX_OFFSET_S).is_ready,
+        "閏秒公告狀態被誤判為未同步");
+
+    require(deployment::evaluateTimeSync(deployment::parseChronyTracking(
+        tracking("C0A80165", "192.168.1.101", "9", "0.050", "Normal")), MAX_OFFSET_S).is_ready, "誤差等於門檻被拒絕");
+    require(!deployment::evaluateTimeSync(deployment::parseChronyTracking(
+        tracking("C0A80165", "192.168.1.101", "9", "0.0501", "Normal")), MAX_OFFSET_S).is_ready, "超過門檻被接受");
+    require(!deployment::evaluateTimeSync(deployment::parseChronyTracking(
+        tracking("C0A80165", "192.168.1.101", "9", "-0.060", "Normal")), MAX_OFFSET_S).is_ready, "負向誤差未取絕對值");
+
+    for (const std::string offset : {"nan", "inf", "-inf", "0.01x", ""})
+    {
+        require(!deployment::parseChronyTracking(tracking("C0A80165", "a", "9", offset, "Normal")).is_valid,
+            "非法 System time 被接受：" + offset);
+    }
+    require(!deployment::parseChronyTracking("").is_valid, "空輸出被接受");
+    require(!deployment::parseChronyTracking("C0A80165,a,9,0,0,0,0,0,0,0,0,0,Normal").is_valid, "欄位不足被接受");
+    require(!deployment::parseChronyTracking(tracking("C0A80165", "a", "9", "0.0", "Normal")
+        + tracking("C0A80165", "a", "9", "0.0", "Normal")).is_valid, "多行輸出被接受");
+    require(!deployment::parseChronyTracking(tracking("XYZ", "a", "9", "0.0", "Normal")).is_valid,
+        "非法 Reference ID 被接受");
+    require(!deployment::evaluateTimeSync(client, 0.0).is_ready, "零門檻被接受");
+    require(!deployment::evaluateTimeSync(client, std::numeric_limits<double>::quiet_NaN()).is_ready,
+        "NaN 門檻被接受");
+    require(!deployment::evaluateTimeSync(deployment::TimeSyncStatus{}, MAX_OFFSET_S).is_ready, "無效狀態被接受");
+
+    auto settings = deployment::withDefaultSettings(defaults());
+    require(settings.at("time_sync") == "auto" && settings.at("time_sync_max_offset_ms") == "50",
+        "對時設定缺少預設值");
+    deployment::validateSettings(settings);
+    require(deployment::resolveTimeSyncPolicy(settings, true) == "required", "Linux 實機未強制對時");
+    require(deployment::resolveTimeSyncPolicy(settings, false) == "warn", "非 Linux 實機未降為警告");
+    settings["time_sync"] = "off";
+    require(deployment::resolveTimeSyncPolicy(settings, true) == "off", "time_sync=off 未生效");
+    settings["time_sync"] = "required";
+    deployment::validateSettings(settings);
+    require(deployment::resolveTimeSyncPolicy(settings, false) == "required", "time_sync=required 未生效");
+    settings["mode"] = "sim";
+    require(deployment::resolveTimeSyncPolicy(settings, true) == "off", "模擬共用主機時鐘卻要求對時");
+    settings = deployment::withDefaultSettings(defaults());
+    for (const auto& invalid : {"maybe", "", "REQUIRED"})
+    {
+        settings["time_sync"] = invalid;
+        requireRejected([&settings] { deployment::validateSettings(settings); });
+    }
+    settings = deployment::withDefaultSettings(defaults());
+    for (const auto& invalid : {"0", "1001", "-1", "1.5"})
+    {
+        settings["time_sync_max_offset_ms"] = invalid;
+        requireRejected([&settings] { deployment::validateSettings(settings); });
+    }
+    settings["time_sync_max_offset_ms"] = "1000";
+    deployment::validateSettings(settings);
 }
 }
 
@@ -316,11 +403,12 @@ int main()
         require(process.code == 0 && process.output == "$(exit 5); space ' \" 中文", "argv 遭 shell 解譯");
         require(deployment::run({"/bin/sh", "-c", "exit 7"}, true).code == 7, "失敗碼未傳遞");
 #endif
+        testTimeSync();
         deployment::writeText(directory / "deploy.yaml", deploy);
         deployment::writeText(directory / "dev.yaml", dev);
         deployment::writeText(directory / "sim.yaml", sim);
         deployment::writeText(directory / "serial.yaml", serial);
-        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、本機 QGCS 單播、串列、Windows argv、程序失敗\n"
+        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、本機 QGCS 單播、串列、Windows argv、程序失敗、chrony 對時判定\n"
             << "測試產物：" << directory.u8string() << '\n';
         return 0;
     }

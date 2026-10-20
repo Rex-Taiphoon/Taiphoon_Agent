@@ -6,10 +6,12 @@
  */
 #include "launcher.hpp"
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -23,6 +25,15 @@ namespace fs = std::filesystem;
 constexpr unsigned int START_TIMEOUT_SECONDS = 90;
 // TEST-NET-1 位址只用於查詢預設路由的本機 IPv4，不會送出封包。
 constexpr const char* DEFAULT_ROUTE_PROBE = "192.0.2.1";
+// 客戶端開機後需等待時間主機上線與 chrony 收斂；逾時明確停止，不帶錯誤時間上線。
+constexpr unsigned int TIME_SYNC_WAIT_SECONDS = 60;
+constexpr unsigned int TIME_SYNC_PROGRESS_INTERVAL_SECONDS = 10;
+constexpr double DEFAULT_TIME_SYNC_MAX_OFFSET_S = 0.05;
+#ifdef __linux__
+constexpr bool IS_LINUX_HOST = true;
+#else
+constexpr bool IS_LINUX_HOST = false;
+#endif
 
 #ifdef _WIN32
 /** @brief 雙擊 exe 時保留結果視窗；從既有終端執行不額外暫停。 */
@@ -397,6 +408,108 @@ void requireHealthyAgents(const fs::path& home, const Settings& settings)
     }
 }
 
+/** @brief 單次讀取本機 chrony 的結果；retryable 表示 chronyd 可回應、值得繼續等待。 */
+struct TimeSyncReading
+{
+    deployment::TimeSyncDecision decision;
+    bool retryable = false;
+};
+
+/** @brief 讀取主機 chrony 狀態；未安裝或 chronyd 未執行時不重試。
+ * @param max_offset_s 允許的系統時鐘誤差（秒）。
+ * @return 判定與是否可重試。
+ */
+TimeSyncReading readTimeSync(double max_offset_s)
+{
+    TimeSyncReading reading;
+    deployment::ProcessResult result;
+    try
+    {
+        result = deployment::run({"chronyc", "-n", "-c", "tracking"}, true);
+    }
+    catch (const std::exception&)
+    {
+        reading.decision.reason = "無法執行 chronyc；此平台不支援主機對時檢查";
+        return reading;
+    }
+    if (result.code == 127)
+    {
+        reading.decision.reason = "找不到 chronyc；請先以 Tools/time_sync/setup_time_sync.sh 設定對時";
+        return reading;
+    }
+    if (result.code != 0)
+    {
+        reading.decision.reason = "chronyc 無法取得狀態；請確認 chrony 服務已啟動";
+        return reading;
+    }
+    reading.decision = deployment::evaluateTimeSync(deployment::parseChronyTracking(result.output), max_offset_s);
+    reading.retryable = !reading.decision.is_ready;
+    return reading;
+}
+
+/** @brief 取得設定中的對時誤差門檻（秒）。 */
+double timeSyncMaxOffset(const Settings& settings)
+{
+    return static_cast<double>(std::stoul(settings.at("time_sync_max_offset_ms"))) / 1000.0;
+}
+
+/** @brief 實機啟動前確認主機已對時；多機同儕軌跡依賴共同時間。
+ * @param settings 已驗證設定。
+ * @return 無；required 模式未就緒時停止啟動。
+ */
+void requireTimeSync(const Settings& settings)
+{
+    const auto policy = deployment::resolveTimeSyncPolicy(settings, IS_LINUX_HOST);
+    if (policy == "off")
+    {
+        return;
+    }
+    const double max_offset_s = timeSyncMaxOffset(settings);
+    auto reading = readTimeSync(max_offset_s);
+    if (policy == "required" && reading.retryable)
+    {
+        std::cout << "等待主機時間同步（最多 " << TIME_SYNC_WAIT_SECONDS << " 秒）：" << reading.decision.reason
+            << '\n' << std::flush;
+        for (unsigned int waited = 1; waited <= TIME_SYNC_WAIT_SECONDS && reading.retryable; ++waited)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            reading = readTimeSync(max_offset_s);
+            if (!reading.decision.is_ready && waited % TIME_SYNC_PROGRESS_INTERVAL_SECONDS == 0)
+            {
+                std::cout << "  已等待 " << waited << " 秒：" << reading.decision.reason << '\n' << std::flush;
+            }
+        }
+    }
+    if (reading.decision.is_ready)
+    {
+        std::cout << "時間同步：" << reading.decision.reason << '\n';
+        return;
+    }
+    if (policy == "warn")
+    {
+        std::cout << "警告：無法確認時間同步（" << reading.decision.reason
+            << "）；多機飛行前請確認各 Agent 主機已對時。\n";
+        return;
+    }
+    throw std::runtime_error("時間同步未就緒：" + reading.decision.reason
+        + "。多機飛行需要各 Agent 主機對時；單機飛行可在 settings.ini 設定 time_sync=off");
+}
+
+/** @brief timesync 命令：不需要 Docker，只回報本機對時狀態。 @return 就緒為 0。 */
+int showTimeSync(const fs::path& home)
+{
+    double max_offset_s = DEFAULT_TIME_SYNC_MAX_OFFSET_S;
+    if (fs::exists(home / "settings.ini"))
+    {
+        const auto settings = deployment::withDefaultSettings(deployment::readSettings(home / "settings.ini"));
+        deployment::validateSettings(settings);
+        max_offset_s = timeSyncMaxOffset(settings);
+    }
+    const auto reading = readTimeSync(max_offset_s);
+    std::cout << (reading.decision.is_ready ? "時間同步正常：" : "時間同步未就緒：") << reading.decision.reason << '\n';
+    return reading.decision.is_ready ? 0 : 1;
+}
+
 /** @brief 拒絕與既有入口重複管理同一飛控；不自動停止其他功能。 */
 void requireNoLegacyAgents(const Settings& settings)
 {
@@ -448,9 +561,10 @@ void help()
 {
     std::cout << "Taiphoon Agent " << TAIPHOON_RELEASE_VERSION << "\n"
         << "首次：taiphoon_agent init\n日常：taiphoon_agent start\n"
-        << "命令：init、config、start、stop、restart、status、logs、build、test、shell\n"
+        << "命令：init、config、start、stop、restart、status、logs、build、test、shell、timesync\n"
         << "開發：build／test／shell 需要 dev 模式；Agent 與 ROS2 在 Docker Linux 容器執行。\n"
-        << "首次自動載入套件內的 Release 映像，後續使用本機映像。啟動不會 Arm／起飛。\n";
+        << "首次自動載入套件內的 Release 映像，後續使用本機映像。啟動不會 Arm／起飛。\n"
+        << "實機多機：start 前會確認主機已對時；timesync 可單獨檢查。\n";
 }
 }
 
@@ -500,7 +614,7 @@ int main(int argc, char* argv[])
             return 0;
         }
         const std::vector<std::string> known = {"init", "config", "start", "stop", "restart", "status", "logs",
-            "build", "test", "shell"};
+            "build", "test", "shell", "timesync"};
         if (std::find(known.begin(), known.end(), command) == known.end())
         {
             throw std::runtime_error("未知命令：" + command + "；請使用 --help");
@@ -510,6 +624,10 @@ int main(int argc, char* argv[])
         {
             initialize(home);
             return 0;
+        }
+        if (command == "timesync")
+        {
+            return showTimeSync(home);
         }
         DockerInfo docker;
         if (!fs::exists(home / "settings.ini"))
@@ -593,6 +711,10 @@ int main(int argc, char* argv[])
         }
         else
         {
+            if (command == "start" || command == "restart")
+            {
+                requireTimeSync(settings);
+            }
             if (!deployment::isSimulation(settings) && settings.at("network") == "wifi")
             {
                 if (settings.at("lan_address").empty() || settings.at("lan_address") == "auto")

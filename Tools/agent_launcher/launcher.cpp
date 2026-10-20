@@ -7,9 +7,12 @@
 #include "launcher.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <locale>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +26,14 @@ constexpr unsigned int SHA_LENGTH_BYTES = 8;
 constexpr unsigned int MAX_AGENTS = 4;
 constexpr unsigned int MAX_SYSTEM_ID = 255;
 constexpr unsigned int MAX_DOMAIN_ID = 101;
+// 超過 1 秒時同儕軌跡已會被規劃器拒收，不允許設定更寬鬆的啟動門檻。
+constexpr unsigned int MAX_TIME_SYNC_OFFSET_MS = 1000;
+// chronyc -c tracking 欄位：0 Reference ID、1 名稱、2 stratum、4 System time、13 Leap status。
+constexpr std::size_t CHRONY_TRACKING_FIELD_COUNT = 14;
+constexpr std::size_t CHRONY_STRATUM_FIELD = 2;
+constexpr std::size_t CHRONY_SYSTEM_TIME_FIELD = 4;
+constexpr std::size_t CHRONY_LEAP_STATUS_FIELD = 13;
+constexpr unsigned int CHRONY_MAX_SYNCED_STRATUM = 15;
 constexpr unsigned int DDS_BASE_PORT = 7400;
 constexpr unsigned int DDS_DOMAIN_PORT_STEP = 250;
 constexpr unsigned int DDS_UNICAST_OFFSET = 10;
@@ -282,7 +293,7 @@ Settings withDefaultSettings(const Settings& settings)
     Settings complete = {{"mode", "deploy"}, {"agent_id", "1"}, {"count", "1"}, {"transport", "udp"},
         {"serial_device", ""}, {"serial_baud", "921600"}, {"domain_id", "0"}, {"workspace", ""},
         {"lan_address", "auto"}, {"dds_peers", ""}, {"scenario", "real"}, {"network", "wifi"},
-        {"flight_ip", "192.168.1.14"}};
+        {"flight_ip", "192.168.1.14"}, {"time_sync", "auto"}, {"time_sync_max_offset_ms", "50"}};
     for (const auto& entry : settings)
     {
         complete[entry.first] = entry.second;
@@ -375,6 +386,18 @@ void validateSettings(const Settings& settings)
     if (settings.count("flight_ip") != 0 && !isIpv4(settings.at("flight_ip")))
     {
         throw std::runtime_error("flight_ip 必須是飛控 IPv4");
+    }
+    if (settings.count("time_sync") != 0)
+    {
+        const auto& policy = settings.at("time_sync");
+        if (policy != "auto" && policy != "required" && policy != "warn" && policy != "off")
+        {
+            throw std::runtime_error("time_sync 必須是 auto、required、warn 或 off");
+        }
+    }
+    if (settings.count("time_sync_max_offset_ms") != 0)
+    {
+        number(settings, "time_sync_max_offset_ms", MAX_TIME_SYNC_OFFSET_MS);
     }
 }
 
@@ -679,5 +702,145 @@ std::string renderCompose(const Settings& settings, const std::string& image,
             << ": {}\n  log_" << architecture << ": {}\n";
     }
     return yaml.str();
+}
+
+namespace
+{
+/** @brief 以 C locale 完整解析有限浮點數，拒絕殘留字元、NaN 與 Inf。 */
+bool parseFiniteDouble(const std::string& text, double& value)
+{
+    if (text.empty())
+    {
+        return false;
+    }
+    std::istringstream stream(text);
+    stream.imbue(std::locale::classic());
+    double parsed = 0.0;
+    stream >> parsed;
+    if (stream.fail() || !stream.eof() || !std::isfinite(parsed))
+    {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
+/** @brief chrony 的 Leap status 中，只有這些值代表已選定時間來源。 */
+bool isSynchronizedLeapStatus(const std::string& leap_status)
+{
+    return leap_status == "Normal" || leap_status == "Insert second" || leap_status == "Delete second";
+}
+
+/** @brief 將 Reference ID 轉成操作人員可辨識的來源名稱。 */
+std::string describeReference(const TimeSyncStatus& status)
+{
+    // 7F7F0101 是 chrony 以本機時鐘作為基準（local 指令）時的 Reference ID。
+    if (status.reference_id == "7F7F0101")
+    {
+        return "本機基準（時間主機）";
+    }
+    return status.reference_name.empty() ? status.reference_id : status.reference_name;
+}
+
+/** @brief 以毫秒、小數三位顯示時間差。 */
+std::string formatMilliseconds(double seconds)
+{
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text << std::fixed << std::setprecision(3) << seconds * 1000.0;
+    return text.str();
+}
+}
+
+TimeSyncStatus parseChronyTracking(const std::string& csv)
+{
+    TimeSyncStatus status;
+    std::string line = csv;
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+    {
+        line.pop_back();
+    }
+    if (line.empty() || line.find_first_of("\r\n") != std::string::npos)
+    {
+        return status;
+    }
+    std::vector<std::string> fields;
+    std::size_t begin = 0;
+    while (true)
+    {
+        const auto end = line.find(',', begin);
+        fields.push_back(line.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+        if (end == std::string::npos)
+        {
+            break;
+        }
+        begin = end + 1;
+    }
+    if (fields.size() != CHRONY_TRACKING_FIELD_COUNT
+        || !std::regex_match(fields[0], std::regex("[0-9A-Fa-f]{8}"))
+        || !std::regex_match(fields[CHRONY_STRATUM_FIELD], std::regex("[0-9]{1,2}")))
+    {
+        return status;
+    }
+    double offset_s = 0.0;
+    if (!parseFiniteDouble(fields[CHRONY_SYSTEM_TIME_FIELD], offset_s))
+    {
+        return status;
+    }
+    status.reference_id = fields[0];
+    std::transform(status.reference_id.begin(), status.reference_id.end(), status.reference_id.begin(),
+        [](unsigned char character) { return static_cast<char>(std::toupper(character)); });
+    status.reference_name = fields[1];
+    status.stratum = static_cast<unsigned int>(std::stoul(fields[CHRONY_STRATUM_FIELD]));
+    status.system_offset_s = offset_s;
+    status.leap_status = fields[CHRONY_LEAP_STATUS_FIELD];
+    status.is_valid = true;
+    return status;
+}
+
+TimeSyncDecision evaluateTimeSync(const TimeSyncStatus& status, double max_offset_s)
+{
+    TimeSyncDecision decision;
+    if (!std::isfinite(max_offset_s) || max_offset_s <= 0.0)
+    {
+        decision.reason = "對時誤差門檻無效";
+        return decision;
+    }
+    if (!status.is_valid)
+    {
+        decision.reason = "無法解析 chronyc tracking 輸出";
+        return decision;
+    }
+    if (!isSynchronizedLeapStatus(status.leap_status) || status.stratum == 0
+        || status.stratum > CHRONY_MAX_SYNCED_STRATUM)
+    {
+        decision.reason = "尚未同步到時間來源（Leap status：" + status.leap_status
+            + "）；請確認時間主機已開機且網路可達";
+        return decision;
+    }
+    if (!std::isfinite(status.system_offset_s) || std::fabs(status.system_offset_s) > max_offset_s)
+    {
+        decision.reason = "系統時鐘誤差 " + formatMilliseconds(status.system_offset_s) + " ms 超過 "
+            + formatMilliseconds(max_offset_s) + " ms；請等待 chrony 收斂";
+        return decision;
+    }
+    decision.is_ready = true;
+    decision.reason = "已同步：來源 " + describeReference(status) + "，stratum "
+        + std::to_string(status.stratum) + "，系統時鐘誤差 " + formatMilliseconds(status.system_offset_s) + " ms";
+    return decision;
+}
+
+std::string resolveTimeSyncPolicy(const Settings& settings, bool is_linux_host)
+{
+    if (isSimulation(settings))
+    {
+        return "off";
+    }
+    const auto policy = settings.count("time_sync") == 0 ? std::string("auto") : settings.at("time_sync");
+    if (policy == "auto")
+    {
+        return is_linux_host ? "required" : "warn";
+    }
+    return policy;
 }
 }

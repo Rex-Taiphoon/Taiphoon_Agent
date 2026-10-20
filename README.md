@@ -117,6 +117,28 @@ GCS IPv4 不可填 `127.x`。
 ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
 首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
 
+## 實機多機時間同步
+
+多機飛行時，各 Agent 交換的未來軌跡以發送端系統時間標記；兩台樹莓派時間相差超過
+1 秒，同儕軌跡會被拒收，單機 MOVE 與編隊都會原地等待。樹莓派沒有 RTC，因此實機多機
+必須讓各台主機對時。對時不需要 QGCS 或地面站，由 uav_1 的樹莓派當時間主機：
+
+```bash
+sudo bash setup_time_sync.sh master
+```
+
+其他無人機的樹莓派（`<uav_1 IPv4>` 建議在路由器綁定固定 IP）：
+
+```bash
+sudo bash setup_time_sync.sh client <uav_1 IPv4>
+```
+
+`setup_time_sync.sh` 位於 Linux 平台包根目錄（原始碼為 `Tools/time_sync/`），只需設定一次。
+每次飛行先開 uav_1，再開其他機；Linux 實機的 `taiphoon_agent start` 會先確認主機已對時，
+客戶端最多等待 60 秒，未就緒就停止啟動。`taiphoon_agent timesync` 可單獨檢查。
+單機飛行可在 `settings.ini` 設定 `time_sync=off`。設計、失效情境與驗證見
+[多機時間同步](docs/time-sync.md)。
+
 ## 本機原生 QGCS 測試（開發 compose）
 
 Windows Docker Desktop 上，主機的原生 Taiphoon_QGCS 收不到容器 multicast，需改用單播疊加檔
@@ -150,6 +172,7 @@ taiphoon_agent config   停止後切換設定
 taiphoon_agent build    dev：容器內編譯
 taiphoon_agent test     dev：先編譯，再執行測試
 taiphoon_agent shell    dev：進入開發容器
+taiphoon_agent timesync 檢查本機主機對時狀態（實機多機）
 ```
 
 直接使用解壓工具時，Linux／Mac 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
@@ -165,6 +188,7 @@ Windows 若找不到 Docker，先開啟 Desktop；工具會查 PATH 與標準安
 - [部署設計](docs/deployment-cross-platform.md)／[驗證紀錄](docs/deployment-verification.md)
 - [ROS2 Node／Topic 介面](docs/taiphoon-agent-interface.md)
 - [飛行命令](docs/agent-commands.md)／[ROS2 參數](docs/agent-configuration.md)
+- [多機時間同步](docs/time-sync.md)
 - [SITL 自動驗收腳本](AutoTest/scripts/)
 
 既有 `docker-compose.yml` 與 AutoTest 腳本保留作為進階開發流程；一般操作使用原生入口。

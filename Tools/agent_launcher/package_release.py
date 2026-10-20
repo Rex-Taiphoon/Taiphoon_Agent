@@ -47,6 +47,10 @@ def main():
             shutil.copy2(native / 'taiphoon_agent', destination)
             shutil.copy2('Tools/agent_launcher/install.sh', destination)
             executable_names = ['taiphoon_agent', 'install.sh', 'sitl-entrypoint.sh']
+            if platform.startswith('linux-'):
+                # 樹莓派／Linux 實機多機飛行需要主機對時；腳本在主機執行，不在容器內。
+                shutil.copy2('Tools/time_sync/setup_time_sync.sh', destination)
+                executable_names.append('setup_time_sync.sh')
             if platform.startswith('macos-'):
                 name = 'Start Taiphoon Agent.command'
                 shutil.copy2(Path('Tools/agent_launcher') / name, destination)

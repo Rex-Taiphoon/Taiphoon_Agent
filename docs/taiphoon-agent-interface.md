@@ -119,6 +119,7 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `swarm_origin_agent_index` | `int` | `1` | 保留的相容參數；WGS84 軌跡交換時各 Agent 以自己的固定 Home 建立 local NED |
 | `peer_trajectory_timeout_s` | `double` | `2.0` | 同儕 `AgentTrajectory` 收到後可供 planner 使用的最長時間；逾時後標記為 stale |
 | `max_peer_time_skew_s` | `double` | `1.0` | `AgentTrajectory` message／start time 與本機 receive time 允許的最大共同時間偏差 |
+| `peer_clock_skew_warning_s` | `double` | `0.1` | 同儕主機時鐘差估計（`收到時間 − AgentTrajectory.stamp` 於 5 秒內最小值）超過此值時輸出 WARN；只影響診斷 |
 | `obstacle_cloud_timeout_s` | `double` | `1.0` | 局部障礙物地圖 freshness timeout；逾時後不再規劃 |
 | `require_obstacle_cloud` | `bool` | `true` | 要求 fresh obstacle map；missing/stale 不得當成空環境 |
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
@@ -342,6 +343,11 @@ EGO-Swarm Planner 狀態與安全指標。
 | `min_obstacle_distance_m` | `float32` | 最近障礙物距離 |
 | `min_peer_distance_m` | `float32` | 最近同儕中心距離 |
 | `reason` | `string` | 降級或失敗原因 |
+
+> 同儕資料無效且某台同儕的時鐘差估計超過 `max_peer_time_skew_s` 時，`reason` 為
+> `peer clock skew agent=<N> offset=<±秒> s exceeds <門檻> s; check time sync`；
+> 其餘情況維持 `peer trajectory stale or invalid` 或 `Formation sync waiting for peer trajectory`。
+> 控制行為（等待／煞停）不因此改變。主機對時方式見 [多機時間同步](time-sync.md)。
 
 ### 3.8 RelativeAgentObservation (`taiphoon_agent/msg/RelativeAgentObservation`)
 

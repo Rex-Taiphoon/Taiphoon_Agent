@@ -41,6 +41,7 @@
 #include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
+#include "ego_swarm/PeerClockSkewMonitor.hpp"
 #include "ego_swarm/PeerDeconflictionPlanner.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "ego_swarm/PlannerAcceptancePolicy.hpp"
@@ -71,6 +72,9 @@ constexpr double DEFAULT_LOCAL_ARRIVAL_TOLERANCE_M = 0.5;
 constexpr double DEFAULT_PLANNER_ARRIVAL_TOLERANCE_M = 1.0;
 constexpr double DEFAULT_PEER_TRAJECTORY_TIMEOUT_S = 2.0;
 constexpr double DEFAULT_MAX_PEER_TIME_SKEW_S = 1.0;
+// 對時正常時同儕時鐘差應在數十毫秒內；超過 0.1 s 會讓同儕位置預測誤差明顯變大。
+constexpr double DEFAULT_PEER_CLOCK_SKEW_WARNING_S = 0.1;
+constexpr double PEER_CLOCK_SKEW_REPORT_INTERVAL_S = 30.0;
 constexpr double DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S = 1.0;
 constexpr double DEFAULT_MAX_VELOCITY_MPS = 2.5;
 constexpr double DEFAULT_MAX_ACCELERATION_MPS2 = 1.5;
@@ -129,6 +133,10 @@ private:
     void obstacle_cb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     void trajectory_cb(
         const taiphoon_agent::msg::AgentTrajectory::SharedPtr msg);
+    void record_peer_clock_sample(
+        const taiphoon_agent::msg::AgentTrajectory& msg);
+    std::string peer_clock_skew_reason(
+        const std::vector<int>& expected_peer_ids, double now_s) const;
     void planner_loop_cb();
     void clear_grounded_mission();
     bool is_grounded_peer(int agent_id) const;
@@ -279,6 +287,7 @@ private:
     double planning_rate_hz_{DEFAULT_EGO_PLANNER_RATE_HZ};
     double peer_trajectory_timeout_s_{DEFAULT_PEER_TRAJECTORY_TIMEOUT_S};
     double max_peer_time_skew_s_{DEFAULT_MAX_PEER_TIME_SKEW_S};
+    double peer_clock_skew_warning_s_{DEFAULT_PEER_CLOCK_SKEW_WARNING_S};
     double obstacle_cloud_timeout_s_{DEFAULT_OBSTACLE_CLOUD_TIMEOUT_S};
     bool require_obstacle_cloud_{true};
     double formation_min_distance_m_{DEFAULT_FORMATION_MIN_DISTANCE_M};
@@ -306,6 +315,9 @@ private:
     ego_swarm::EmergencyBrakePlanner emergency_brake_planner_{};
     ego_swarm::PeerDeconflictionPlanner peer_deconfliction_planner_{};
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};
+    /// 只供診斷：估計同儕主機時鐘差，不參與規劃或控制決策。
+    ego_swarm::PeerClockSkewMonitor peer_clock_skew_monitor_{};
+    std::map<int, double> peer_clock_skew_last_report_s_{};
     ego_swarm::LocalNedFrame planner_frame_{};
     ego_swarm::GeoCoordinate planner_frame_origin_{};
     /// planner-local Home 所屬的 Agent ID（本機自身）；-1 表示尚未建立。

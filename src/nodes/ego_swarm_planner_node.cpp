@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -190,6 +191,8 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         ego_swarm::DEFAULT_MINIMUM_REPLAN_INTERVAL_S);
     declare_parameter<double>("peer_trajectory_timeout_s",
                              DEFAULT_PEER_TRAJECTORY_TIMEOUT_S);
+    declare_parameter<double>("peer_clock_skew_warning_s",
+                             DEFAULT_PEER_CLOCK_SKEW_WARNING_S);
     declare_parameter<double>("max_peer_time_skew_s",
                              DEFAULT_MAX_PEER_TIME_SKEW_S);
     declare_parameter<double>("obstacle_cloud_timeout_s",
@@ -293,6 +296,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         max_peer_time_skew_s_ < 0.0)
     {
         max_peer_time_skew_s_ = DEFAULT_MAX_PEER_TIME_SKEW_S;
+    }
+
+    peer_clock_skew_warning_s_ = get_parameter(
+        "peer_clock_skew_warning_s").as_double();
+    if (!std::isfinite(peer_clock_skew_warning_s_) ||
+        peer_clock_skew_warning_s_ <= 0.0)
+    {
+        peer_clock_skew_warning_s_ = DEFAULT_PEER_CLOCK_SKEW_WARNING_S;
     }
 
     obstacle_cloud_timeout_s_ = get_parameter(
@@ -2334,6 +2345,75 @@ void EgoSwarmPlannerNode::obstacle_cb(
     }
 }
 
+void EgoSwarmPlannerNode::record_peer_clock_sample(
+    const taiphoon_agent::msg::AgentTrajectory& msg)
+{
+    const int peer_id = static_cast<int>(msg.agent_index);
+    const double message_time_s = static_cast<double>(msg.stamp.sec) +
+        static_cast<double>(msg.stamp.nanosec) * 1.0e-9;
+    const double receive_time_s = this->now().seconds();
+    if (!peer_clock_skew_monitor_.record(
+            peer_id, message_time_s, receive_time_s))
+    {
+        return;
+    }
+
+    const auto estimate =
+        peer_clock_skew_monitor_.estimate(peer_id, receive_time_s);
+    if (!estimate.is_valid)
+    {
+        return;
+    }
+    if (ego_swarm::peer_clock_skew_exceeds(
+            estimate, peer_clock_skew_warning_s_))
+    {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 5000,
+            "Peer clock skew agent=%d offset=%+.3f s exceeds warning "
+            "%.3f s (reject above %.3f s); check host time sync",
+            peer_id, estimate.offset_s, peer_clock_skew_warning_s_,
+            max_peer_time_skew_s_);
+    }
+
+    // 每台同儕定期輸出一次估計值，供外場確認對時結果。
+    auto& last_report_s = peer_clock_skew_last_report_s_[peer_id];
+    if (last_report_s <= 0.0 || receive_time_s < last_report_s ||
+        receive_time_s - last_report_s >= PEER_CLOCK_SKEW_REPORT_INTERVAL_S)
+    {
+        last_report_s = receive_time_s;
+        RCLCPP_INFO(
+            get_logger(),
+            "Peer clock offset agent=%d: %+.3f s (min of %zu samples in "
+            "%.1f s; positive means peer clock is behind)",
+            peer_id, estimate.offset_s, estimate.sample_count,
+            peer_clock_skew_monitor_.window_s());
+    }
+}
+
+std::string EgoSwarmPlannerNode::peer_clock_skew_reason(
+    const std::vector<int>& expected_peer_ids,
+    const double now_s) const
+{
+    for (const int peer_id : expected_peer_ids)
+    {
+        const auto estimate =
+            peer_clock_skew_monitor_.estimate(peer_id, now_s);
+        if (!ego_swarm::peer_clock_skew_exceeds(
+                estimate, max_peer_time_skew_s_))
+        {
+            continue;
+        }
+        char reason[160];
+        std::snprintf(
+            reason, sizeof(reason),
+            "peer clock skew agent=%d offset=%+.3f s exceeds %.3f s; "
+            "check time sync",
+            peer_id, estimate.offset_s, max_peer_time_skew_s_);
+        return std::string(reason);
+    }
+    return std::string();
+}
+
 void EgoSwarmPlannerNode::trajectory_cb(
     const taiphoon_agent::msg::AgentTrajectory::SharedPtr msg)
 {
@@ -2341,6 +2421,13 @@ void EgoSwarmPlannerNode::trajectory_cb(
     {
         RCLCPP_WARN(get_logger(), "trajectory_cb received nullptr");
         return;
+    }
+    if (msg->agent_index != 0U &&
+        msg->agent_index != static_cast<uint32_t>(agent_index_))
+    {
+        // 時鐘差樣本只需要發送時間戳；在其他過濾之前記錄，讓被拒收的
+        // 軌跡也能提供「為何被拒收」的診斷依據。
+        record_peer_clock_sample(*msg);
     }
     if (msg->agent_index == 0U ||
         msg->agent_index == static_cast<uint32_t>(agent_index_) ||
@@ -2875,17 +2962,25 @@ void EgoSwarmPlannerNode::planner_loop_cb()
 
     if (!peer_data_valid)
     {
+        // 只改變診斷文字；控制行為維持原本的等待／煞停。
+        const std::string clock_skew_reason =
+            peer_clock_skew_reason(expected_peer_ids, now_s);
         if (has_formation_ && formation_initial_plan_pending_)
         {
             (void)publish_waiting_hold(
                 current, final_target,
-                "Formation sync waiting for peer trajectory", now, false);
+                clock_skew_reason.empty()
+                    ? "Formation sync waiting for peer trajectory"
+                    : clock_skew_reason,
+                now, false);
             (void)peer_trajectories_.prune(now_s);
             return;
         }
         publish_emergency_brake(
-            planning_state, final_target, "peer trajectory stale or invalid", now,
-            false);
+            planning_state, final_target,
+            clock_skew_reason.empty()
+                ? "peer trajectory stale or invalid" : clock_skew_reason,
+            now, false);
         (void)peer_trajectories_.prune(now_s);
         return;
     }

@@ -92,4 +92,41 @@ std::string renderCompose(const Settings& settings, const std::string& image,
 std::string renderCycloneDds(const Settings& settings, bool is_desktop = false, unsigned int instance = 1);
 /** @brief 檢查版本化 Release manifest。 @param manifest 套件資訊。 @return 無。 */
 void validateManifest(const Settings& manifest);
+
+/** @brief `chronyc -c tracking` 的必要欄位。 */
+struct TimeSyncStatus
+{
+    bool is_valid = false;
+    std::string reference_id;
+    std::string reference_name;
+    unsigned int stratum = 0;
+    /** @brief 系統時鐘相對時間來源的誤差（秒），只取絕對值判定。 */
+    double system_offset_s = 0.0;
+    std::string leap_status;
+};
+
+/** @brief 對時判定結果與可直接顯示的原因。 */
+struct TimeSyncDecision
+{
+    bool is_ready = false;
+    std::string reason;
+};
+
+/** @brief 解析 chrony CSV tracking；欄位不足、非數值或非有限值時 is_valid 為 false。
+ * @param csv `chronyc -c tracking` 的標準輸出。
+ * @return 解析結果。
+ */
+TimeSyncStatus parseChronyTracking(const std::string& csv);
+/** @brief 判定是否已同步且誤差在門檻內。
+ * @param status 已解析的 tracking。
+ * @param max_offset_s 允許的系統時鐘誤差（秒），必須為正。
+ * @return 是否就緒與原因。
+ */
+TimeSyncDecision evaluateTimeSync(const TimeSyncStatus& status, double max_offset_s);
+/** @brief 將 time_sync 設定解析為實際策略；模擬共用主機時鐘，一律不檢查。
+ * @param settings 已驗證設定。
+ * @param is_linux_host 是否在 Linux 主機執行（可使用 chrony）。
+ * @return required、warn 或 off。
+ */
+std::string resolveTimeSyncPolicy(const Settings& settings, bool is_linux_host);
 }
