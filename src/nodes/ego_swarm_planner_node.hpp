@@ -89,7 +89,8 @@ constexpr double PEER_REPLAN_RETRY_DELAY_S = 0.5;
 constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 50.0;
 constexpr int DEFAULT_OPTIMIZER_MAX_ITERATIONS = 40;
 constexpr double DEFAULT_FORMATION_CROSSING_PENALTY_M = 10.0;
-constexpr double DEFAULT_RESERVATION_LEAD_TIME_S = 0.5;
+// 與 2026-08 調整的開發 compose 一致；0.5 秒在實機參數下會讓隊形切換的機間距離明顯變小。
+constexpr double DEFAULT_RESERVATION_LEAD_TIME_S = 0.0;
 constexpr double DEFAULT_RESERVATION_STEP_S = 0.5;
 constexpr double DEFAULT_RESERVATION_HORIZON_S = 5.0;
 constexpr double DEFAULT_PEER_DECONFLICTION_RELEASE_MARGIN_M = 1.0;

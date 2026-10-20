@@ -178,6 +178,24 @@ def verify_time_sync_gate(executable, environment, root, no_chrony_fixture, sett
     settings_file.write_text(original)
 
 
+def verify_obstacle_source(executable, environment, config):
+    """實機明確宣告 explicit_empty 時啟用空地圖並警告；非法值拒絕啟動。"""
+    settings_file = config / 'settings.ini'
+    original = settings_file.read_text()
+    assert 'obstacle_source=none' in original
+    settings_file.write_text(original.replace('obstacle_source=none', 'obstacle_source=explicit_empty'))
+    result = run_cli(executable, environment, 'start')
+    assert '警告：已宣告場地無障礙物' in result.stdout and '障礙物來源：none' not in result.stdout
+    agent = yaml.safe_load((config / 'compose.yaml').read_text())['services']['agent_1']
+    assert agent['environment']['ENABLE_OBSTACLE_CLOUD_SIMULATOR'] == 'true'
+    assert agent['environment']['OBSTACLE_CLOUD_MODE'] == 'explicit_empty'
+    run_cli(executable, environment, 'stop')
+    settings_file.write_text(original.replace('obstacle_source=none', 'obstacle_source=empty'))
+    result = run_cli(executable, environment, 'start', expected=1)
+    assert 'obstacle_source 必須是' in result.stderr
+    settings_file.write_text(original)
+
+
 def main():
     """驗證首次啟動、重複啟動、停止、設定變更與下載失敗的完整邊界。"""
     original = Path(sys.argv[1]).resolve()
@@ -231,6 +249,8 @@ def main():
     result = run_cli(executable, environment, input_text='deploy\n1\n\n')
     assert '服務程序已啟動' in result.stdout
     assert '時間同步：已同步：來源 192.168.1.101' in result.stdout
+    # 實機預設不提供障礙物地圖，並提示如何明確宣告。
+    assert '障礙物來源：none' in result.stdout and 'obstacle_source=explicit_empty' in result.stdout
     config = root / 'config'
     description = yaml.safe_load((config / 'compose.yaml').read_text())
     assert description['services']['agent_1']['environment']['ENABLE_OBSTACLE_CLOUD_SIMULATOR'] == 'false'
@@ -258,6 +278,7 @@ def main():
     run_cli(executable, environment, 'start')
     run_cli(executable, environment, 'stop')
     verify_time_sync_gate(executable, environment, root, no_chrony_fixture, config / 'settings.ini')
+    verify_obstacle_source(executable, environment, config)
     # 已保存 sim 模式遇到缺少 CLI／daemon 時保留原設定；修復後直接重新啟動。
     settings_file = config / 'settings.ini'
     settings_file.write_text(settings_file.read_text().replace('mode=deploy', 'mode=sim'))

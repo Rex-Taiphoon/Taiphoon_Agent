@@ -57,6 +57,45 @@ std::string tracking(const std::string& reference_id, const std::string& name, c
         + ",-0.000003000,0.000010000,-12.345,0.001,0.050,0.003000000,0.000500000,4.0," + leap_status + "\n";
 }
 
+/** @brief obstacle_source：實機預設不提供地圖、explicit_empty 才啟用，模擬不受影響，非法值拒絕。 */
+void testObstacleSource()
+{
+    const fs::path home = fs::temp_directory_path();
+    auto settings = deployment::withDefaultSettings(defaults());
+    require(settings.at("obstacle_source") == "none", "obstacle_source 缺少安全預設值");
+    deployment::validateSettings(settings);
+    require(!deployment::usesExplicitEmptyObstacles(settings), "預設錯誤宣告無障礙物");
+    const auto safe = deployment::renderCompose(settings, "taiphoon-agent:test", "arm64", home);
+    require(safe.find("ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"false\"") != std::string::npos,
+        "實機預設錯誤啟用空地圖");
+
+    settings["obstacle_source"] = "explicit_empty";
+    deployment::validateSettings(settings);
+    require(deployment::usesExplicitEmptyObstacles(settings), "explicit_empty 未生效");
+    const auto declared = deployment::renderCompose(settings, "taiphoon-agent:test", "arm64", home);
+    require(declared.find("ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"true\"") != std::string::npos
+        && declared.find("OBSTACLE_CLOUD_MODE: explicit_empty") != std::string::npos,
+        "explicit_empty 未啟用空地圖模擬器");
+    settings["mode"] = "dev";
+    settings["workspace"] = "/workspace";
+    require(deployment::usesExplicitEmptyObstacles(settings), "dev real 未套用 explicit_empty");
+
+    // 模擬模式維持原本的模擬器設定，不受實機宣告影響。
+    auto simulation = deployment::withDefaultSettings(defaults());
+    simulation["mode"] = "sim";
+    simulation["obstacle_source"] = "none";
+    require(!deployment::usesExplicitEmptyObstacles(simulation), "模擬模式錯誤套用實機宣告");
+    require(deployment::renderCompose(simulation, "taiphoon-agent:test", "arm64", home)
+        .find("ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"true\"") != std::string::npos, "模擬模式關閉了模擬器");
+
+    for (const auto& invalid : {"", "empty", "EXPLICIT_EMPTY", "sensor"})
+    {
+        settings = deployment::withDefaultSettings(defaults());
+        settings["obstacle_source"] = invalid;
+        requireRejected([&settings] { deployment::validateSettings(settings); });
+    }
+}
+
 /** @brief chrony 解析、判定與 time_sync 策略的正常、邊界與異常輸入。 */
 void testTimeSync()
 {
@@ -230,6 +269,7 @@ int main()
         require(deploy.find("ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"false\"") != std::string::npos,
             "部署錯誤啟用模擬感測器");
         require(deploy.find("source: \"/source") == std::string::npos, "部署掛載原始碼");
+        testObstacleSource();
         settings["mode"] = "dev";
         settings["workspace"] = "C:\\中文 source\\$workspace";
         const auto dev = deployment::renderCompose(settings, "taiphoon-agent:test", "amd64", directory);
@@ -408,7 +448,7 @@ int main()
         deployment::writeText(directory / "dev.yaml", dev);
         deployment::writeText(directory / "sim.yaml", sim);
         deployment::writeText(directory / "serial.yaml", serial);
-        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、本機 QGCS 單播、串列、Windows argv、程序失敗、chrony 對時判定\n"
+        std::cout << "PASS: 設定拒絕、SHA256、模式隔離、DDS、本機 QGCS 單播、串列、Windows argv、程序失敗、chrony 對時判定、障礙物來源\n"
             << "測試產物：" << directory.u8string() << '\n';
         return 0;
     }

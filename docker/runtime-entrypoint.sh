@@ -91,7 +91,7 @@ ros2 launch taiphoon_agent basic_controller.launch.py \
     optimizer_max_iterations:="${EGO_SWARM_OPTIMIZER_MAX_ITERATIONS:-40}" \
     optimizer_time_budget_ms:="${EGO_SWARM_OPTIMIZER_TIME_BUDGET_MS:-50.0}" \
     formation_crossing_penalty_m:="${EGO_SWARM_FORMATION_CROSSING_PENALTY_M:-10.0}" \
-    reservation_lead_time_s:="${EGO_SWARM_RESERVATION_LEAD_TIME_S:-0.5}" \
+    reservation_lead_time_s:="${EGO_SWARM_RESERVATION_LEAD_TIME_S:-0.0}" \
     reservation_step_s:="${EGO_SWARM_RESERVATION_STEP_S:-0.5}" \
     reservation_horizon_s:="${EGO_SWARM_RESERVATION_HORIZON_S:-5.0}" \
     enable_obstacle_cloud_simulator:="${ENABLE_OBSTACLE_CLOUD_SIMULATOR:-false}" \

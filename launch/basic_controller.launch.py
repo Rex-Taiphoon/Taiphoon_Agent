@@ -422,7 +422,7 @@ def generate_launch_description():
             description="編隊 assignment 水平 crossing 等價成本（公尺）"),
         DeclareLaunchArgument(
             "reservation_lead_time_s",
-            default_value="0.5",
+            default_value="0.0",
             description="Future trajectory reservation 最短提前時間（秒）"),
         DeclareLaunchArgument(
             "reservation_step_s",

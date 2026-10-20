@@ -293,7 +293,8 @@ Settings withDefaultSettings(const Settings& settings)
     Settings complete = {{"mode", "deploy"}, {"agent_id", "1"}, {"count", "1"}, {"transport", "udp"},
         {"serial_device", ""}, {"serial_baud", "921600"}, {"domain_id", "0"}, {"workspace", ""},
         {"lan_address", "auto"}, {"dds_peers", ""}, {"scenario", "real"}, {"network", "wifi"},
-        {"flight_ip", "192.168.1.14"}, {"time_sync", "auto"}, {"time_sync_max_offset_ms", "50"}};
+        {"flight_ip", "192.168.1.14"}, {"time_sync", "auto"}, {"time_sync_max_offset_ms", "50"},
+        {"obstacle_source", "none"}};
     for (const auto& entry : settings)
     {
         complete[entry.first] = entry.second;
@@ -399,6 +400,17 @@ void validateSettings(const Settings& settings)
     {
         number(settings, "time_sync_max_offset_ms", MAX_TIME_SYNC_OFFSET_MS);
     }
+    if (settings.count("obstacle_source") != 0 && settings.at("obstacle_source") != "none"
+        && settings.at("obstacle_source") != "explicit_empty")
+    {
+        throw std::runtime_error("obstacle_source 必須是 none 或 explicit_empty");
+    }
+}
+
+bool usesExplicitEmptyObstacles(const Settings& settings)
+{
+    return !isSimulation(settings) && settings.count("obstacle_source") != 0
+        && settings.at("obstacle_source") == "explicit_empty";
 }
 
 std::string normalizeArchitecture(const std::string& architecture)
@@ -648,7 +660,11 @@ std::string renderCompose(const Settings& settings, const std::string& image,
             << "      XRCE_TRANSPORT: " << yamlString(settings.at("transport")) << "\n"
             << "      XRCE_SERIAL_DEVICE: " << yamlString(settings.at("serial_device")) << "\n"
             << "      XRCE_SERIAL_BAUD: " << yamlString(settings.at("serial_baud")) << "\n"
-            << "      ENABLE_OBSTACLE_CLOUD_SIMULATOR: \"" << (is_simulation ? "true" : "false") << "\"\n";
+            // 實機預設不提供障礙物地圖（規劃器不移動）；只有操作人員以 obstacle_source=explicit_empty
+            // 明確宣告場地無障礙物時，才啟動模擬器發布空地圖。模擬模式維持原設定。
+            << "      ENABLE_OBSTACLE_CLOUD_SIMULATOR: \""
+            << (is_simulation || usesExplicitEmptyObstacles(settings) ? "true" : "false") << "\"\n"
+            << "      OBSTACLE_CLOUD_MODE: explicit_empty\n";
         if (uses_host_gcs)
         {
             // 所有 Agent 公告同一個主機 IP，CycloneDDS 會把同儕 locator 改寫成本機容器 IP；
