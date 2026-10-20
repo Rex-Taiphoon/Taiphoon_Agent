@@ -58,7 +58,7 @@
 | `optimizer_max_iterations` | int | `40` | optimized projected-gradient iteration 上限 |
 | `optimizer_time_budget_ms` | double | `50.0` | optimized backend 單次 wall-time 上限（毫秒）；保留 finite-difference 與 SITL callback 負載餘裕 |
 | `formation_crossing_penalty_m` | double | `10.0` | assignment 水平 crossing 等價成本 |
-| `reservation_lead_time_s` | double | `0.5` | future trajectory reservation 最短提前時間 |
+| `reservation_lead_time_s` | double | `0.0` | future trajectory reservation 最短提前時間；實機參數下 0.5 秒會使隊形切換最近距離降至 1.4～2.3 m，預設與開發環境一致為 0.0 |
 | `reservation_step_s` | double | `0.5` | reservation start time 搜尋步進 |
 | `reservation_horizon_s` | double | `5.0` | reservation start time 最遠搜尋範圍 |
 

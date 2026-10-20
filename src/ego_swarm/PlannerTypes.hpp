@@ -112,7 +112,7 @@ struct PlannerConfig
     double optimizer_minimum_step_m{0.01};
     double optimizer_convergence_tolerance{1.0e-3};
     double formation_crossing_penalty_m{10.0};
-    double reservation_lead_time_s{0.5};
+    double reservation_lead_time_s{0.0};
     double reservation_step_s{0.5};
     double reservation_horizon_s{5.0};
     // Planner 內部為 PX4 setpoint tracking、狀態同步與取樣誤差保留的
