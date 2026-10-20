@@ -84,7 +84,6 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 當有出現檔案或資料夾刪除行為時
 
 **Never:**
-- 自行建構Docker，例如`docker build`或`docker compose build`，如果必須構建，必須停止任務並且提供指令讓使用者自行構建。
 - 自行提交Git
 - 在任何指令中使用 `--force`等強制命令
 - 嘗試繞過平台的安全機制或人工審核流程；遇到需要確認的操作時，一律交給人類開發者決定。
@@ -95,6 +94,11 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 ### 環境需求
 所有測試必須在 Docker 開發容器內執行。
 禁止在 host 主機上直接執行 ROS2 指令。
+
+開發映像不存在或需要更新時，AI Agent 可自行建置：
+```bash
+docker build --target taiphoon-dev -t taiphoon-agent:dev .
+```
 
 請先啟動環境：
 ```bash

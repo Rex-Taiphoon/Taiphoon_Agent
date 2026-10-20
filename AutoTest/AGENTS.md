@@ -13,14 +13,17 @@
 | `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器 |
 | `scripts/px4-sitl-launcher/start_single_instance.sh` | 啟動單一 PX4 SITL 實例 |
 | `scripts/px4-sitl-launcher/stop_all.sh` | 停止所有 PX4 SITL 容器 |
+| `scripts/dual_agent_regression_sitl_validation.sh` | 多機（`--count` 為 2、3 或 4，預設 2，展示以 3 機驗收）回歸：起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、燕行隊形切換、取消編隊、時鐘偏差注入與降落 |
+| `scripts/dual_agent_regression_monitor.py` | 上述回歸在 Agent 容器內執行的步驟與判定 |
+| `scripts/time_sync_container_validation.sh` | 以一次性容器驗證 chrony 主機／客戶端設定與 `taiphoon_agent timesync` |
 | `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |
 | `Log/` | 測試紀錄（依根目錄 `AGENTS.md` 的 Verification 規範建立） |
 
 ## 標準測試流程
 
-前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull；共用映像 `taiphoon-agent:dev` 需由使用者預先建立。
+前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull；共用映像 `taiphoon-agent:dev` 需已建立。
 
-測試所需 Docker image 必須由使用者預先建立。如果必要 image 不存在，AI Agent 不得自行執行 `docker build` 或 `docker compose build`；應停止需要該 image 的測試步驟，回報 NOT RUN，並提供使用者應自行執行的 build command。
+測試所需 Docker image 不存在或需要更新時，AI Agent 可自行執行 `docker build --target taiphoon-dev -t taiphoon-agent:dev .` 建置後再測試，並在測試紀錄中記錄建置指令與結果。
 
 ```bash
 # 1. 啟動 Agent 容器（一容器一機，uXRCE-DDS 橋接內嵌於容器）
