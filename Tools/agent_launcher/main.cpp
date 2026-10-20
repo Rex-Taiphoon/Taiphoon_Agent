@@ -751,6 +751,19 @@ int main(int argc, char* argv[])
                     << 8887 + std::stoi(settings.at("agent_id")) << "，namespace /uav_"
                     << settings.at("agent_id") << "。\n";
             }
+            if (!deployment::isSimulation(settings) && (command == "start" || command == "restart"))
+            {
+                if (deployment::usesExplicitEmptyObstacles(settings))
+                {
+                    std::cout << "警告：已宣告場地無障礙物（obstacle_source=explicit_empty）；"
+                        "規劃器只做機間避碰，不會避開實體障礙物，僅限已確認淨空的場地。\n";
+                }
+                else
+                {
+                    std::cout << "障礙物來源：none；MOVE／編隊會因缺少障礙物地圖而原地等待。"
+                        "已確認場地淨空時，可在 settings.ini 設定 obstacle_source=explicit_empty。\n";
+                }
+            }
             prepare(settings, manifest, architecture, home, package, docker.is_desktop);
         }
         if (settings.at("mode") == "dev")

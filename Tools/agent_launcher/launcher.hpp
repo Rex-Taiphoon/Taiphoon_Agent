@@ -46,6 +46,11 @@ fs::path findExecutable(const std::vector<fs::path>& directories, const std::str
 Settings withDefaultSettings(const Settings& settings = {});
 /** @brief 判斷 sim 或 dev 模擬情境。 @param settings 完整設定。 @return 是否啟動 PX4 模擬。 */
 bool isSimulation(const Settings& settings);
+/** @brief 實機是否由操作人員明確宣告場地無障礙物（obstacle_source=explicit_empty）。
+ * @param settings 完整設定。
+ * @return 模擬模式一律為 false；實機只有 explicit_empty 為 true。
+ */
+bool usesExplicitEmptyObstacles(const Settings& settings);
 /** @brief 判斷是否產生供同機原生 Taiphoon_QGCS 連線的單播 DDS 設定。
  * @param settings 完整設定。
  * @param is_desktop Docker daemon 是否為 Desktop（容器位於 NAT 之後）。

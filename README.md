@@ -139,6 +139,22 @@ sudo bash setup_time_sync.sh client <uav_1 IPv4>
 單機飛行可在 `settings.ini` 設定 `time_sync=off`。設計、失效情境與驗證見
 [多機時間同步](docs/time-sync.md)。
 
+## 實機障礙物地圖（obstacle_source）
+
+規劃器只有在收到新鮮的障礙物地圖時才會移動。實機沒有障礙物感測器時，預設
+`obstacle_source=none` 不提供地圖：起飛、懸停、YAW 與降落正常，但單機 MOVE、編隊移動與
+全體 MOVE 會原地等待（狀態為 `Required obstacle map is missing`）。
+
+已確認場地淨空時，可在 `settings.ini` 明確宣告：
+
+```text
+obstacle_source=explicit_empty
+```
+
+宣告後 Agent 會發布空地圖，規劃器只做機間避碰，**不會避開實體障礙物**；每次 `start`
+都會顯示警告。模擬模式不受此設定影響。設計、失效情境與舊版（rc.8）暫時做法見
+[實機障礙物地圖來源](docs/obstacle-source.md)。
+
 ## 本機原生 QGCS 測試（開發 compose）
 
 Windows Docker Desktop 上，主機的原生 Taiphoon_QGCS 收不到容器 multicast，需改用單播疊加檔
@@ -189,6 +205,7 @@ Windows 若找不到 Docker，先開啟 Desktop；工具會查 PATH 與標準安
 - [ROS2 Node／Topic 介面](docs/taiphoon-agent-interface.md)
 - [飛行命令](docs/agent-commands.md)／[ROS2 參數](docs/agent-configuration.md)
 - [多機時間同步](docs/time-sync.md)
+- [實機障礙物地圖來源](docs/obstacle-source.md)
 - [SITL 自動驗收腳本](AutoTest/scripts/)
 
 既有 `docker-compose.yml` 與 AutoTest 腳本保留作為進階開發流程；一般操作使用原生入口。

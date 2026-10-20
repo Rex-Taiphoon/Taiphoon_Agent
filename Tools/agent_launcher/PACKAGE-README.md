@@ -75,6 +75,13 @@ sudo bash setup_time_sync.sh client <uav_1 IPv4>   # 其他無人機的樹莓派
 `required`、`warn` 或 `off`（單機飛行）。`time_sync_max_offset_ms` 預設 50。
 `taiphoon_agent timesync` 可單獨查看對時狀態。
 
+## 實機障礙物地圖
+
+規劃器沒有障礙物地圖時不會移動。實機預設 `obstacle_source=none`：起飛、懸停、YAW、降落
+正常，但 MOVE 與編隊移動會原地等待。已確認場地淨空時，在 `settings.ini` 設定
+`obstacle_source=explicit_empty`，Agent 會發布空地圖，規劃器只做機間避碰、不會避開實體障礙物；
+每次 `start` 都會顯示目前的障礙物來源。模擬模式不受影響。
+
 ## 模擬與本機 Taiphoon_QGCS
 
 Windows／macOS Docker Desktop 的模擬模式會自動取得主機區網 IPv4，讓每個 Agent 公告此位址並使用
@@ -102,7 +109,7 @@ Linux Docker Engine 的模擬維持原設定：GCS 接入 `Taiphoon_Net` 並使�
 
 設定在 Windows `%LOCALAPPDATA%\TaiphoonAgent\config`，Linux／Mac `~/.config/taiphoon_agent`。
 舊設定自動補預設值；Docker 或飛控暫時離線不會清除設定。容器 healthy 不代表可以起飛。
-進階 `settings.ini` 可設定 `domain_id`、`flight_ip`、`dds_peers`、`time_sync`、`time_sync_max_offset_ms`；`lan_address=auto` 每次啟動重新取得
+進階 `settings.ini` 可設定 `domain_id`、`flight_ip`、`dds_peers`、`time_sync`、`time_sync_max_offset_ms`、`obstacle_source`；`lan_address=auto` 每次啟動重新取得
 位址，必要時可指定 IPv4。Linux serial 可設定 `transport=serial`、`serial_device`、`serial_baud`。
 `TAIPHOON_AGENT_HOME` 僅供使用者隔離不同設定目錄；一般操作不需要環境參數。
 
