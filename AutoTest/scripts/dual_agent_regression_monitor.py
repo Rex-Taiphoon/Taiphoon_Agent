@@ -54,16 +54,26 @@ class MultiAgentRegression(Node):
     def __init__(self, args: argparse.Namespace):
         super().__init__("multi_agent_regression_monitor")
         self.args = args
-        self.agent_ids = tuple(range(1, args.agents + 1))
+        self.agent_ids = tuple(args.agent_ids)
+        # 單機 MOVE 由第一台執行，YAW 由第二台執行；只有一台時兩者都由它執行。
+        self.mover_id = self.agent_ids[0]
+        self.yaw_agent_id = (self.agent_ids[1] if len(self.agent_ids) > 1
+                             else self.agent_ids[0])
         self.states: Dict[int, AgentState] = {}
         self.yaw_deg: Dict[int, float] = {}
         # YAW 步驟期間記錄 (PX4 時間戳秒, yaw 度)，用來估計轉向角速率。
         self.yaw_trace: Optional[List[Tuple[float, float]]] = None
-        self.yaw_trace_agent = 2
+        self.yaw_trace_agent = self.yaw_agent_id
         self.reasons: Dict[int, str] = {}
+        # 每台曾出現過的 PlannerStatus.reason，用來確認預期的阻擋原因。
+        self.seen_reasons: Dict[int, set] = {i: set() for i in self.agent_ids}
         self.reference: Optional[Tuple[float, float]] = None
         self.ground_altitude_m: Dict[int, float] = {}
         self.minimum_distance_m = math.inf
+        # 每個步驟期間的最近機間距離，於 STEP_RESULT 輸出後重設。
+        self.step_minimum_distance_m = math.inf
+        self.started_s = time.monotonic()
+        self.last_trace_s = 0.0
         self.results: List[Tuple[str, bool, str]] = []
 
         for agent_id in self.agent_ids:
@@ -101,8 +111,19 @@ class MultiAgentRegression(Node):
         if msg.landed or not msg.armed:
             self.ground_altitude_m.setdefault(agent_id, altitude)
         if len(self.states) == len(self.agent_ids) and self.flying():
-            self.minimum_distance_m = min(
-                self.minimum_distance_m, self.minimum_pairwise_distance())
+            distance = self.minimum_pairwise_distance()
+            self.minimum_distance_m = min(self.minimum_distance_m, distance)
+            self.step_minimum_distance_m = min(
+                self.step_minimum_distance_m, distance)
+            now = time.monotonic()
+            if now - self.last_trace_s >= 0.5:
+                # 每 0.5 秒保存各機位置，供離線分析接近事件發生的步驟與時間。
+                self.last_trace_s = now
+                positions = " ".join(
+                    "uav_{}=({:.2f},{:.2f},{:.2f})".format(i, *self.position(i))
+                    for i in self.agent_ids)
+                print(f"TRACE_POS t={now - self.started_s:.1f} "
+                      f"min_peer_m={distance:.2f} {positions}", flush=True)
 
     def attitude_cb(self, msg: AgentAttitude, agent_id: int) -> None:
         if all(math.isfinite(float(v)) for v in msg.q):
@@ -114,6 +135,7 @@ class MultiAgentRegression(Node):
 
     def status_cb(self, msg: PlannerStatus, agent_id: int) -> None:
         self.reasons[agent_id] = msg.reason
+        self.seen_reasons[agent_id].add(msg.reason)
 
     def position(self, agent_id: int) -> Tuple[float, float, float]:
         """回傳相對共同參考點的 North／East（公尺）與相對地面高度。"""
@@ -132,8 +154,10 @@ class MultiAgentRegression(Node):
         return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
     def minimum_pairwise_distance(self) -> float:
-        return min(self.distance_between(a, b)
-                   for a, b in itertools.combinations(self.agent_ids, 2))
+        pairs = list(itertools.combinations(self.agent_ids, 2))
+        if not pairs:
+            return math.inf
+        return min(self.distance_between(a, b) for a, b in pairs)
 
     def horizontal_drift(self, start: Dict[int, Tuple[float, float, float]],
                          agent_id: int) -> float:
@@ -188,7 +212,11 @@ class MultiAgentRegression(Node):
 
     def record(self, name: str, passed: bool, detail: str) -> bool:
         self.results.append((name, passed, detail))
-        print(f"STEP_RESULT step={name} pass={passed} {detail}", flush=True)
+        step_minimum = ("n/a" if not math.isfinite(self.step_minimum_distance_m)
+                        else f"{self.step_minimum_distance_m:.2f}")
+        print(f"STEP_RESULT step={name} pass={passed} {detail} "
+              f"step_min_peer_m={step_minimum}", flush=True)
+        self.step_minimum_distance_m = math.inf
         return passed
 
     def flying(self) -> bool:
@@ -247,19 +275,22 @@ class MultiAgentRegression(Node):
             f"takeoff_yaw_change_deg={yaw_change:.1f}")
 
     def step_single_move(self) -> bool:
+        mover = self.mover_id
         start = {i: self.position(i) for i in self.agent_ids}
-        self.send_agent(1, f"MOVE_FORWARD {self.args.move_m}")
+        self.send_agent(mover, f"MOVE_FORWARD {self.args.move_m}")
         passed = self.wait_until(
-            lambda: self.horizontal_drift(start, 1) >= self.args.move_m - 0.5,
+            lambda: self.horizontal_drift(start, mover) >=
+            self.args.move_m - 0.5,
             45.0, hold_s=2.0)
         others = [round(self.horizontal_drift(start, i), 2)
-                  for i in self.agent_ids if i != 1]
+                  for i in self.agent_ids if i != mover]
         passed = passed and all(value <= 1.0 for value in others)
         return self.record(
             "single_move", passed,
-            f"uav_1_moved_m={self.horizontal_drift(start, 1):.2f} "
+            f"mover=uav_{mover} "
+            f"moved_m={self.horizontal_drift(start, mover):.2f} "
             f"others_drift_m={others} "
-            f"uav_1_reason='{self.reasons.get(1, '')}'")
+            f"reason='{self.reasons.get(mover, '')}'")
 
     @staticmethod
     def peak_yaw_rate_deg_s(trace: List[Tuple[float, float]],
@@ -280,11 +311,12 @@ class MultiAgentRegression(Node):
         return peak
 
     def step_yaw(self) -> bool:
-        start_yaw = self.yaw_deg[2]
-        start_altitude = self.position(2)[2]
+        agent = self.yaw_agent_id
+        start_yaw = self.yaw_deg[agent]
+        start_altitude = self.position(agent)[2]
         self.yaw_trace = []
         command_time = time.monotonic()
-        self.send_agent(2, f"YAW {self.args.yaw_deg}")
+        self.send_agent(agent, f"YAW {self.args.yaw_deg}")
         max_altitude_deviation = 0.0
         reached_time: Optional[float] = None
 
@@ -292,15 +324,15 @@ class MultiAgentRegression(Node):
             nonlocal max_altitude_deviation, reached_time
             max_altitude_deviation = max(
                 max_altitude_deviation,
-                abs(self.position(2)[2] - start_altitude))
-            change = wrap_degrees(self.yaw_deg[2] - start_yaw)
+                abs(self.position(agent)[2] - start_altitude))
+            change = wrap_degrees(self.yaw_deg[agent] - start_yaw)
             is_reached = abs(change - self.args.yaw_deg) <= 5.0
             if is_reached and reached_time is None:
                 reached_time = time.monotonic()
             return is_reached
 
         passed = self.wait_until(rotated, 30.0, hold_s=1.0)
-        change = wrap_degrees(self.yaw_deg[2] - start_yaw)
+        change = wrap_degrees(self.yaw_deg[agent] - start_yaw)
         trace = self.yaw_trace
         self.yaw_trace = None
         if trace:
@@ -321,7 +353,7 @@ class MultiAgentRegression(Node):
         altitude_ok = max_altitude_deviation <= self.args.max_yaw_altitude_deviation_m
         return self.record(
             "yaw", passed and duration_ok and rate_ok and altitude_ok,
-            f"uav_2_yaw_change_deg={change:.1f} "
+            f"agent=uav_{agent} yaw_change_deg={change:.1f} "
             f"yaw_duration_s={duration:.2f} "
             f"min_duration_s={minimum_duration:.2f} "
             f"peak_yaw_rate_deg_s={peak_rate:.1f} "
@@ -360,6 +392,40 @@ class MultiAgentRegression(Node):
             "group_move", passed and converged,
             f"north_moved_m={north} converged={converged}")
 
+    def step_move_blocked(self) -> bool:
+        """實機預設沒有障礙物地圖（obstacle_source=none）：MOVE 必須原地等待並回報缺少地圖。"""
+        mover = self.mover_id
+        start = {i: self.position(i) for i in self.agent_ids}
+        self.seen_reasons[mover].clear()
+        self.send_agent(mover, f"MOVE_FORWARD {self.args.move_m}")
+        self.spin_for(10.0)
+        drift = max(self.horizontal_drift(start, i) for i in self.agent_ids)
+        blocked_by_map = any("obstacle map is missing" in reason
+                             for reason in self.seen_reasons[mover])
+        return self.record(
+            "move_blocked_without_obstacle_map",
+            drift <= 0.5 and blocked_by_map and self.flying(),
+            f"mover=uav_{mover} max_drift_m={drift:.3f} "
+            f"blocked_by_missing_map={blocked_by_map} "
+            f"reasons={sorted(self.seen_reasons[mover])}")
+
+    def step_formation_rejected(self) -> bool:
+        """單機下達編隊必須被拒絕（至少 2 台），飛機維持原位懸停。"""
+        start = {i: self.position(i) for i in self.agent_ids}
+        self.send_all(f"FORMATION_HORI_LINEAR {self.args.formation_spacing_m} "
+                      f"{self.args.formation_altitude_m}")
+        self.spin_for(10.0)
+        drift = max(self.horizontal_drift(start, i) for i in self.agent_ids)
+        vertical = max(abs(self.position(i)[2] - start[i][2])
+                       for i in self.agent_ids)
+        converged = any("formation" in self.reasons.get(i, "").lower()
+                        for i in self.agent_ids)
+        return self.record(
+            "formation_rejected_single",
+            drift <= 0.5 and vertical <= 0.3 and not converged and self.flying(),
+            f"max_drift_m={drift:.3f} max_vertical_m={vertical:.3f} "
+            f"reasons={[self.reasons.get(i, '') for i in self.agent_ids]}")
+
     def step_cancel_hold(self) -> bool:
         self.send_all("FORMATION_CANCEL")
         self.spin_for(2.0)
@@ -371,9 +437,9 @@ class MultiAgentRegression(Node):
                            f"max_drift_m={drift:.3f}")
 
     def publish_fake_trajectory(self) -> None:
-        """發布 agent 7 的終點佔位軌跡：位於 uav_1 北方 1 km，時間戳早 3 秒（接收端估計 +3 秒）。"""
+        """發布 agent 7 的終點佔位軌跡：位於第一台北方 1 km，時間戳早 3 秒（接收端估計 +3 秒）。"""
         latitude, longitude, altitude = (
-            float(v) for v in self.states[1].position_global)
+            float(v) for v in self.states[self.mover_id].position_global)
         fake_latitude = latitude + math.degrees(FAKE_DISTANCE_M / EARTH_RADIUS_M)
         now_ns = (self.get_clock().now().nanoseconds +
                   int(FAKE_STAMP_OFFSET_S * 1e9))
@@ -422,33 +488,54 @@ class MultiAgentRegression(Node):
     def run(self) -> int:
         spacing = self.args.formation_spacing_m
         altitude = self.args.formation_altitude_m
-        steps = (
-            self.step_takeoff_hover,
-            self.step_single_move,
-            self.step_yaw,
-            lambda: self.step_formation(
-                "formation_hori_linear",
-                f"FORMATION_HORI_LINEAR {spacing} {altitude}"),
-            self.step_group_move,
-            lambda: self.step_formation(
-                "formation_v_shape",
-                f"FORMATION_V_SHAPE {spacing} {altitude}"),
-            self.step_cancel_hold,
-            self.step_skew_injection,
-        )
+        if self.args.expect_move_blocked:
+            steps = (
+                self.step_takeoff_hover,
+                self.step_move_blocked,
+                self.step_yaw,
+                self.step_skew_injection,
+            )
+        elif len(self.agent_ids) == 1:
+            steps = (
+                self.step_takeoff_hover,
+                self.step_single_move,
+                self.step_yaw,
+                self.step_formation_rejected,
+                self.step_skew_injection,
+            )
+        else:
+            steps = (
+                self.step_takeoff_hover,
+                self.step_single_move,
+                self.step_yaw,
+                lambda: self.step_formation(
+                    "formation_hori_linear",
+                    f"FORMATION_HORI_LINEAR {spacing} {altitude}"),
+                self.step_group_move,
+                lambda: self.step_formation(
+                    "formation_v_shape",
+                    f"FORMATION_V_SHAPE {spacing} {altitude}"),
+                self.step_cancel_hold,
+                self.step_skew_injection,
+            )
         for step in steps:
             if not step():
                 break
         # 不論前面成功與否都要讓飛機落地，避免 SITL 留在空中。
         self.step_land()
-        minimum_distance_ok = self.minimum_distance_m >= self.args.min_distance_m
-        self.record("minimum_peer_distance", minimum_distance_ok,
-                    f"minimum_distance_m={self.minimum_distance_m:.2f} "
-                    f"limit_m={self.args.min_distance_m}")
+        if len(self.agent_ids) == 1:
+            self.record("minimum_peer_distance", True, "single_agent=n/a")
+        else:
+            minimum_distance_ok = (
+                self.minimum_distance_m >= self.args.min_distance_m)
+            self.record("minimum_peer_distance", minimum_distance_ok,
+                        f"minimum_distance_m={self.minimum_distance_m:.2f} "
+                        f"limit_m={self.args.min_distance_m}")
         expected_results = len(steps) + 2
         passed = (len(self.results) == expected_results and
                   all(result[1] for result in self.results))
-        print(f"REGRESSION_RESULT pass={passed} agents={len(self.agent_ids)} "
+        print(f"REGRESSION_RESULT pass={passed} "
+              f"agents={','.join(str(i) for i in self.agent_ids)} "
               f"steps={len(self.results)}/{expected_results}", flush=True)
         return 0 if passed else 1
 
@@ -467,7 +554,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--formation-spacing-m", type=float, default=4.0)
     parser.add_argument("--formation-altitude-m", type=float, default=10.0)
     parser.add_argument("--min-distance-m", type=float, default=2.0)
-    return parser.parse_args()
+    # 指定實際參與的機號（例如 2 或 2,3），用於驗證缺少 uav_1 的組合；
+    # 未指定時使用 1..--agents。
+    parser.add_argument("--agent-ids", type=str, default="")
+    # 驗證實機預設 obstacle_source=none：起飛、YAW、降落正常，MOVE 被擋下。
+    parser.add_argument("--expect-move-blocked", action="store_true")
+    args = parser.parse_args()
+    if args.agent_ids:
+        ids = [int(value) for value in args.agent_ids.split(",") if value]
+        if (not ids or len(set(ids)) != len(ids) or
+                any(value < 1 or value > 6 for value in ids) or
+                FAKE_AGENT_ID in ids):
+            parser.error("--agent-ids 必須是 1～6 的不重複機號，且不可包含 7")
+        args.agent_ids = ids
+    else:
+        args.agent_ids = list(range(1, args.agents + 1))
+    return args
 
 
 def main() -> int:

@@ -13,7 +13,8 @@
 | `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器 |
 | `scripts/px4-sitl-launcher/start_single_instance.sh` | 啟動單一 PX4 SITL 實例 |
 | `scripts/px4-sitl-launcher/stop_all.sh` | 停止所有 PX4 SITL 容器 |
-| `scripts/dual_agent_regression_sitl_validation.sh` | 多機（`--count` 為 2、3 或 4，預設 2，展示以 3 機驗收）回歸：起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、燕行隊形切換、取消編隊、時鐘偏差注入與降落 |
+| `scripts/dual_agent_regression_sitl_validation.sh` | 多機（`--count` 為 2、3 或 4，預設 2，展示以 3 機驗收）回歸：起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、燕行隊形切換、取消編隊、時鐘偏差注入與降落。`--agent-ids 2,3` 指定機號（驗證缺少 uav_1）；`--deploy-runtime` 改用實機 runtime 進入點；`--obstacle-source` 為 `explicit_empty`（預設）、`none`（驗證 MOVE 被擋下）或 `manual`（rc.8 手動空地圖做法） |
+| `scripts/compose.deploy-runtime.yml` | 搭配 `docker-compose.yml` 的覆寫檔：Agent 改用 `runtime-entrypoint.sh` 與實機預設規劃參數（需先完成 workspace build） |
 | `scripts/dual_agent_regression_monitor.py` | 上述回歸在 Agent 容器內執行的步驟與判定；YAW 步驟量測轉向時間（需 ≥ 理論限速時間 × 0.8）、峰值角速率（需 ≤ `--yaw-rate-limit-deg-s` × 2，容許 PX4 起步落後後的追趕）與高度偏差（需 ≤ `--max-yaw-altitude-deviation-m`），並輸出 `TRACE_YAW` 軌跡 |
 | `scripts/time_sync_container_validation.sh` | 以一次性容器驗證 chrony 主機／客戶端設定與 `taiphoon_agent timesync` |
 | `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |

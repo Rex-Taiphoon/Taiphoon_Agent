@@ -1,0 +1,34 @@
+# @file compose.deploy-runtime.yml
+# @brief SITL 以樹莓派實機相同的 runtime 進入點啟動 Agent
+# @author Taiphoon Agent Team
+# @date 2026-10-20
+#
+# 搭配專案根目錄的 docker-compose.yml 使用：
+#   docker compose -f docker-compose.yml -f AutoTest/scripts/compose.deploy-runtime.yml up -d ...
+# runtime-entrypoint.sh 不會編譯，需先以一般開發容器完成 workspace build。
+# 開發 compose 設定的 EGO_SWARM_* 與 runtime 預設值相同（含 reservation_lead_time_s=0.0），
+# 因此只替換進入點；DEPLOY_RESERVATION_LEAD_TIME_S 可用來對照其他預約提前時間。
+# 障礙物相關變數由驗證腳本依 obstacle_source 設定。
+
+x-runtime-entrypoint: &runtime-entrypoint
+  entrypoint:
+    - /bin/bash
+    - /home/taiphoon/Taiphoon_Agent/docker/runtime-entrypoint.sh
+
+services:
+  uav_1_agent:
+    <<: *runtime-entrypoint
+    environment:
+      - EGO_SWARM_RESERVATION_LEAD_TIME_S=${DEPLOY_RESERVATION_LEAD_TIME_S:-0.0}
+  uav_2_agent:
+    <<: *runtime-entrypoint
+    environment:
+      - EGO_SWARM_RESERVATION_LEAD_TIME_S=${DEPLOY_RESERVATION_LEAD_TIME_S:-0.0}
+  uav_3_agent:
+    <<: *runtime-entrypoint
+    environment:
+      - EGO_SWARM_RESERVATION_LEAD_TIME_S=${DEPLOY_RESERVATION_LEAD_TIME_S:-0.0}
+  uav_4_agent:
+    <<: *runtime-entrypoint
+    environment:
+      - EGO_SWARM_RESERVATION_LEAD_TIME_S=${DEPLOY_RESERVATION_LEAD_TIME_S:-0.0}
