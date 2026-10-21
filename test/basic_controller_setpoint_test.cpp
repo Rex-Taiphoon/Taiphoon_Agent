@@ -112,7 +112,11 @@ protected:
                 rclcpp::QoS(10).best_effort(),
                 [this](const px4_msgs::msg::OffboardControlMode::SharedPtr msg)
                 {
-                    if (msg != nullptr) ++offboard_control_mode_count_;
+                    if (msg != nullptr)
+                    {
+                        latest_offboard_control_mode_ = *msg;
+                        ++offboard_control_mode_count_;
+                    }
                 });
         vehicle_command_sub_ =
             node_->create_subscription<px4_msgs::msg::VehicleCommand>(
@@ -123,6 +127,7 @@ protected:
                     if (msg != nullptr)
                     {
                         latest_vehicle_command_ = *msg;
+                        received_vehicle_commands_.push_back(*msg);
                         ++vehicle_command_count_;
                     }
                 });
@@ -143,6 +148,7 @@ protected:
         enter_offboard_session_for_test();
         offboard_control_mode_count_ = 0;
         vehicle_command_count_ = 0;
+        received_vehicle_commands_.clear();
         has_setpoint_ = false;
     }
 
@@ -328,7 +334,9 @@ protected:
     rclcpp::Publisher<px4_msgs::msg::VehicleLandDetected>::SharedPtr
         vehicle_land_detected_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
+    px4_msgs::msg::OffboardControlMode latest_offboard_control_mode_;
     px4_msgs::msg::VehicleCommand latest_vehicle_command_;
+    std::vector<px4_msgs::msg::VehicleCommand> received_vehicle_commands_;
     bool has_setpoint_{false};
     std::size_t offboard_control_mode_count_{0U};
     std::size_t vehicle_command_count_{0U};
@@ -890,6 +898,75 @@ TEST_F(BasicControllerSetpointTest,
     executor_.spin_some(DISCOVERY_WAIT);
     EXPECT_EQ(offboard_control_mode_count_, heartbeats_before_failure);
     EXPECT_EQ(vehicle_command_count_, 1U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       OffboardHeartbeatAndSetpointLetPx4StampOnReceipt)
+{
+    // 心跳與設定點若帶 Agent 時間，會經 PX4 timesync 換算；偏移估計跳動時
+    // 換算結果可能落後 PX4 時鐘超過 COM_OF_LOSS_T 而誤觸失聯 failsafe。
+    controller_->update_odometry(make_odometry(0.0F, 0.0F, -0.2F));
+    ASSERT_TRUE(controller_->takeoff(6.0F));
+
+    publish_until_setpoint_received();
+    ASSERT_GT(offboard_control_mode_count_, 0U);
+    EXPECT_EQ(latest_offboard_control_mode_.timestamp,
+              taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US);
+    EXPECT_EQ(latest_setpoint_.timestamp,
+              taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US);
+}
+
+TEST_F(BasicControllerSetpointTest, VehicleCommandsLetPx4StampOnReceipt)
+{
+    constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20U;
+    constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21U;
+    constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176U;
+    constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400U;
+
+    // 新的 Offboard session 會在 prestream 完成後送出 DO_SET_MODE。
+    publish_status(PX4_NAV_STATE_POSCTL);
+    ASSERT_TRUE(controller_->switch_to_offboard_mode());
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+         ++heartbeat)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+
+    ASSERT_TRUE(controller_->arm());
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->switch_to_rtl_mode());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->switch_to_hold_mode());
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->land());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->disarm());
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    const std::vector<uint32_t> expected_commands = {
+        VEHICLE_CMD_DO_SET_MODE, VEHICLE_CMD_COMPONENT_ARM_DISARM,
+        VEHICLE_CMD_NAV_RETURN_TO_LAUNCH, VEHICLE_CMD_NAV_LAND};
+    for (const uint32_t expected_command : expected_commands)
+    {
+        bool is_received = false;
+        for (const auto& command : received_vehicle_commands_)
+        {
+            is_received = is_received || command.command == expected_command;
+        }
+        EXPECT_TRUE(is_received) << "missing VehicleCommand " << expected_command;
+    }
+    for (const auto& command : received_vehicle_commands_)
+    {
+        EXPECT_EQ(command.timestamp,
+                  taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US)
+            << "VehicleCommand " << command.command;
+    }
 }
 
 }  // namespace

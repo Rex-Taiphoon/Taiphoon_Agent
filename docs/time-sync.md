@@ -45,6 +45,13 @@ SITL 的所有容器共用同一台主機時鐘，因此不會出現這個問題
 微調（`maxslewrate 500`）。飛行中的系統時間不會突然跳動，避免影響 BasicController
 的軌跡取樣與同儕軌跡時間比對（PX4 狀態逾時判斷已改用單調時鐘，不受系統時間影響）。
 
+Agent 與 PX4 之間不使用主機時間。BasicController 送往 PX4 的
+`OffboardControlMode`、`TrajectorySetpoint`、`VehicleCommand` 一律以 `timestamp = 0`
+發布，由 PX4 uxrce_dds_client 以接收當下的 hrt 時間蓋章（PX4 v1.14 起支援）。
+若改帶 Agent 時間，PX4 會以 timesync 偏移換算；偏移估計跳動時，換算後的心跳可能落後
+PX4 時鐘超過 `COM_OF_LOSS_T`（預設 1 秒），即使心跳持續送達也會觸發 Offboard 失聯
+failsafe（SITL 曾因此在 HOVER 中轉為 RTL）。
+
 ## 介面
 
 ### 主機對時設定腳本
@@ -123,6 +130,7 @@ AgentTrajectory.stamp（發送端 now）──DDS──► trajectory_cb ─┤
 | 未安裝 chrony 或 chronyd 未執行 | `chronyc` 失敗，`required` 拒絕啟動，`warn` 只警告 | 執行設定腳本，或單機飛行時設定 `time_sync=off` |
 | Wi-Fi 封包延遲大 | 單筆差值變大，但取最小值的估計不受影響；chrony 也會濾除 | 無 |
 | 同儕時鐘差超過 1 秒 | 規劃器維持原有 fail-closed，`reason` 指出時鐘差 | 依 log 檢查兩台的 `timesync` |
+| Agent 與 PX4 的 timesync 偏移估計跳動 | 送往 PX4 的訊息 `timestamp = 0`，由 PX4 以接收時間蓋章，不受影響 | 無；ulog 中 `offboard_control_mode.timestamp` 應單調遞增 |
 
 ## 驗證方式
 

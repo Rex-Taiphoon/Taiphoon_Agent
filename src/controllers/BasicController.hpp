@@ -39,6 +39,11 @@ namespace controllers
 /// 進入 Offboard 前必須完成的 OffboardControlMode 心跳數。
 constexpr uint32_t OFFBOARD_PRESTREAM_COUNT = 10U;
 
+/// 送往 PX4 的 timestamp（微秒）。0 代表由 PX4 uxrce_dds_client 以接收當下的
+/// hrt 時間蓋章，不經 timesync 偏移換算；偏移估計跳動時，換算後的心跳可能
+/// 落後 PX4 時鐘超過 COM_OF_LOSS_T 而誤觸 Offboard 失聯 failsafe。
+constexpr uint64_t PX4_INBOUND_TIMESTAMP_US = 0ULL;
+
 /// 預設控制週期（秒），對應節點 10 Hz 控制迴圈；偏航逼近每次推進此時間
 constexpr float DEFAULT_CONTROL_PERIOD_S = 0.1F;
 

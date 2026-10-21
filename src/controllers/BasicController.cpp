@@ -995,9 +995,10 @@ void BasicController::publish_control_commands()
         return;
     }
 
-    const auto timestamp = node_->now().nanoseconds() / 1000ULL;
+    // 由 PX4 以接收時刻蓋章，心跳新鮮度只取決於 PX4 是否收到，
+    // 不受 Agent 與 PX4 時鐘偏移估計影響。
     auto mode_msg = px4_msgs::msg::OffboardControlMode();
-    mode_msg.timestamp = timestamp;
+    mode_msg.timestamp = PX4_INBOUND_TIMESTAMP_US;
     mode_msg.position = true;
 
     // OffboardControlMode 是獨立的 proof-of-life 心跳；TAKEOFF 前、ARM 後
@@ -1042,7 +1043,7 @@ void BasicController::publish_control_commands()
         has_last_setpoint_position_;
 
     auto msg = px4_msgs::msg::TrajectorySetpoint();
-    msg.timestamp = timestamp;
+    msg.timestamp = PX4_INBOUND_TIMESTAMP_US;
     const auto hold_position = get_safe_hold_position();
     msg.position[0] = hold_position[0];
     msg.position[1] = hold_position[1];
@@ -1688,7 +1689,7 @@ bool BasicController::send_arm_command(bool do_arm)
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400;
     cmd.command = VEHICLE_CMD_COMPONENT_ARM_DISARM;
     cmd.param1 = do_arm ? 1.0F : 0.0F;
@@ -1712,7 +1713,7 @@ bool BasicController::send_offboard_mode_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
     cmd.param1 = 1.0F;
@@ -1735,7 +1736,7 @@ bool BasicController::send_rtl_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20;
     cmd.command = VEHICLE_CMD_NAV_RETURN_TO_LAUNCH;
     cmd.param1 = 0.0F;
@@ -1758,7 +1759,7 @@ bool BasicController::send_land_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21;
     cmd.command = VEHICLE_CMD_NAV_LAND;
     cmd.param1 = 0.0F;
@@ -1781,7 +1782,7 @@ bool BasicController::send_hold_mode_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
     cmd.param1 = 1.0F;  // custom mode
