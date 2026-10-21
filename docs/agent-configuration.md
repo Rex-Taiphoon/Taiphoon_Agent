@@ -56,7 +56,7 @@
 | `formation_member_stable_scan_count` | int | `2` | discovery 成員集合連續穩定掃描次數 |
 | `planner_backend` | string | `optimized` | optimized-only runtime；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | int | `40` | optimized projected-gradient iteration 上限 |
-| `optimizer_time_budget_ms` | double | `50.0` | optimized backend 單次 wall-time 上限（毫秒）；保留 finite-difference 與 SITL callback 負載餘裕 |
+| `optimizer_time_budget_ms` | double | `70.0` | optimized backend 單次 wall-time 上限（毫秒）；時空 A* 最多使用 60%，逾時時回傳過程中最佳的 hard-clear 解；仍低於 10 Hz 規劃週期 |
 | `formation_crossing_penalty_m` | double | `10.0` | assignment 水平 crossing 等價成本 |
 | `reservation_lead_time_s` | double | `0.0` | future trajectory reservation 最短提前時間；實機參數下 0.5 秒會使隊形切換最近距離降至 1.4～2.3 m，預設與開發環境一致為 0.0 |
 | `reservation_step_s` | double | `0.5` | reservation start time 搜尋步進 |

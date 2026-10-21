@@ -89,7 +89,7 @@ ros2 launch taiphoon_agent basic_controller.launch.py \
     enable_generic_trajectory_reservation:="${EGO_SWARM_ENABLE_GENERIC_TRAJECTORY_RESERVATION:-false}" \
     peer_planning_margin_m:="${EGO_SWARM_PEER_PLANNING_MARGIN_M:-1.0}" \
     optimizer_max_iterations:="${EGO_SWARM_OPTIMIZER_MAX_ITERATIONS:-40}" \
-    optimizer_time_budget_ms:="${EGO_SWARM_OPTIMIZER_TIME_BUDGET_MS:-50.0}" \
+    optimizer_time_budget_ms:="${EGO_SWARM_OPTIMIZER_TIME_BUDGET_MS:-70.0}" \
     formation_crossing_penalty_m:="${EGO_SWARM_FORMATION_CROSSING_PENALTY_M:-10.0}" \
     reservation_lead_time_s:="${EGO_SWARM_RESERVATION_LEAD_TIME_S:-0.0}" \
     reservation_step_s:="${EGO_SWARM_RESERVATION_STEP_S:-0.5}" \

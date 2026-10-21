@@ -86,7 +86,9 @@ constexpr double FORMATION_PLAN_START_DELAY_S = 0.5;
 constexpr double PEER_REPLAN_RETRY_DELAY_S = 0.5;
 // SITL 與實機 callback 負載下，central finite-difference 需要保留足夠
 // 的 wall-time；仍遠低於 10 Hz planner cycle，避免移動中反覆 timeout。
-constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 50.0;
+constexpr double DEFAULT_OPTIMIZER_TIME_BUDGET_MS = 70.0;
+// 連續規劃失敗達此次數（每次失敗至少 hold 0.5 秒，約 10 秒）時升級為 ERROR 日誌。
+constexpr std::size_t PLANNER_FAILURE_ESCALATION_COUNT = 20U;
 constexpr int DEFAULT_OPTIMIZER_MAX_ITERATIONS = 40;
 constexpr double DEFAULT_FORMATION_CROSSING_PENALTY_M = 10.0;
 // 與 2026-08 調整的開發 compose 一致；0.5 秒在實機參數下會讓隊形切換的機間距離明顯變小。
@@ -302,6 +304,8 @@ private:
     std::string planner_backend_{"optimized"};
     int optimizer_max_iterations_{DEFAULT_OPTIMIZER_MAX_ITERATIONS};
     double optimizer_time_budget_ms_{DEFAULT_OPTIMIZER_TIME_BUDGET_MS};
+    /// 連續規劃失敗次數；成功規劃後歸零，只用於日誌升級，不改變控制決策
+    std::size_t consecutive_planner_failures_{0U};
     double formation_crossing_penalty_m_ =
         DEFAULT_FORMATION_CROSSING_PENALTY_M;
     double reservation_lead_time_s_{DEFAULT_RESERVATION_LEAD_TIME_S};

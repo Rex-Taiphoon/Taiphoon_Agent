@@ -160,6 +160,10 @@ void BasicController::stop_offboard_session()
     offboard_cmd_rejected_.store(false);
     offboard_mode_request_time_ = rclcpp::Time(
         static_cast<int64_t>(0), RCL_ROS_TIME);
+    // 排隊命令只屬於這一次 session；session 結束或進入失敗時一併取消。
+    is_arm_queued_.store(false);
+    is_takeoff_queued_.store(false);
+    is_queued_takeoff_waiting_arm_ = false;
     trajectory_setpoint_pending_.store(false);
     // Offboard 中斷期間機頭可能被手動或 failsafe 改變；重新進入後從實際
     // 航向逼近目標，不可沿用中斷前的送出值造成瞬間跳轉。
@@ -199,13 +203,48 @@ bool BasicController::arm()
         return false;
     }
 
+    if (flight_state_.load() == FlightState::OFFBOARD_INIT)
+    {
+        // 直接送出 ARM 會讓狀態離開 OFFBOARD_INIT 而中斷 prestream。
+        is_arm_queued_.store(true);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "ARM queued until PX4 confirms Offboard (target_system=%d)",
+                    target_system_);
+        return true;
+    }
+
+    const bool is_px4_armed = arming_state_.load() ==
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+    if (!offboard_session_active_.load() && !is_px4_armed)
+    {
+        // PX4 在地面停在 Hold 或缺少心跳的 Offboard 時無法直接解鎖；
+        // 先建立 Offboard session，確認後再送 ARM。
+        begin_offboard_session();
+        is_arm_queued_.store(true);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "ARM requested without Offboard session; entering "
+                    "Offboard first (target_system=%d)", target_system_);
+        return true;
+    }
+
+    return send_arm_now();
+}
+
+bool BasicController::send_arm_now()
+{
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Sending arm command (target_system=%d)", target_system_);
+    is_arm_rejected_.store(false);
+    is_arm_ack_pending_.store(true);
     bool result = send_arm_command(true);
     if (result)
     {
         offboard_start_time_ = node_->now();
         flight_state_.store(FlightState::ARMED);
+    }
+    else
+    {
+        is_arm_ack_pending_.store(false);
     }
     return result;
 }
@@ -221,6 +260,8 @@ bool BasicController::disarm()
 
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "Sending disarm command (target_system=%d)", target_system_);
+    // DISARM 與 ARM 共用 command 400；避免把 DISARM 的回應誤判為 ARM。
+    is_arm_ack_pending_.store(false);
     bool result = send_arm_command(false);
     if (result)
     {
@@ -252,6 +293,31 @@ bool BasicController::takeoff(float altitude_m)
                      "Takeoff altitude must be positive");
         return false;
     }
+
+    const bool is_entering_offboard =
+        flight_state_.load() == FlightState::OFFBOARD_INIT;
+    const bool needs_ground_offboard_entry =
+        !offboard_session_active_.load() && is_landed_.load();
+    if (is_entering_offboard || needs_ground_offboard_entry)
+    {
+        if (needs_ground_offboard_entry && !is_entering_offboard)
+        {
+            begin_offboard_session();
+        }
+        queued_takeoff_altitude_m_ = altitude_m;
+        is_queued_takeoff_waiting_arm_ = false;
+        is_takeoff_queued_.store(true);
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "TAKEOFF %.2f m queued until PX4 confirms Offboard and "
+                    "is armed (target_system=%d)", altitude_m, target_system_);
+        return true;
+    }
+
+    return start_takeoff(altitude_m);
+}
+
+bool BasicController::start_takeoff(float altitude_m)
+{
     target_altitude_m_.store(altitude_m);
     target_position_ned_ = current_position_ned_;
     target_position_ned_.at(2) = -altitude_m;
@@ -965,12 +1031,14 @@ void BasicController::publish_control_commands()
         }
     }
 
+    handle_arm_rejection();
     update_command_state_from_observation();
 
     if (flight_state_.load() == FlightState::OFFBOARD_INIT)
     {
         handle_offboard_init_state();
     }
+    execute_queued_commands();
 
     // 這些狀態的 VehicleCommand 必須在輸出閘門 return 前處理，確保
     // RTL/LAND/HOLD 的模式命令不會因停止 setpoint 而被跳過。
@@ -987,6 +1055,7 @@ void BasicController::publish_control_commands()
     {
         handle_post_rtl_state();
     }
+    park_in_hold_when_disarmed_in_offboard();
 
     current_state = flight_state_.load();
     if (!should_publish_offboard_control_mode() ||
@@ -995,9 +1064,10 @@ void BasicController::publish_control_commands()
         return;
     }
 
-    const auto timestamp = node_->now().nanoseconds() / 1000ULL;
+    // 由 PX4 以接收時刻蓋章，心跳新鮮度只取決於 PX4 是否收到，
+    // 不受 Agent 與 PX4 時鐘偏移估計影響。
     auto mode_msg = px4_msgs::msg::OffboardControlMode();
-    mode_msg.timestamp = timestamp;
+    mode_msg.timestamp = PX4_INBOUND_TIMESTAMP_US;
     mode_msg.position = true;
 
     // OffboardControlMode 是獨立的 proof-of-life 心跳；TAKEOFF 前、ARM 後
@@ -1042,7 +1112,7 @@ void BasicController::publish_control_commands()
         has_last_setpoint_position_;
 
     auto msg = px4_msgs::msg::TrajectorySetpoint();
-    msg.timestamp = timestamp;
+    msg.timestamp = PX4_INBOUND_TIMESTAMP_US;
     const auto hold_position = get_safe_hold_position();
     msg.position[0] = hold_position[0];
     msg.position[1] = hold_position[1];
@@ -1665,6 +1735,116 @@ void BasicController::handle_post_rtl_state()
     }
 }
 
+void BasicController::execute_queued_commands()
+{
+    if (!offboard_session_active_.load())
+    {
+        return;
+    }
+
+    if (is_arm_queued_.exchange(false))
+    {
+        send_arm_now();
+        // TAKEOFF 從 ARM 送出後開始等待 PX4 解鎖。
+        return;
+    }
+
+    if (!is_takeoff_queued_.load())
+    {
+        return;
+    }
+
+    if (arming_state_.load() ==
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED)
+    {
+        is_takeoff_queued_.store(false);
+        is_queued_takeoff_waiting_arm_ = false;
+        start_takeoff(queued_takeoff_altitude_m_);
+        return;
+    }
+
+    if (!is_queued_takeoff_waiting_arm_)
+    {
+        is_queued_takeoff_waiting_arm_ = true;
+        queued_takeoff_wait_start_ = node_->now();
+        return;
+    }
+
+    const double waited_ms =
+        (node_->now() - queued_takeoff_wait_start_).seconds() * 1000.0;
+    if (waited_ms >= static_cast<double>(QUEUED_TAKEOFF_ARM_TIMEOUT_MS))
+    {
+        is_takeoff_queued_.store(false);
+        is_queued_takeoff_waiting_arm_ = false;
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "Queued TAKEOFF cancelled: PX4 not armed within %d ms; "
+                    "send ARM before TAKEOFF", QUEUED_TAKEOFF_ARM_TIMEOUT_MS);
+    }
+}
+
+void BasicController::handle_arm_rejection()
+{
+    if (!is_arm_rejected_.exchange(false))
+    {
+        return;
+    }
+
+    RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                "PX4 rejected ARM (result=%u); check PX4 preflight and health "
+                "status. Stopping Offboard session",
+                static_cast<unsigned int>(arm_reject_result_.load()));
+
+    // 只回收解鎖前後的地面狀態；使用者若已改下 RTL/LAND 等命令則保留。
+    const FlightState state = flight_state_.load();
+    if (state == FlightState::ARMED || state == FlightState::TAKEOFF ||
+        state == FlightState::OFFBOARD_ACTIVE)
+    {
+        stop_offboard_session();
+        flight_state_.store(FlightState::IDLE);
+    }
+}
+
+void BasicController::park_in_hold_when_disarmed_in_offboard()
+{
+    const FlightState state = flight_state_.load();
+    const bool is_agent_idle =
+        state == FlightState::IDLE || state == FlightState::ERROR;
+    const bool is_px4_disarmed_in_offboard =
+        is_vehicle_status_fresh() &&
+        arming_state_.load() !=
+            px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED &&
+        px4_nav_state_.load() == FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
+    if (!is_agent_idle || offboard_session_active_.load() ||
+        !is_px4_disarmed_in_offboard)
+    {
+        has_parking_hold_sent_ = false;
+        return;
+    }
+
+    const rclcpp::Time now = node_->now();
+    if (has_parking_hold_sent_)
+    {
+        const double since_last_ms =
+            (now - last_parking_hold_time_).seconds() * 1000.0;
+        if (since_last_ms < static_cast<double>(PARKING_HOLD_RETRY_MS))
+        {
+            return;
+        }
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "PX4 is still in Offboard without an Agent session; "
+                    "retrying Hold mode command");
+    }
+    else
+    {
+        RCLCPP_INFO(rclcpp::get_logger("BasicController"),
+                    "PX4 is disarmed in Offboard without an Agent session; "
+                    "switching PX4 to Hold");
+    }
+    send_hold_mode_command();
+    has_parking_hold_sent_ = true;
+    last_parking_hold_time_ = now;
+}
+
 void BasicController::handle_moving_state(px4_msgs::msg::TrajectorySetpoint& msg)
 {
     // 發布完整 3D NED 目標位置，支援水平與垂直移動
@@ -1688,7 +1868,7 @@ bool BasicController::send_arm_command(bool do_arm)
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400;
     cmd.command = VEHICLE_CMD_COMPONENT_ARM_DISARM;
     cmd.param1 = do_arm ? 1.0F : 0.0F;
@@ -1712,7 +1892,7 @@ bool BasicController::send_offboard_mode_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
     cmd.param1 = 1.0F;
@@ -1735,7 +1915,7 @@ bool BasicController::send_rtl_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20;
     cmd.command = VEHICLE_CMD_NAV_RETURN_TO_LAUNCH;
     cmd.param1 = 0.0F;
@@ -1758,7 +1938,7 @@ bool BasicController::send_land_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21;
     cmd.command = VEHICLE_CMD_NAV_LAND;
     cmd.param1 = 0.0F;
@@ -1781,11 +1961,12 @@ bool BasicController::send_hold_mode_command()
         return false;
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
-    cmd.timestamp = node_->now().nanoseconds() / 1000ULL;
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
     constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
-    cmd.param1 = 1.0F;  // custom mode
-    cmd.param2 = 8.0F;  // Position Hold mode for multicopter
+    cmd.param1 = PX4_MODE_FLAG_CUSTOM_MODE_ENABLED;
+    cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;
+    cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LOITER;
     cmd.target_system = target_system_;
     cmd.target_component = 1;
     cmd.source_system = target_system_;
@@ -1824,6 +2005,16 @@ void BasicController::vehicle_command_ack_cb(const px4_msgs::msg::VehicleCommand
         if (!offboard_mode_request_sent_.load() ||
             flight_state_.load() != FlightState::OFFBOARD_INIT)
         {
+            // Offboard 進入流程以外的 DO_SET_MODE 只有 Hold 模式命令。
+            if (msg->result !=
+                    px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED &&
+                msg->result !=
+                    px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_IN_PROGRESS)
+            {
+                RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                            "PX4 rejected Hold mode command (result=%u)",
+                            static_cast<unsigned int>(msg->result));
+            }
             return;
         }
 
@@ -1847,6 +2038,15 @@ void BasicController::vehicle_command_ack_cb(const px4_msgs::msg::VehicleCommand
             px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
         {
             arm_cmd_echo_received_.store(true);
+            is_arm_ack_pending_.store(false);
+        }
+        else if (msg->result !=
+                     px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_IN_PROGRESS &&
+                 is_arm_ack_pending_.exchange(false))
+        {
+            // 由控制迴圈統一處理，避免在 callback 中改動 session 狀態。
+            arm_reject_result_.store(msg->result);
+            is_arm_rejected_.store(true);
         }
     }
 }

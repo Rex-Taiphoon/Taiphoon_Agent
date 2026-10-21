@@ -112,7 +112,11 @@ protected:
                 rclcpp::QoS(10).best_effort(),
                 [this](const px4_msgs::msg::OffboardControlMode::SharedPtr msg)
                 {
-                    if (msg != nullptr) ++offboard_control_mode_count_;
+                    if (msg != nullptr)
+                    {
+                        latest_offboard_control_mode_ = *msg;
+                        ++offboard_control_mode_count_;
+                    }
                 });
         vehicle_command_sub_ =
             node_->create_subscription<px4_msgs::msg::VehicleCommand>(
@@ -123,6 +127,7 @@ protected:
                     if (msg != nullptr)
                     {
                         latest_vehicle_command_ = *msg;
+                        received_vehicle_commands_.push_back(*msg);
                         ++vehicle_command_count_;
                     }
                 });
@@ -143,6 +148,7 @@ protected:
         enter_offboard_session_for_test();
         offboard_control_mode_count_ = 0;
         vehicle_command_count_ = 0;
+        received_vehicle_commands_.clear();
         has_setpoint_ = false;
     }
 
@@ -258,12 +264,13 @@ protected:
     }
 
     /** @brief 發布最新 VehicleStatus，讓控制器能判斷輸出閘門。 */
-    void publish_status(uint8_t nav_state)
+    void publish_status(
+        uint8_t nav_state,
+        uint8_t arming_state = px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED)
     {
         px4_msgs::msg::VehicleStatus status;
         status.nav_state = nav_state;
-        status.arming_state =
-            px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+        status.arming_state = arming_state;
         for (int attempt = 0; attempt < 5; ++attempt)
         {
             vehicle_status_pub_->publish(status);
@@ -328,7 +335,9 @@ protected:
     rclcpp::Publisher<px4_msgs::msg::VehicleLandDetected>::SharedPtr
         vehicle_land_detected_pub_;
     px4_msgs::msg::TrajectorySetpoint latest_setpoint_;
+    px4_msgs::msg::OffboardControlMode latest_offboard_control_mode_;
     px4_msgs::msg::VehicleCommand latest_vehicle_command_;
+    std::vector<px4_msgs::msg::VehicleCommand> received_vehicle_commands_;
     bool has_setpoint_{false};
     std::size_t offboard_control_mode_count_{0U};
     std::size_t vehicle_command_count_{0U};
@@ -385,13 +394,17 @@ TEST_F(BasicControllerSetpointTest,
 }
 
 TEST_F(BasicControllerSetpointTest,
-       SwitchToHoldPublishesPositionHoldCommandAndLeavesOffboard)
+       SwitchToHoldPublishesAutoLoiterCommandAndLeavesOffboard)
 {
     ASSERT_TRUE(controller_->switch_to_hold_mode());
     executor_.spin_some(DISCOVERY_WAIT);
 
+    // PX4 Hold = custom main mode AUTO(4) + sub mode AUTO_LOITER(3)；
+    // main mode 8 是已移除的 RATTITUDE，PX4 會回覆 Unsupported main mode。
     EXPECT_EQ(latest_vehicle_command_.command, 176U);
-    EXPECT_FLOAT_EQ(latest_vehicle_command_.param2, 8.0F);
+    EXPECT_FLOAT_EQ(latest_vehicle_command_.param1, 1.0F);
+    EXPECT_FLOAT_EQ(latest_vehicle_command_.param2, 4.0F);
+    EXPECT_FLOAT_EQ(latest_vehicle_command_.param3, 3.0F);
     EXPECT_EQ(controller_->get_flight_state(),
               taiphoon::controllers::FlightState::IDLE);
     EXPECT_EQ(offboard_control_mode_count_, 0U);
@@ -890,6 +903,264 @@ TEST_F(BasicControllerSetpointTest,
     executor_.spin_some(DISCOVERY_WAIT);
     EXPECT_EQ(offboard_control_mode_count_, heartbeats_before_failure);
     EXPECT_EQ(vehicle_command_count_, 1U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       OffboardHeartbeatAndSetpointLetPx4StampOnReceipt)
+{
+    // 心跳與設定點若帶 Agent 時間，會經 PX4 timesync 換算；偏移估計跳動時
+    // 換算結果可能落後 PX4 時鐘超過 COM_OF_LOSS_T 而誤觸失聯 failsafe。
+    controller_->update_odometry(make_odometry(0.0F, 0.0F, -0.2F));
+    ASSERT_TRUE(controller_->takeoff(6.0F));
+
+    publish_until_setpoint_received();
+    ASSERT_GT(offboard_control_mode_count_, 0U);
+    EXPECT_EQ(latest_offboard_control_mode_.timestamp,
+              taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US);
+    EXPECT_EQ(latest_setpoint_.timestamp,
+              taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US);
+}
+
+TEST_F(BasicControllerSetpointTest, VehicleCommandsLetPx4StampOnReceipt)
+{
+    constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20U;
+    constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21U;
+    constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176U;
+    constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400U;
+
+    // 新的 Offboard session 會在 prestream 完成後送出 DO_SET_MODE。
+    publish_status(PX4_NAV_STATE_POSCTL);
+    ASSERT_TRUE(controller_->switch_to_offboard_mode());
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+         ++heartbeat)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_ACTIVE);
+
+    ASSERT_TRUE(controller_->arm());
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->switch_to_rtl_mode());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->switch_to_hold_mode());
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->land());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_TRUE(controller_->disarm());
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    const std::vector<uint32_t> expected_commands = {
+        VEHICLE_CMD_DO_SET_MODE, VEHICLE_CMD_COMPONENT_ARM_DISARM,
+        VEHICLE_CMD_NAV_RETURN_TO_LAUNCH, VEHICLE_CMD_NAV_LAND};
+    for (const uint32_t expected_command : expected_commands)
+    {
+        bool is_received = false;
+        for (const auto& command : received_vehicle_commands_)
+        {
+            is_received = is_received || command.command == expected_command;
+        }
+        EXPECT_TRUE(is_received) << "missing VehicleCommand " << expected_command;
+    }
+    for (const auto& command : received_vehicle_commands_)
+    {
+        EXPECT_EQ(command.timestamp,
+                  taiphoon::controllers::PX4_INBOUND_TIMESTAMP_US)
+            << "VehicleCommand " << command.command;
+    }
+}
+
+/** @brief 統計收到的 Hold（AUTO_LOITER）DO_SET_MODE 命令數。 */
+std::size_t count_hold_commands(
+    const std::vector<px4_msgs::msg::VehicleCommand>& commands)
+{
+    std::size_t count = 0U;
+    for (const auto& command : commands)
+    {
+        if (command.command == 176U &&
+            std::abs(command.param2 - 4.0F) < POSITION_EPSILON_M &&
+            std::abs(command.param3 - 3.0F) < POSITION_EPSILON_M)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/** @brief 統計收到的 ARM（command 400, param1=1）命令數。 */
+std::size_t count_arm_commands(
+    const std::vector<px4_msgs::msg::VehicleCommand>& commands)
+{
+    std::size_t count = 0U;
+    for (const auto& command : commands)
+    {
+        if (command.command == 400U && command.param1 > 0.5F)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+TEST_F(BasicControllerSetpointTest,
+       DisarmedOffboardWithoutSessionParksPx4InHoldOnce)
+{
+    // LAND／DISARM 後 Agent 停止心跳；PX4 若仍停在 Offboard，預檢會失敗。
+    ASSERT_TRUE(controller_->disarm());
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD,
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED);
+    received_vehicle_commands_.clear();
+
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(count_hold_commands(received_vehicle_commands_), 1U);
+
+    // 重送間隔內不得重複送出。
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(count_hold_commands(received_vehicle_commands_), 1U);
+    EXPECT_EQ(offboard_control_mode_count_, 0U);
+}
+
+TEST_F(BasicControllerSetpointTest, ArmedPx4InOffboardIsNeverParkedInHold)
+{
+    ASSERT_TRUE(controller_->disarm());
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    received_vehicle_commands_.clear();
+
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(count_hold_commands(received_vehicle_commands_), 0U);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       ArmWithoutSessionEntersOffboardBeforeSendingArm)
+{
+    ASSERT_TRUE(controller_->disarm());
+    publish_status(PX4_NAV_STATE_POSCTL,
+                   px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED);
+    received_vehicle_commands_.clear();
+
+    ASSERT_TRUE(controller_->arm());
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_INIT);
+
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+         ++heartbeat)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+    EXPECT_EQ(count_arm_commands(received_vehicle_commands_), 0U);
+
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD,
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    EXPECT_EQ(count_arm_commands(received_vehicle_commands_), 1U);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
+}
+
+TEST_F(BasicControllerSetpointTest,
+       QueuedTakeoffStartsOnlyAfterPx4ReportsArmed)
+{
+    ASSERT_TRUE(controller_->disarm());
+    publish_status(PX4_NAV_STATE_POSCTL,
+                   px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED);
+    publish_land_detected(true);
+
+    ASSERT_TRUE(controller_->arm());
+    ASSERT_TRUE(controller_->takeoff(5.0F));
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::OFFBOARD_INIT);
+    for (uint32_t heartbeat = 0U;
+         heartbeat < taiphoon::controllers::OFFBOARD_PRESTREAM_COUNT;
+         ++heartbeat)
+    {
+        controller_->publish_control_commands();
+        executor_.spin_some(DISCOVERY_WAIT);
+    }
+
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD,
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    ASSERT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
+
+    // PX4 尚未回報解鎖：TAKEOFF 必須等待，不可提前送出起飛設定點。
+    has_setpoint_ = false;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
+    EXPECT_FALSE(has_setpoint_);
+
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::TAKEOFF);
+}
+
+TEST_F(BasicControllerSetpointTest, RejectedArmStopsSessionAndReturnsToIdle)
+{
+    ASSERT_TRUE(controller_->arm());
+    ASSERT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
+
+    px4_msgs::msg::VehicleCommandAck ack;
+    ack.command = 400U;
+    ack.result =
+        px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_DENIED;
+    vehicle_command_ack_pub_->publish(ack);
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::IDLE);
+
+    const auto heartbeats_after_rejection = offboard_control_mode_count_;
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(offboard_control_mode_count_, heartbeats_after_rejection);
+}
+
+TEST_F(BasicControllerSetpointTest, RejectedDisarmDoesNotAffectArmHandling)
+{
+    ASSERT_TRUE(controller_->disarm());
+    px4_msgs::msg::VehicleCommandAck ack;
+    ack.command = 400U;
+    ack.result =
+        px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_DENIED;
+    vehicle_command_ack_pub_->publish(ack);
+    executor_.spin_some(DISCOVERY_WAIT);
+
+    // 之後的正常 ARM 不可被先前 DISARM 的拒絕回應影響。
+    publish_status(
+        taiphoon::controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD);
+    ASSERT_TRUE(controller_->arm());
+    controller_->publish_control_commands();
+    executor_.spin_some(DISCOVERY_WAIT);
+    EXPECT_EQ(controller_->get_flight_state(),
+              taiphoon::controllers::FlightState::ARMED);
 }
 
 }  // namespace

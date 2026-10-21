@@ -3240,12 +3240,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
         const std::string failure_reason = optimized_failure_reason(
             result.termination);
+        ++consecutive_planner_failures_;
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 1000,
             "Optimized planner failed (%s) termination=%s planning_ms=%.2f "
             "budget_ms=%.2f iterations=%zu search_radius_m=%.2f "
-            "route_search=%s route_nodes=%zu route_ms=%.2f min_peer_m=%.2f; "
-            "fail-closed hold/brake",
+            "route_search=%s route_nodes=%zu route_ms=%.2f min_peer_m=%.2f "
+            "consecutive_failures=%zu; fail-closed hold/brake",
             failure_reason.c_str(),
             ego_swarm::planner_termination_reason_string(
                 result.termination).c_str(),
@@ -3253,7 +3254,17 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             result.iteration_count, planner_config_.optimizer_search_radius_m,
             result.route_search_used ? "true" : "false",
             result.route_expanded_nodes, result.route_search_time_ms,
-            result.minimum_peer_distance_m);
+            result.minimum_peer_distance_m, consecutive_planner_failures_);
+        if (consecutive_planner_failures_ >= PLANNER_FAILURE_ESCALATION_COUNT)
+        {
+            // 只升級日誌，不改變 fail-closed 行為與 PlannerStatus 介面。
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "Planner failed %zu consecutive times (%s); vehicle keeps "
+                "holding. Check peer spacing, obstacles, target feasibility "
+                "and CPU load",
+                consecutive_planner_failures_, failure_reason.c_str());
+        }
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
         if (std::isfinite(speed_mps) && speed_mps <= 0.2)
@@ -3272,6 +3283,13 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         (void)peer_trajectories_.prune(now_s);
         return;
     }
+    if (consecutive_planner_failures_ >= PLANNER_FAILURE_ESCALATION_COUNT)
+    {
+        RCLCPP_INFO(get_logger(),
+                    "Planner recovered after %zu consecutive failures",
+                    consecutive_planner_failures_);
+    }
+    consecutive_planner_failures_ = 0U;
 
     double accepted_start_time_s = result.trajectory_start_time_s;
     bool reservation_accepted = !should_reserve_trajectory;

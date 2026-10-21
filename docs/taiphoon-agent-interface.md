@@ -147,7 +147,7 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 | `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
-| `optimizer_time_budget_ms` | `double` | `50.0` | optimized backend 單次 wall-time budget |
+| `optimizer_time_budget_ms` | `double` | `70.0` | optimized backend 單次 wall-time budget；時空 A* 最多使用 60%，其餘保留給 solver |
 | `formation_crossing_penalty_m` | `double` | `10.0` | assignment 水平 crossing 等價成本 |
 | `reservation_lead_time_s` | `double` | `0.0` | future trajectory reservation 最短提前時間；實機參數下 0.5 秒會使隊形切換最近距離降至 1.4～2.3 m，預設與開發環境一致為 0.0 |
 | `reservation_step_s` | `double` | `0.5` | reservation start time 搜尋步進 |
@@ -615,9 +615,16 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 
 | 命令字串 | 參數 | 說明 |
 |----------|------|------|
-| `ARM` | 無 | 解鎖 |
+| `ARM` | 無 | 解鎖；PX4 未解鎖且尚無 Offboard session 時，先自動進入 Offboard（10 筆心跳 prestream → 模式請求 → VehicleStatus 確認）再送出 ARM |
 | `DISARM` | 無 | 上鎖 |
-| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛 |
+| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛；PX4 已落地且尚無 Offboard session 時先自動進入 Offboard，並等 PX4 回報已解鎖才起飛（3 秒內未解鎖即取消） |
+
+> 降落後的地面狀態：PX4 已上鎖、仍停在 Offboard 而 Agent 沒有 Offboard session 時
+> （RTL、LAND、DISARM 或自動上鎖之後），BasicController 會把 PX4 切到 Hold
+> （`DO_SET_MODE` main mode 4 AUTO + sub mode 3 LOITER），避免 PX4 停在缺少心跳的
+> Offboard 而預檢失敗。因此降落後可直接送 `ARM` → `TAKEOFF`，不必先送 `MODE_OFFBOARD`。
+> PX4 拒絕 ARM 時，Agent 記錄 WARN（含 VehicleCommandAck result）並停止 Offboard session；
+> 拒絕原因目前只出現在 Agent 日誌，尚未回報至 QGCS。
 
 #### 編隊命令（僅透過 `/uav_all_agent/command` 廣播）
 

@@ -76,6 +76,42 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         return result;
     }
 
+    // 梯度下降只保證 total cost 下降，可能為了 soft cost 離開 hard clearance。
+    // 保留過程中成本最低的 hard-clear 解，預算或迭代用盡時優先回傳它，
+    // 避免已找到的可行路徑因最後一步不可行而整個被 planner 丟棄。
+    std::vector<Vector3> best_hard_clear_points;
+    OptimizationEvaluation best_hard_clear_evaluation;
+    bool has_best_hard_clear = false;
+    const auto remember_if_hard_clear = [&](
+        const std::vector<Vector3>& points,
+        const OptimizationEvaluation& evaluation)
+    {
+        if (!is_hard_clear(evaluation) ||
+            (has_best_hard_clear &&
+             evaluation.total_cost >= best_hard_clear_evaluation.total_cost))
+        {
+            return;
+        }
+        best_hard_clear_points = points;
+        best_hard_clear_evaluation = evaluation;
+        has_best_hard_clear = true;
+    };
+    const auto make_budget_result = [&](
+        const SolverTerminationReason termination)
+    {
+        ProjectedGradientSolverResult budget_result = result;
+        const bool should_use_best_hard_clear =
+            has_best_hard_clear && !is_hard_clear(current_evaluation);
+        budget_result.control_points = should_use_best_hard_clear
+            ? best_hard_clear_points : current;
+        budget_result.evaluation = should_use_best_hard_clear
+            ? best_hard_clear_evaluation : current_evaluation;
+        budget_result.is_valid = true;
+        budget_result.termination = termination;
+        return budget_result;
+    };
+    remember_if_hard_clear(current, current_evaluation);
+
     double step_m = config.initial_step_m;
     std::size_t next_lateral_probe_index = 0U;
     const auto find_coordinate_improvement = [
@@ -292,13 +328,11 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
     for (int iteration = 0; iteration < config.max_iterations; ++iteration)
     {
         result.iterations = static_cast<std::size_t>(iteration + 1);
+        // 每次接受新解後都會回到迴圈開頭，於此統一記錄 hard-clear 候選。
+        remember_if_hard_clear(current, current_evaluation);
         if (elapsed_ms() >= config.time_budget_ms)
         {
-            result.control_points = current;
-            result.evaluation = current_evaluation;
-            result.is_valid = true;
-            result.termination = SolverTerminationReason::TIMEOUT;
-            return result;
+            return make_budget_result(SolverTerminationReason::TIMEOUT);
         }
 
         // Resolve a symmetric peer-barrier stationary point before applying
@@ -380,6 +414,14 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
                 {
                     gradient.at(point_index).at(axis) = 0.0;
                     continue;
+                }
+
+                // finite-difference 每軸需兩次 objective 評估，是最耗時的區段；
+                // 逐軸檢查預算，避免整段跑完才發現已超過 planner cycle 預算。
+                if (elapsed_ms() >= config.time_budget_ms)
+                {
+                    return make_budget_result(
+                        SolverTerminationReason::TIMEOUT);
                 }
 
                 const OptimizationEvaluation plus_evaluation =
@@ -623,11 +665,8 @@ ProjectedGradientSolverResult ProjectedGradientSolver::solve(
         }
     }
 
-    result.control_points = current;
-    result.evaluation = current_evaluation;
-    result.is_valid = true;
-    result.termination = SolverTerminationReason::ITERATION_LIMIT;
-    return result;
+    remember_if_hard_clear(current, current_evaluation);
+    return make_budget_result(SolverTerminationReason::ITERATION_LIMIT);
 }
 
 bool ProjectedGradientSolver::is_valid_config(
