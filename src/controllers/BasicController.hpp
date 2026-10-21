@@ -62,6 +62,21 @@ constexpr float ALTITUDE_MIN_M = 1.0F;
 /// RTL 完成等待超時 (毫秒)
 constexpr int RTL_TIMEOUT_MS = 60000;
 
+/// DO_SET_MODE param1：MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+constexpr float PX4_MODE_FLAG_CUSTOM_MODE_ENABLED = 1.0F;
+
+/// PX4 custom main mode：AUTO（px4_custom_mode.h）
+constexpr float PX4_CUSTOM_MAIN_MODE_AUTO = 4.0F;
+
+/// PX4 AUTO sub mode：LOITER，即 QGC／PX4 文件中的 Hold 模式
+constexpr float PX4_CUSTOM_SUB_MODE_AUTO_LOITER = 3.0F;
+
+/// 地面停機保護重送 Hold 模式命令的最短間隔 (毫秒)
+constexpr int PARKING_HOLD_RETRY_MS = 2000;
+
+/// 排隊中的 TAKEOFF 在 Offboard 確認後等待 PX4 解鎖的上限 (毫秒)
+constexpr int QUEUED_TAKEOFF_ARM_TIMEOUT_MS = 3000;
+
 /// 預設 ROS2 QoS depth
 constexpr int DEFAULT_QOS_DEPTH = 10;
 
@@ -132,7 +147,13 @@ public:
     /** @brief 檢查控制器是否已初始化 */
     bool is_initialized() const override;
 
-    /** @brief 發送 Arm (解鎖) 命令 */
+    /**
+     * @brief 發送 Arm (解鎖) 命令
+     *
+     * PX4 未解鎖且沒有 Offboard session 時，先自動建立 Offboard session，
+     * PX4 確認進入 Offboard 後才送出 ARM；Offboard 進入期間收到時排隊。
+     * PX4 拒絕 ARM 時停止 session 並回到 IDLE。
+     */
     bool arm() override;
 
     /** @brief 發送 Disarm (上鎖) 命令 */
@@ -143,6 +164,8 @@ public:
      *
      * 地面起飛（PX4 回報落地或尚未設定目標航向）時鎖定當下航向；
      * 空中重送 TAKEOFF 保留既有目標航向，避免與 planner 的 target yaw 分歧。
+     * PX4 已落地且沒有 Offboard session 時，先自動建立 session，並等 PX4
+     * 回報已解鎖才開始起飛；Offboard 進入期間收到時排隊。
      *
      * @param altitude_m 起飛高度 (公尺)，必須為正
      * @return true 起飛命令設定成功
@@ -542,14 +565,50 @@ private:
     bool send_land_command();
 
     /**
-     * @brief 發送 HOLD (保持位置) 模式命令
+     * @brief 發送 HOLD 模式命令
      *
-     * PX4 1.18: command=176 (VEHICLE_CMD_DO_SET_MODE),
-     * param1=1.0 (custom mode), param2=8.0 (Position Hold for multicopter)
+     * PX4: command=176 (VEHICLE_CMD_DO_SET_MODE), param1=1.0 (custom mode),
+     * param2=4.0 (AUTO), param3=3.0 (AUTO_LOITER，即 Hold)。
+     * 空中時 PX4 自行定點懸停；地面上鎖時僅為停機模式，可直接解鎖。
      *
      * @return true 發送成功
      */
     bool send_hold_mode_command();
+
+    /**
+     * @brief 立即送出 ARM 並進入 ARMED 狀態，等待 PX4 回應。
+     *
+     * @return true 發送成功
+     */
+    bool send_arm_now();
+
+    /**
+     * @brief 設定 TAKEOFF 目標並進入 TAKEOFF 狀態（不檢查 Offboard session）。
+     *
+     * @param altitude_m 目標高度（公尺，已驗證為正有限值）
+     * @return true 設定成功
+     */
+    bool start_takeoff(float altitude_m);
+
+    /**
+     * @brief Offboard 確認後依序執行排隊中的 ARM 與 TAKEOFF。
+     *
+     * ARM 立即送出；TAKEOFF 等 PX4 回報已解鎖才開始，逾時則取消。
+     */
+    void execute_queued_commands();
+
+    /**
+     * @brief PX4 拒絕 ARM 時停止 Offboard session 並回到 IDLE。
+     */
+    void handle_arm_rejection();
+
+    /**
+     * @brief 地面停機保護：PX4 已上鎖且停在 Offboard，而 Agent 沒有
+     *        Offboard session 時，將 PX4 切到 Hold。
+     *
+     * 避免 PX4 停在缺少心跳的 Offboard，導致預檢失敗而無法解鎖。
+     */
+    void park_in_hold_when_disarmed_in_offboard();
 
     /**
      * @brief 驗證設定點數值 (無 NaN/Inf)
@@ -812,6 +871,24 @@ private:
 
     /// Hold 模式命令已發送旗標
     bool hold_cmd_sent_{false};
+
+    /// Offboard 尚未確認前收到的 ARM／TAKEOFF，確認後依序執行
+    std::atomic<bool> is_arm_queued_{false};
+    std::atomic<bool> is_takeoff_queued_{false};
+    float queued_takeoff_altitude_m_{0.0F};
+    bool is_queued_takeoff_waiting_arm_{false};
+    rclcpp::Time queued_takeoff_wait_start_{
+        static_cast<int64_t>(0), RCL_ROS_TIME};
+
+    /// 已送出 ARM 且尚未收到 PX4 回應；DISARM 不設定
+    std::atomic<bool> is_arm_ack_pending_{false};
+    std::atomic<bool> is_arm_rejected_{false};
+    std::atomic<uint8_t> arm_reject_result_{0U};
+
+    /// 地面停機保護最近一次送出 Hold 的時間
+    bool has_parking_hold_sent_{false};
+    rclcpp::Time last_parking_hold_time_{
+        static_cast<int64_t>(0), RCL_ROS_TIME};
 };
 
 }  // namespace controllers

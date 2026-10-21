@@ -615,9 +615,16 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 
 | 命令字串 | 參數 | 說明 |
 |----------|------|------|
-| `ARM` | 無 | 解鎖 |
+| `ARM` | 無 | 解鎖；PX4 未解鎖且尚無 Offboard session 時，先自動進入 Offboard（10 筆心跳 prestream → 模式請求 → VehicleStatus 確認）再送出 ARM |
 | `DISARM` | 無 | 上鎖 |
-| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛 |
+| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛；PX4 已落地且尚無 Offboard session 時先自動進入 Offboard，並等 PX4 回報已解鎖才起飛（3 秒內未解鎖即取消） |
+
+> 降落後的地面狀態：PX4 已上鎖、仍停在 Offboard 而 Agent 沒有 Offboard session 時
+> （RTL、LAND、DISARM 或自動上鎖之後），BasicController 會把 PX4 切到 Hold
+> （`DO_SET_MODE` main mode 4 AUTO + sub mode 3 LOITER），避免 PX4 停在缺少心跳的
+> Offboard 而預檢失敗。因此降落後可直接送 `ARM` → `TAKEOFF`，不必先送 `MODE_OFFBOARD`。
+> PX4 拒絕 ARM 時，Agent 記錄 WARN（含 VehicleCommandAck result）並停止 Offboard session；
+> 拒絕原因目前只出現在 Agent 日誌，尚未回報至 QGCS。
 
 #### 編隊命令（僅透過 `/uav_all_agent/command` 廣播）
 
