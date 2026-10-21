@@ -29,6 +29,9 @@ namespace
 constexpr double LEGACY_TIMING_SPAN_COUNT = 3.0;
 constexpr double LEGACY_TIMING_CONTROL_POINT_DENOMINATOR = 5.0;
 
+// 時空 A* 可使用的 planner 預算比例（無單位）；其餘至少 40% 保留給 solver。
+constexpr double ROUTE_SEARCH_BUDGET_RATIO = 0.6;
+
 class TrajectoryObjective final : public IOptimizationObjective
 {
 public:
@@ -532,6 +535,10 @@ PlannerResult OptimizedEgoPlanner::plan(
         snapshot.path_constraint == PathConstraint::FIXED_Z)
     {
         PlannerConfig route_config = config_;
+        // A* 與 solver 共用同一個 planner wall-time 預算；限制 A* 的份額，
+        // 保證 solver 一定分得到時間，不會因 A* 用盡預算而直接 timeout。
+        route_config.optimizer_time_budget_ms =
+            config_.optimizer_time_budget_ms * ROUTE_SEARCH_BUDGET_RATIO;
         SpatiotemporalRouteInitializer route_initializer;
         const SpatiotemporalRouteResult route_result =
             route_initializer.initialize(snapshot, route_config, seed);

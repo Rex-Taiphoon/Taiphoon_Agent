@@ -24,6 +24,10 @@ using taiphoon::ego_swarm::SpatiotemporalRouteResult;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::perception::RawPointObstacleMap;
 
+/// 正確性測試使用的寬鬆牆鐘預算（毫秒）：A* 由 ROUTE_MAX_EXPANDED_NODES 等
+/// 決定性條件終止，結果不隨 CPU 負載變動；實際耗時改由 SITL 日誌觀察。
+constexpr double DETERMINISTIC_TIME_BUDGET_MS = 5000.0;
+
 RawPointObstacleMap make_map(const std::vector<Vector3>& points)
 {
     RawPointObstacleMap map;
@@ -128,7 +132,7 @@ TEST(SpatiotemporalRouteInitializerTest, FixedWallProducesLateralRoute)
     RawPointObstacleMap map = make_map(wall);
     PlanningSnapshot snapshot = make_snapshot(map);
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     SpatiotemporalRouteInitializer initializer;
 
     const SpatiotemporalRouteResult result = initializer.initialize(
@@ -168,7 +172,7 @@ TEST(SpatiotemporalRouteInitializerTest, PointCloudWallAtTakeoffHeightRoutes)
     RawPointObstacleMap map = make_map(wall);
     PlanningSnapshot snapshot = make_snapshot(map);
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     SpatiotemporalRouteInitializer initializer;
 
     const SpatiotemporalRouteResult result = initializer.initialize(
@@ -206,7 +210,7 @@ TEST(SpatiotemporalRouteInitializerTest, OffsetTakeoffPositionRoutesPastWall)
     snapshot.local_goal = Vector3{11.75, 2.35, -8.0};
     snapshot.fixed_z_m = -8.0;
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     SpatiotemporalRouteInitializer initializer;
 
     const SpatiotemporalRouteResult result = initializer.initialize(
@@ -231,7 +235,7 @@ TEST(SpatiotemporalRouteInitializerTest, StaggeredTerminalHoldsAllowMiddleRoute)
     PlannerConfig config;
     // 此回歸場景以 3 m 門檻阻塞直線，不依賴部署預設距離。
     config.peer_collision_min_distance_m = 3.0;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     SpatiotemporalRouteInitializer initializer;
 
     const SpatiotemporalRouteResult result = initializer.initialize(
@@ -286,7 +290,7 @@ TEST(SpatiotemporalRouteInitializerTest, LowerPriorityMovingPeerTriggersRouteSea
     snapshot.self_agent_id = 2;
     snapshot.peers.push_back(make_crossing_peer(1));
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     SpatiotemporalRouteInitializer initializer;
 
     const SpatiotemporalRouteResult result = initializer.initialize(

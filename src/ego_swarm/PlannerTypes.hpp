@@ -106,7 +106,7 @@ struct PlannerConfig
     double obstacle_weight{10.0};
     double peer_weight{10.0};
     int optimizer_max_iterations{40};
-    double optimizer_time_budget_ms{50.0};
+    double optimizer_time_budget_ms{70.0};
     double optimizer_gradient_epsilon_m{0.05};
     double optimizer_initial_step_m{0.20};
     double optimizer_minimum_step_m{0.01};

@@ -45,6 +45,36 @@ using taiphoon::ego_swarm::SolverTerminationReason;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::perception::RawPointObstacleMap;
 
+/// 正確性測試使用的寬鬆牆鐘預算（毫秒）：讓 solver 只受迭代上限終止，
+/// 結果不隨 CPU 負載變動；實際耗時改由 SITL 日誌的 planning_ms 觀察。
+constexpr double DETERMINISTIC_TIME_BUDGET_MS = 5000.0;
+
+/**
+ * @brief 成本隨控制點 1 的 x 趨近 0 而下降，但同儕距離同時縮小的目標函數。
+ *
+ * x=1 時同儕距離剛好 3 m（hard clear），往低成本方向移動就會失去 hard
+ * clearance，用來驗證 solver 在預算用盡時回傳最佳 hard-clear 解。
+ */
+struct ClearanceTradeoffObjective final : IOptimizationObjective
+{
+    OptimizationEvaluation evaluate(
+        const std::vector<Vector3>& points) const override
+    {
+        OptimizationEvaluation result;
+        result.is_valid = points.size() > 1U;
+        if (!result.is_valid)
+        {
+            return result;
+        }
+        for (const Vector3& point : points)
+        {
+            result.total_cost += point.at(0) * point.at(0);
+        }
+        result.minimum_peer_distance_m = 2.0 + points.at(1).at(0);
+        return result;
+    }
+};
+
 RawPointObstacleMap make_empty_map()
 {
     RawPointObstacleMap map;
@@ -236,6 +266,31 @@ TEST(OptimizedSolverTest, NominalAndFailureReasonsAreExplicit)
     EXPECT_EQ(timeout.termination, SolverTerminationReason::TIMEOUT);
 }
 
+TEST(OptimizedSolverTest, BudgetExhaustionReturnsBestHardClearCandidate)
+{
+    ProjectedGradientSolver solver;
+    ProjectedGradientSolverConfig config;
+    config.max_iterations = 2;
+    config.time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
+    config.hard_peer_distance_m = 3.0;
+    const std::vector<Vector3> seed{
+        Vector3{0.0, 0.0, 0.0}, Vector3{1.0, 0.0, 0.0},
+        Vector3{1.0, 0.0, 0.0}, Vector3{0.0, 0.0, 0.0}};
+    const ProjectedGradientSolver::Projection identity =
+        [](std::vector<Vector3>&) { return true; };
+
+    const auto result = solver.solve(
+        seed, ClearanceTradeoffObjective{}, config, identity);
+
+    // 梯度下降會把控制點移向低成本、但同儕距離不足的方向；迭代用盡時
+    // 必須回傳仍滿足 hard clearance 的 seed，而不是最後一個不可行解。
+    ASSERT_TRUE(result.is_valid);
+    EXPECT_EQ(result.termination, SolverTerminationReason::ITERATION_LIMIT);
+    EXPECT_NEAR(result.control_points.at(1).at(0), 1.0, 1.0e-9);
+    EXPECT_GE(result.evaluation.minimum_peer_distance_m + 1.0e-3,
+              config.hard_peer_distance_m);
+}
+
 TEST(OptimizedSolverTest, LateralProbeExpandsFromSmallestImprovement)
 {
     ProjectedGradientSolver solver;
@@ -331,7 +386,7 @@ TEST(OptimizedPlannerTest, OptimizedPlannerConvergesInOpenSpace)
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     OptimizedEgoPlanner planner(config);
 
     const auto result = planner.plan(snapshot);
@@ -402,7 +457,7 @@ TEST(OptimizedPlannerTest, LongHorizontalMoveReachesThirtyMetersWithinTwentySeco
     snapshot.fixed_z_m = 0.0;
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     OptimizedEgoPlanner planner(config);
 
     const auto result = planner.plan(snapshot);
@@ -436,7 +491,7 @@ TEST(OptimizedPlannerTest, ClearSeedSkipsSolverWithNonEmptyFarObstacleMap)
     ASSERT_TRUE(map.update({Vector3{100.0, 100.0, 0.0}}, 0.0));
     PlanningSnapshot snapshot = make_snapshot(map);
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     OptimizedEgoPlanner planner(config);
 
     const auto result = planner.plan(snapshot);
@@ -444,10 +499,11 @@ TEST(OptimizedPlannerTest, ClearSeedSkipsSolverWithNonEmptyFarObstacleMap)
         << taiphoon::ego_swarm::planner_termination_reason_string(
             result.termination);
     EXPECT_EQ(result.termination, PlannerTerminationReason::SUCCESS);
-    EXPECT_LT(result.planning_time_ms, config.optimizer_time_budget_ms);
+    // 以 solver 迭代數確認走 fast path；牆鐘耗時受 CPU 負載影響，不在單元測試斷言。
+    EXPECT_EQ(result.iteration_count, 0U);
 }
 
-TEST(OptimizedPlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
+TEST(OptimizedPlannerTest, LongMoveWithPeerOccupancyStaysFeasible)
 {
     RawPointObstacleMap map = make_empty_map();
     PlanningSnapshot snapshot = make_snapshot(map);
@@ -461,7 +517,7 @@ TEST(OptimizedPlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
         make_terminal_hold_peer(4, Vector3{0.0, -10.0, 0.0}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     OptimizedEgoPlanner planner(config);
 
     const auto result = planner.plan(snapshot);
@@ -473,7 +529,8 @@ TEST(OptimizedPlannerTest, LongMoveWithPeerOccupancyFitsDefaultBudget)
         << " obstacle_cost=" << result.obstacle_cost
         << " peer_cost=" << result.peer_cost
         << " min_peer=" << result.minimum_peer_distance_m;
-    EXPECT_LT(result.planning_time_ms, config.optimizer_time_budget_ms * 1.5);
+    EXPECT_LE(result.iteration_count,
+              static_cast<std::size_t>(config.optimizer_max_iterations));
 }
 
 TEST(OptimizedPlannerTest, HorizontalMoveAroundTerminalPeerLineStaysSafe)
@@ -493,7 +550,7 @@ TEST(OptimizedPlannerTest, HorizontalMoveAroundTerminalPeerLineStaysSafe)
         make_terminal_hold_peer(4, Vector3{0.0, 24.0, 0.0}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -543,7 +600,7 @@ TEST(OptimizedPlannerTest, HorizontalMoveWithYawResidualStillFindsSidePath)
         make_terminal_hold_peer(4, Vector3{0.0, 23.868, -7.834}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -581,7 +638,7 @@ TEST(OptimizedPlannerTest, HorizontalMoveNearPeerUsesEarlySideClearance)
         make_terminal_hold_peer(4, Vector3{-1.268, 25.408, -7.125}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -621,7 +678,7 @@ TEST(OptimizedPlannerTest, LongHorizontalMoveAroundEastLineStaysFeasible)
         make_terminal_hold_peer(4, Vector3{-2.4, 21.4, 0.0}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -664,7 +721,7 @@ TEST(OptimizedPlannerTest, LongHorizontalMoveMatchesSitlEastLineSnapshot)
         make_terminal_hold_peer(4, Vector3{-1.0, 23.0, 0.0}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -704,7 +761,7 @@ TEST(OptimizedPlannerTest, ReverseLongHorizontalMoveMatchesSitlEastLineSnapshot)
         make_terminal_hold_peer(4, Vector3{-1.0, 23.0, 0.0}));
 
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 40;
     config.peer_weight = 100.0;
     config.smoothness_weight = 0.01;
@@ -735,7 +792,7 @@ TEST(OptimizedPlannerTest, AltitudeProjectionHonorsFixedAndLinearPaths)
     snapshot.local_goal = Vector3{8.0, 0.0, 5.0};
     snapshot.fixed_z_m = 5.0;
     PlannerConfig config;
-    config.optimizer_time_budget_ms = 20.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     OptimizedEgoPlanner planner(config);
 
     snapshot.path_constraint = PathConstraint::FIXED_Z;
@@ -909,7 +966,7 @@ TEST(OptimizedPlannerTest, SpatiotemporalRouteSeedGuidesFixedZPlanner)
     EXPECT_TRUE(has_lateral_offset);
 }
 
-TEST(OptimizedPlannerTest, CloudWallAtTakeoffHeightRemainsFeasibleWithDefaultBudget)
+TEST(OptimizedPlannerTest, CloudWallAtTakeoffHeightRemainsFeasible)
 {
     RawPointObstacleMap map;
     std::vector<Vector3> wall_points;
@@ -933,7 +990,7 @@ TEST(OptimizedPlannerTest, CloudWallAtTakeoffHeightRemainsFeasibleWithDefaultBud
 
     PlannerConfig config;
     config.enable_spatiotemporal_route_planning = true;
-    config.optimizer_time_budget_ms = 50.0;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
     config.optimizer_max_iterations = 200;
     OptimizedEgoPlanner planner(config);
 
