@@ -1,6 +1,6 @@
 # Agent 命令參考
 
-所有 ROS2 命令都必須在 Docker 開發容器內執行。啟動與部署操作請見根目錄 README。
+所有 ROS2 命令都必須在 Docker 開發容器內執行。啟動操作請見根目錄 [README](../README.md)，部署網路與驗證細節見 [開發與驗證指南](development.md)。
 
 ## 命令參考
 

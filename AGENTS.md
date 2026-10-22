@@ -26,6 +26,8 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 │
 ├── docs/ # 開發文件
 │ ├── taiphoon-agent-interface.md # Node / Topic 對外介面清單（需保持最新）
+│ ├── development.md # 開發與驗證指南（版本狀態、網路與 DDS 細節、驗證流程、dev 指令）
+│ ├── images/ # README 畫面素材（Logo、展示 GIF）
 │ └── codex/ # EGO-Swarm / 機群規劃開發文件
 │
 ├── build/ # 建置中間檔案
@@ -40,7 +42,8 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 ├── CONTEXT.md # 專案背景與決策脈絡
 ├── CHARACTERS.md # 工程協作角色與跨模組決策規約
 ├── AGENTS.md # AI Agent 操作指引
-└── README.md # 快速上手說明
+├── LICENSE # MIT 授權
+└── README.md # 給使用者的下載、安裝與操作說明（不放開發細節）
 ```
 
 ## Engineering characters
@@ -73,7 +76,7 @@ Taiphoon_Agent 是以 Docker 容器為部署單元的無人載具任務與感測
 - 功能開發先規劃再動手：在修改程式之前，先寫下介面、資料流、失效情境與驗證方式。
 - 維持模組低耦合：避免把飛控橋接、任務邏輯、感測融合、影像串流寫成互相纏繞的單體模組。
 - 開發過程中任何單元測試應該在`test/`中實作
-- `README.md`應該保持最新狀態
+- `README.md`應該保持最新狀態；README 只寫給使用者，版本狀態、網路與 DDS 細節、驗證流程與開發指令放在 `docs/development.md`
 - 當`msg/`資料更新時，必須同步更新一份`msg/`裡面的介面檔案(.msg/.srv/.action)到與專案目錄同級的`Taiphoon_Agent_Interfaces`資料夾，包含`taiphoon-agent-interface.md`
 - 當需要參閱舊架構時，可以參考`docs/codex/step1-data-flow-analysis.md`，未經人類開發者同意禁止修改
 

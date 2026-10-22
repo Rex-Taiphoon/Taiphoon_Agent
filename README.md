@@ -1,212 +1,242 @@
-# Taiphoon Agent
+<p align="center">
+  <img src="docs/images/logo.svg" alt="Taiphoon Agent">
+</p>
 
-目前版本：`v1.3.0-rc.9` 預發布版，詳見 [版本說明](docs/releases/v1.3.0-rc.9.md)。
+<p align="center">
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases"><img src="https://img.shields.io/github/v/release/Rex-Taiphoon/Taiphoon_Agent?include_prereleases" alt="Latest Release"></a>
+  <a href="#下載"><img src="https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux%20%7C%20Windows%20%7C%20macOS-0078D6" alt="Platform: Raspberry Pi | Linux | Windows | macOS"></a>
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_QGCS"><img src="https://img.shields.io/badge/works%20with-Taiphoon%20QGCS-08203C" alt="Works with Taiphoon QGCS"></a>
+  <a href="#授權"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"></a>
+</p>
 
-以 ROS2 Humble 整合飛控、任務規劃、感測器與影像。每個 Agent 只控制自己對應的飛控；
-日常啟動統一使用 `taiphoon_agent`，不需要附加參數，不會自動 Arm 或起飛。
+**Taiphoon Agent** 是在每台無人機上執行的機載程式，與 Taiphoon QGCS 搭配組成機群控制系統，負責與 PX4 飛控溝通，並處理任務規劃、編隊與機間避碰。下載平台套件後一個指令就能啟動，不需安裝 ROS2 或自行編譯；同一套工具可以裝在無人機的樹莓派上飛實機，也能在電腦上啟動 1～4 台模擬無人機。
 
-編隊與同儕避碰的預設機體中心最小距離為 **2 m**，規劃額外裕度維持 1 m。
-這些參數不會自動限制場域邊界、飛行高度或 PX4 RTL 路徑；小場域三機驗證與
-測試取捨詳見 [驗證計畫](docs/codex/small-field-three-agent-validation-plan.md)。
+<!-- 主視覺預留位置：終端機錄影 GIF（docs/images/quickstart.gif），從執行 taiphoon_agent、首次設定選 sim → 4 組，到啟動成功。
+<p align="center">
+  <img src="docs/images/quickstart.gif" alt="執行 taiphoon_agent，首次設定選擇 sim 與 4 組，啟動 4 台模擬無人機並顯示啟動成功">
+</p>
+-->
 
-預設單元測試只建置現行控制鏈與必要回歸；舊 FormationCalculator、waypoint planner
-與觀測式防撞測試可由 `-DTAIPHOON_BUILD_LEGACY_TESTS=ON` 啟用，原始測試檔仍保留。
+## 特色
 
-確認落地或解除解鎖後，Agent 會清除編隊、移動目標與舊本機軌跡，停止任務規劃。
-地面移動／編隊命令不會排隊到起飛後執行；再次起飛後須重新下達編隊命令。
-已降落的機體不再發布佔位，其他 Agent 依有效落地狀態移除其舊軌跡與編隊成員資格。
-降落生命週期回歸與 Docker 測試方式詳見 [驗證報告](docs/codex/landing-mission-lifecycle-report.md)。
+- **一個指令啟動**：下載並解壓縮後執行 `taiphoon_agent` 即可，不需安裝 ROS2，也不必自行編譯。
+- **實機與模擬共用**：樹莓派實機與電腦上的模擬機群使用同一套工具，首次設定後，之後一鍵啟動。
+- **多機自動編隊與避碰**：Agent 之間互相交換接下來的飛行軌跡，依總移動距離最短自動分配隊形位置，並保持機間安全距離。
+- **成員離線自動重組**：有 Agent 離線時，其餘成員自動重組隊形；只剩 1 台時解散編隊並原地懸停。
+- **安全預設**：啟動時不會解鎖或起飛；缺少障礙物地圖或多機時間未同步時，無人機原地等待，不會貿然移動。
+- **多平台套件**：提供 Raspberry Pi、Linux、Windows 與 macOS 的完整套件，內含預先編譯好的 Agent 映像。
 
-編隊高度一律以 Home 為基準，先移動再下達編隊也不會疊加目前飛行高度。Agent 關閉後，
-存活成員會自動重組；飛行中重新啟動的 Agent 需重新下達 `FORMATION_*` 才會加入，
-期間其他成員維持目前編隊。規則詳見 [介面文件](docs/taiphoon-agent-interface.md) 3.3 節。
+## 實際執行
 
-Windows 開發環境可用 PowerShell 執行小場域驗證（需 Docker Desktop、原生 Compose、
-Git Bash、既有 dev 映像與可寫入的開發建置 volumes；Git Bash 僅調度 Docker，ROS2 在容器內執行）：
+<!-- 終端機畫面預留位置：
+### 一個指令啟動
 
-```powershell
-./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 1
-./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 2
-./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 3
-./AutoTest/scripts/small_field_three_agent_validation.ps1 -Scenario crossing
-```
+<p align="center">
+  <img src="docs/images/quickstart.gif" alt="執行 taiphoon_agent，首次設定選擇 sim 與 4 組，啟動成功後以 taiphoon_agent status 顯示 4 台 Agent 都已收到有效 PX4 狀態">
+</p>
 
-測試使用三機、2 m 起飛高度、2 m 圓半徑與嚴格 2 m 中心距離驗收。
-編隊情境只執行前五步；兩機重編隊須持續收斂 15 秒，不下達 RTL。
-交叉情境讓兩端飛機互換位置，中間飛機保持原位。
-記錄輸出於 `AutoTest/Log/small-field-日期/`；即時 monitor 成功後，仍須在 Docker 中以
-`analyze_small_field_px4_logs.py`（需要 `pyulog`）檢查包含失效機的三台 PX4 ULog。
-離線查核使用共同 UTC 時鐘與 20 Hz 取樣，不等同實體碰撞模擬或實機零碰撞保證。
+首次執行時選擇模式與數量，Agent 隨即啟動；之後只要執行 `taiphoon_agent` 就會沿用同一份設定。畫面下方的倍速標示為剪輯時加速的段落。
+-->
 
-## 下載與啟動
+### 機群同時起飛
 
-先安裝 Docker：Ubuntu 22.04 使用 Docker Engine＋Compose plugin；Windows／macOS
-使用 Docker Desktop 的 Linux 容器。從 [GitHub Release](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases)
-下載並解壓完整平台包，內含原生工具與預編譯 Agent 映像，不必自己編譯或手動校驗。
+<p align="center">
+  <img src="docs/images/takeoff.gif" alt="4 台模擬無人機收到全機群起飛命令後同時起飛到 3 公尺懸停，畫面為 Taiphoon QGCS">
+</p>
 
-| 平台 | 套件後綴 | 最簡單啟動 |
-|---|---|---|
-| 樹莓派／Ubuntu 22.04 ARM64 | linux-arm64.tar.gz | `./taiphoon_agent` |
-| Ubuntu 22.04 Intel／AMD | linux-amd64.tar.gz | `./taiphoon_agent` |
-| Windows Intel／AMD | windows-amd64.zip | 雙擊 `taiphoon_agent.exe` |
-| macOS Apple Silicon | macos-arm64.tar.gz | 雙擊 `Start Taiphoon Agent.command` |
-| macOS Intel | macos-amd64.tar.gz | 雙擊 `Start Taiphoon Agent.command` |
+收到全機群起飛命令後，4 台 Agent 各自讓 PX4 起飛到 3 公尺並懸停。畫面為 Taiphoon QGCS。
 
-Windows PowerShell 可執行 `./taiphoon_agent.exe`，macOS Terminal 可執行 `./taiphoon_agent`。
-選用 `install.ps1` 或 `bash install.sh` 安裝後，各平台可直接使用 `taiphoon_agent`。
-macOS 首次開啟依系統提供的核准流程操作；目前套件未公證。
+### 環形與燕行編隊
 
-原生啟動器啟動時會在主機註冊容器退出清理，Agent 遠端關閉或自行退出後便移除容器；
-`stop`／`restart` 也會移除舊容器，保留命名 volumes 與設定。Windows 清理程序不開啟視窗。
-此行為需要重新編譯的啟動器，既有 Release 執行檔不會自動更新；直接執行
-`docker compose up` 不會註冊此清理程序。容器移除後無法使用 `docker logs` 讀取舊 stdout，
-需要保留的記錄應先匯出；上述驗證腳本會在移除前自動保存 Agent 日誌。
+<p align="center">
+  <img src="docs/images/formation.gif" alt="4 台無人機先排成半徑 15 公尺的環形編隊，再變換為頂點朝北的燕行編隊，畫面為 Taiphoon QGCS">
+</p>
 
-## 一次設定，後續一鍵
+Agent 依總移動距離最短自動分配位置並避碰，先排成半徑 15 公尺的環形編隊，再變換為燕行編隊（V 字，頂點朝北）。畫面為 Taiphoon QGCS；畫面下方的倍速標示為剪輯時加速的段落。
 
-首次執行會顯示設定；之後沿用保存內容。切換情境用 `stop` → `config` → `start`。
+### 成員離線自動重組
 
-| 情境 | 首次選擇 | 啟動內容 |
-|---|---|---|
-| 樹莓派單機實機 | deploy → 無人機編號 → 選填 GCS IP | 一個 Agent，Wi-Fi／UDP 飛控 |
-| 單組本機模擬 | sim → 1 | 一個 PX4＋一個 Agent |
-| 多組本機模擬 | sim → 2～4 | 對應數量 PX4＋Agent，先 Agent 後 PX4 |
-| 模擬與 QGCS | sim → 1～4 → 選填其他電腦 QGCS IP | Docker Desktop 上由同機或其他電腦的原生 Taiphoon_QGCS 以單播連線 |
-| 開發 | dev → 原始碼目錄 → sim 或 real | 容器內編譯；sim 可選 1～4 組 |
+<p align="center">
+  <img src="docs/images/regroup.gif" alt="4 台無人機環形編隊中關閉其中 1 台 Agent，其餘 3 台自動重組為新的環形編隊，畫面為 Taiphoon QGCS">
+</p>
 
-實機預設飛控 IP 為 **192.168.1.14**；這不是 Agent 主機 IP。工具每次啟動自動取得
-Agent 主機 IPv4，輸出飛控所需 UDP 埠與 namespace。無人機 N 使用 `8887 + N` 與 `/uav_N`。
-PX4 的 uXRCE-DDS client 必須事先指向 Agent 主機，例如無人機 1：
+編隊中有 1 台 Agent 離線後，其餘 3 台確認成員變動，自動重新分配位置組成新的環形編隊，存活成員只做最短的移動。畫面為 Taiphoon QGCS；畫面下方的倍速標示為剪輯時加速的段落。
+
+<!-- 更多畫面預留位置：status、logs 終端機截圖
+### 更多畫面
+
+| 狀態查詢 | 日誌 |
+|:---:|:---:|
+| <img src="docs/images/status.png" alt="taiphoon_agent status：各容器健康狀態與每台 Agent 的 PX4 狀態"> | <img src="docs/images/logs.png" alt="taiphoon_agent logs：最近的 Agent 日誌"> |
+-->
+
+> 以上畫面取自 4 台模擬無人機（PX4 SITL）；地圖資料 © OpenStreetMap contributors。
+
+## 下載
+
+選擇你的平台下載最新版本，或到 [Releases 頁面](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases)查看所有檔案：
+
+<p align="center">
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases"><img src="https://img.shields.io/badge/Raspberry%20Pi-A22846?logo=raspberrypi&logoColor=white" alt="Raspberry Pi"></a>
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases"><img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux"></a>
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases"><img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="Windows"></a>
+  <a href="https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases"><img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS"></a>
+</p>
+
+- **Raspberry Pi（64 位元 Ubuntu 22.04）**：`linux-arm64.tar.gz`，解壓縮後執行 `./taiphoon_agent`；需先安裝 Docker Engine 與 Compose plugin。
+- **Linux（Ubuntu 22.04，Intel／AMD）**：`linux-amd64.tar.gz`，解壓縮後執行 `./taiphoon_agent`；需先安裝 Docker Engine 與 Compose plugin。
+- **Windows（Intel／AMD 64 位元）**：`windows-amd64.zip`，解壓縮後按兩下 `taiphoon_agent.exe`；需先安裝 Docker Desktop。
+- **macOS（Apple Silicon／Intel）**：Apple Silicon 選 `macos-arm64.tar.gz`、Intel 選 `macos-amd64.tar.gz`，解壓縮後按兩下 `Start Taiphoon Agent.command`；需先安裝 Docker Desktop。
+
+<details>
+<summary>安裝注意事項</summary>
+
+- **安裝到使用者目錄（選用）**：Linux／macOS 在套件目錄執行 `bash install.sh`，Windows 執行 `./install.ps1`，之後在任何位置都能直接輸入 `taiphoon_agent`。沒有安裝時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+- **macOS**：套件尚未經 Apple 公證，第一次開啟會被系統阻擋。到「系統設定 → 隱私權與安全性」按「強制打開」即可，不需要停用安全機制。
+- **Windows**：找不到 Docker 時，先開啟 Docker Desktop；工具會自動尋找 PATH 與標準安裝位置。只安裝在 WSL Ubuntu 內的 Docker 無法使用，請改用 Docker Desktop。
+- **Docker Desktop**：請使用 Linux 容器模式。
+- **版本一致**：啟動工具與映像請整包下載同一個版本，不要混用不同版本的檔案。
+
+</details>
+
+## 快速開始
+
+1. 安裝並開啟 Docker：Ubuntu 使用 Docker Engine 與 Compose plugin，Windows／macOS 使用 Docker Desktop。
+2. 從 [Releases 頁面](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases)下載對應平台的套件並解壓縮。要使用模擬模式時，先執行一次：
+   ```bash
+   docker network create Taiphoon_Net
+   ```
+3. 執行 `taiphoon_agent`（Windows 按兩下 `taiphoon_agent.exe`，macOS 按兩下 `Start Taiphoon Agent.command`），首次執行會出現設定。
+4. 實機選 `deploy` 並輸入無人機編號；想先在電腦上試用，選 `sim` 並輸入組數（1～4）。看到「服務程序已啟動；不會自動 Arm／起飛。」就代表啟動完成。
+5. 照啟動器最後印出的提示開啟 [Taiphoon QGCS](https://github.com/Rex-Taiphoon/Taiphoon_QGCS)，即可看到機群並下達命令。
+
+## 使用說明
+
+### 三種模式
+
+- **deploy（實機）**：在無人機的樹莓派上啟動一個 Agent，透過 Wi-Fi 連線飛控。首次設定輸入無人機編號（需與飛控 system ID 一致），QGCS 電腦的 IP 可選填。
+- **sim（模擬）**：在電腦上啟動 1～4 組模擬無人機，每組包含一個 PX4 模擬器與一個 Agent。首次設定輸入組數，QGCS 在其他電腦時可選填該電腦的 IP。
+- **dev（開發）**：給開發者從原始碼編譯後執行，見 [開發與驗證指南](docs/development.md)。
+
+設定儲存後，之後只要執行 `taiphoon_agent` 就會沿用。要切換模式或機數，依序執行 `taiphoon_agent stop`、`taiphoon_agent config`、`taiphoon_agent start`。
+
+- 工具不會自動解鎖或起飛；實機模式不會啟動任何模擬感測器。
+- 不要讓實體飛控連到 sim 模式的 Agent，也不要同時執行相同無人機編號與 ROS domain 的模擬及實機。
+- 第一次使用 sim 會自動下載 PX4 模擬器映像，需要網路。在樹莓派等 ARM64 主機上執行模擬時，PX4 模擬器以 AMD64 模擬執行，Docker 需要支援 CPU 模擬。
+
+### 常用指令
+
+| 指令 | 用途 |
+|---|---|
+| `taiphoon_agent` | 使用已儲存的設定啟動，等同 `start` |
+| `taiphoon_agent stop` | 停止服務，保留設定與資料 |
+| `taiphoon_agent restart` | 重新取得目前網路並重新啟動；更換 Wi-Fi 或主機 IP 改變後使用 |
+| `taiphoon_agent status` | 查看各 Agent 的健康狀態與 PX4 連線 |
+| `taiphoon_agent logs` | 查看最近的日誌 |
+| `taiphoon_agent config` | 切換模式或機數（需先 `stop`） |
+| `taiphoon_agent timesync` | 檢查本機對時狀態（實機多機） |
+
+沒有安裝到使用者目錄時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+
+### 實機必要設定
+
+進階設定都在 `settings.ini`：Windows 位於 `%LOCALAPPDATA%\TaiphoonAgent\config\`，Linux／macOS 位於 `~/.config/taiphoon_agent/`。完整欄位與串列埠連線方式見 [平台套件說明](Tools/agent_launcher/PACKAGE-README.md)。
+
+#### 飛控連線
+
+實機預設飛控 IP 為 `192.168.1.14`，這是飛控的位址，不是 Agent 主機；不同時請修改 `settings.ini` 的 `flight_ip`。Agent 主機的 IP 每次啟動自動取得，啟動時會印出飛控需要連線的埠號。請先在飛控 console 讓 uXRCE-DDS client 連向 Agent 主機，例如無人機 1：
 
 ```sh
-uxrce_dds_client start -t udp -h <Agent主機IPv4> -p 8888 -n uav_1
+uxrce_dds_client start -t udp -h <Agent 主機 IP> -p 8888 -n uav_1
 ```
 
-以上指令在飛控 console 設定；system ID 須與無人機編號一致。啟動工具不改寫飛控參數。
-Linux 實機使用 host network；Desktop 自動映射 UDP，不需要開啟全域 host networking。
-Wi-Fi GCS 使用相同 ROS domain（預設 0）與介面；若網路阻擋 discovery，填入 GCS IPv4。
-模擬模式（sim 或 dev → sim）一律接入外部 Docker 網路 `Taiphoon_Net`。
-首次使用前，若網路不存在，執行 `docker network create Taiphoon_Net`。
-每個模擬 Agent 獨立接入網路，PX4 也接入同一網路並連向對應 Agent，Agent 之間以
-multicast 互相發現。Linux Docker Engine 的 GCS 接入 `Taiphoon_Net` 並使用相同 ROS domain
-（預設 0）即可通訊，不映射主機 DDS 埠。
+無人機 N 使用埠 `8887 + N` 與 `uav_N`，飛控的 system ID 必須與無人機編號一致。啟動工具不會修改飛控參數。
 
-Docker Desktop（Windows／macOS）的容器位於 NAT 之後，主機收不到容器 multicast，因此
-`taiphoon_agent` 在 Desktop 模擬時一律產生供同機原生 Taiphoon_QGCS 連線的單播設定，不需額外選項：
+#### 多機對時
 
-- 啟動時自動取得主機區網 IPv4（`lan_address=auto`）；多網卡選錯或離線時，在 `settings.ini` 指定 `lan_address`。
-- 每台 Agent 使用各自的 `cyclonedds_N.xml`：公告主機 IPv4、專屬單播埠段，並向
-  `192.168.65.254`（host.docker.internal）的 QGCS 埠（domain 0 為 7510）送出 discovery。
-- 只映射該 Agent 的埠段並綁定主機 IPv4：domain 0 時 agent_1 7410-7433、agent_2 7434-7457、
-  agent_3 7458-7481、agent_4 7482-7505；domain 每加 1，所有埠號加 250。
-- 啟動成功後印出 QGCS 參數，例如：
-  `Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50`
-- QGCS 在**其他電腦**時，`config` 選 sim 後填入該電腦 IPv4（保存於 `dds_peers`，多個以逗號分隔，
-  輸入 `-` 清除）。每台 Agent 會再主動向 `<GCS IP>:7510`（domain 0）送出 discovery，啟動後另印出該電腦的參數：
-  `Taiphoon_QGCS.exe --interface <GCS IP> --no-multicast --peer <主機IP> --participant-index 50`。
-  QGCS 必須固定 participant index 50，且該電腦需允許 UDP 7510／7511 入站。
-
-所有 Agent 公告同一個主機 IP 時，CycloneDDS 會把同儕位址改寫成自己的容器 IP，Agent 之間便互相看不到、
-各自組成單機編隊。因此此模式下每台 Agent 另啟動 `dds_peer_relay`，在本機容器 IP 綁定其他 Agent 的
-埠段，把同儕封包轉給 `Taiphoon_Net` 上的對應 Agent 容器（無法解析時退回主機埠映射）；不需要特權，
-實機與 Linux Docker Engine 不受影響。此模式可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證。
-套用此修正需要重新編譯的 Agent（開發 compose 會自動編譯；Release 映像需重新建置）。
-主機 IP 改變（例如更換 Wi-Fi）後執行 `taiphoon_agent restart`。Linux Docker Engine 模擬不使用 `dds_peers`；
-GCS IPv4 不可填 `127.x`。
-網路不存在時啟動會失敗；stop 不會移除此外部網路。不要混用相同 UAV 編號與 domain 的模擬及實機。
-ARM64 的 PX4 SITL 使用 AMD64 模擬，Docker 須具備相應 CPU 模擬支援；樹莓派實機 Agent 為原生 ARM64。
-首次模擬會自動下載 PX4 映像，需要網路；Agent 映像已包含在平台包內。
-
-## 實機多機時間同步
-
-多機飛行時，各 Agent 交換的未來軌跡以發送端系統時間標記；兩台樹莓派時間相差超過
-1 秒，同儕軌跡會被拒收，單機 MOVE 與編隊都會原地等待。樹莓派沒有 RTC，因此實機多機
-必須讓各台主機對時。對時不需要 QGCS 或地面站，由 uav_1 的樹莓派當時間主機：
+多機實機飛行**必須先對時**：各台主機時間相差超過 1 秒時，Agent 會拒收其他成員的軌跡，移動與編隊都會原地等待。樹莓派沒有內建時鐘，開機時間常常不準，因此每台都要對時。對時不需要地面站，由無人機 1 的樹莓派當時間主機，每台只需設定一次（`setup_time_sync.sh` 在 Linux 套件根目錄）：
 
 ```bash
 sudo bash setup_time_sync.sh master
 ```
 
-其他無人機的樹莓派（`<uav_1 IPv4>` 建議在路由器綁定固定 IP）：
+其他無人機的樹莓派執行下列指令（建議在路由器為無人機 1 綁定固定 IP）：
 
 ```bash
-sudo bash setup_time_sync.sh client <uav_1 IPv4>
+sudo bash setup_time_sync.sh client <無人機 1 的 IP>
 ```
 
-`setup_time_sync.sh` 位於 Linux 平台包根目錄（原始碼為 `Tools/time_sync/`），只需設定一次。
-每次飛行先開 uav_1，再開其他機；Linux 實機的 `taiphoon_agent start` 會先確認主機已對時，
-客戶端最多等待 60 秒，未就緒就停止啟動。`taiphoon_agent timesync` 可單獨檢查。
-單機飛行可在 `settings.ini` 設定 `time_sync=off`。設計、失效情境與驗證見
-[多機時間同步](docs/time-sync.md)。
+每次飛行先開無人機 1，再開其他無人機。Linux 實機的 `taiphoon_agent start` 會先確認已對時，最多等待 60 秒，未就緒就停止啟動；也可以用 `taiphoon_agent timesync` 單獨檢查。單機飛行可在 `settings.ini` 設定 `time_sync=off`。
 
-## 實機障礙物地圖（obstacle_source）
+#### 障礙物地圖
 
-規劃器只有在收到新鮮的障礙物地圖時才會移動。實機沒有障礙物感測器時，預設
-`obstacle_source=none` 不提供地圖：起飛、懸停、YAW 與降落正常，但單機 MOVE、編隊移動與
-全體 MOVE 會原地等待（狀態為 `Required obstacle map is missing`）。
-
-已確認場地淨空時，可在 `settings.ini` 明確宣告：
+Agent 只有在有障礙物地圖時才會移動。實機預設 `obstacle_source=none`：起飛、懸停、旋轉與降落正常，但單機移動、編隊移動與全體移動會原地等待，狀態顯示 `Required obstacle map is missing`。已確認場地淨空時，可在 `settings.ini` 宣告：
 
 ```text
 obstacle_source=explicit_empty
 ```
 
-宣告後 Agent 會發布空地圖，規劃器只做機間避碰，**不會避開實體障礙物**；每次 `start`
-都會顯示警告。模擬模式不受此設定影響。設計、失效情境與舊版（rc.8）暫時做法見
-[實機障礙物地圖來源](docs/obstacle-source.md)。
+宣告後 Agent 只做機間避碰，**不會避開實體障礙物**，每次啟動都會顯示警告。模擬模式不受此設定影響。
 
-## 本機原生 QGCS 測試（開發 compose）
+### 編隊與安全距離
 
-Windows Docker Desktop 上，主機的原生 Taiphoon_QGCS 收不到容器 multicast，需改用單播疊加檔
-`docker-compose.local-qgcs.yml`：每台 Agent 公告主機區網 IPv4、使用各自的 CycloneDDS 埠段
-（uav_1 7410-7433、uav_2 7434-7457、uav_3 7458-7481、uav_4 7482-7505）並只映射該埠段。
-QGCS 固定使用 participant index 50（7510/7511），Agent 經 `host.docker.internal` 回送，
-不需修改 Windows 防火牆。
+- 編隊與機間避碰預設保持機體中心至少 2 公尺。這個距離不會限制場域邊界、飛行高度或 PX4 返航（RTL）路徑，起飛前請自行確認場地。
+- 編隊至少需要 2 台無人機，編隊高度以起飛點（Home）為基準。
+- 降落或上鎖後，Agent 會清除編隊與移動目標；在地面下達的移動或編隊命令不會保留到起飛後，再次起飛後要重新下達編隊。
+- 有 Agent 離線時，其餘成員自動重組；飛行中重新啟動的 Agent 要重新下達編隊才會加入，期間其他成員維持目前隊形。
 
-```powershell
-./AutoTest/scripts/start_local_qgcs_agents.ps1 -Count 3
-```
+### 與 Taiphoon QGCS 連線
 
-腳本會自動取得主機 IP、啟動 Agent，並印出 PX4 SITL 與 QGCS 啟動指令，例如：
+在 Windows／macOS 執行 sim 時，啟動成功後啟動器會印出 Taiphoon QGCS 的啟動參數，照著執行即可，例如：
 
 ```powershell
-Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50
+Taiphoon_QGCS.exe --interface <主機區網 IP> --external-address 192.168.65.254 --no-multicast --peer <主機區網 IP> --participant-index 50
 ```
 
-此模式的 Agent 之間單播經 `dds_peer_relay` 轉送（見上節），可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證；
-預設 `docker compose up -d` 與實機部署不受影響。同一時間只能有一組使用相同 UAV 編號的模擬環境。
+- **QGCS 在另一台電腦**：執行 `taiphoon_agent config` 選 sim 後填入該電腦的 IP（多台以逗號分隔，輸入 `-` 清除），啟動器會另外印出該電腦用的參數；該電腦需允許 UDP 7510、7511 連入。
+- **實機**：QGCS 與無人機連上同一個 Wi-Fi、使用相同的 ROS domain（預設 0）即可自動找到 Agent；網路阻擋自動探索時，用 `taiphoon_agent config` 填入 QGCS 電腦的 IP。
+- 主機 IP 改變（例如更換 Wi-Fi）後，執行 `taiphoon_agent restart`，再依新印出的參數重新開啟 QGCS。主機有多張網卡而取錯 IP 時，在 `settings.ini` 設定 `lan_address`。
 
-## 常用指令
+QGCS 的操作方式見 [Taiphoon QGCS](https://github.com/Rex-Taiphoon/Taiphoon_QGCS)。
 
-```text
-taiphoon_agent          使用保存設定啟動；等同 start
-taiphoon_agent stop     停止自有服務，保留資料
-taiphoon_agent restart  重新套用目前網路與設定
-taiphoon_agent status   容器健康與飛控連線狀態
-taiphoon_agent logs     最近的日誌
-taiphoon_agent config   停止後切換設定
-taiphoon_agent build    dev：容器內編譯
-taiphoon_agent test     dev：先編譯，再執行測試
-taiphoon_agent shell    dev：進入開發容器
-taiphoon_agent timesync 檢查本機主機對時狀態（實機多機）
+### 狀態與日誌
+
+- `taiphoon_agent status` 會列出各容器狀態，並逐台顯示是否已收到有效的 PX4 狀態。容器顯示 `healthy` 或已收到 PX4 狀態，都不代表可以起飛，仍需確認定位與感測器。
+- `taiphoon_agent logs` 顯示最近 150 行日誌，啟動失敗時先看這裡。飛控尚未連線不會阻止 Agent 啟動，可用 `status` 確認是否已收到 PX4 狀態。
+- 執行 `stop` 或 Agent 關閉後，容器會被移除，舊日誌就查不到了；需要保留時請先匯出，例如：
+
+```bash
+taiphoon_agent logs > agent.log
 ```
 
-直接使用解壓工具時，Linux／Mac 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
-原始碼只在 dev 掛載；build／install／log 用 volume 隔離 CPU 架構。所有 ROS2 指令與測試在容器內執行。
-更換 Wi-Fi 後使用 `restart`；飛控尚未連線不會阻止 Agent 啟動。`healthy` 不代表可以起飛。
-Windows 若找不到 Docker，先開啟 Desktop；工具會查 PATH 與標準安裝目錄。
+## 系統架構
 
-## 維護文件
+```mermaid
+flowchart TB
+    QGCS["Taiphoon QGCS<br/>地面站"]
 
-- [平台套件與進階設定](Tools/agent_launcher/PACKAGE-README.md)
-- [CI/CD 與版本發布](docs/ci-cd.md)
-- [各版本 Release 說明](docs/releases/)
-- [部署設計](docs/deployment-cross-platform.md)／[驗證紀錄](docs/deployment-verification.md)
-- [ROS2 Node／Topic 介面](docs/taiphoon-agent-interface.md)
-- [飛行命令](docs/agent-commands.md)／[ROS2 參數](docs/agent-configuration.md)
-- [多機時間同步](docs/time-sync.md)
-- [實機障礙物地圖來源](docs/obstacle-source.md)
-- [SITL 自動驗收腳本](AutoTest/scripts/)
+    subgraph FLEET["Taiphoon Agent：任務規劃・編隊・避碰"]
+        direction LR
+        A1["無人機 1<br/>Agent"] <-. 軌跡・編隊資訊 .-> A2["無人機 2<br/>Agent"] <-. 軌跡・編隊資訊 .-> AN["無人機 N<br/>Agent"]
+    end
 
-既有 `docker-compose.yml` 與 AutoTest 腳本保留作為進階開發流程；一般操作使用原生入口。
-提交／PR 自動驗證 Ubuntu AMD64／ARM64 與 Windows／Mac 編譯，版本標籤通過後才發布五個完整平台包。
+    subgraph FC["PX4 飛控"]
+        direction LR
+        P1["無人機 1<br/>PX4"] ~~~ P2["無人機 2<br/>PX4"] ~~~ PN["無人機 N<br/>PX4"]
+    end
+
+    QGCS <-- 命令・狀態 --> FLEET
+    FLEET <-- 每台只控制自己的 PX4 --> FC
+```
+
+每台無人機上的 Taiphoon Agent 只控制自己的 PX4 飛控。多機協作時，Agent 之間透過區網交換規劃好的飛行軌跡與編隊資訊，各自規劃避開其他成員的路徑；Taiphoon QGCS 負責送出命令與顯示機群狀態。
+
+## 連結
+
+- [下載最新版本](https://github.com/Rex-Taiphoon/Taiphoon_Agent/releases)：各平台套件與版本說明
+- [平台套件說明](Tools/agent_launcher/PACKAGE-README.md)：`settings.ini` 進階設定、串列埠連線與疑難排解
+- [Taiphoon QGCS](https://github.com/Rex-Taiphoon/Taiphoon_QGCS)：搭配使用的地面站
+
+## 授權
+
+MIT，見 [LICENSE](LICENSE)。Agent 映像另含 ROS 2（Apache-2.0）、Eclipse Cyclone DDS（EPL-2.0／EDL-1.0）、Micro XRCE-DDS Agent（Apache-2.0）與 px4_msgs（BSD-3-Clause）等第三方元件，依各自的授權條款提供。
