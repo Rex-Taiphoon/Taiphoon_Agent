@@ -1,6 +1,6 @@
 # Agent ROS2 參數參考
 
-啟動工具的基本設定與跨平台操作請見根目錄 README。以下只列 ROS2 節點參數。
+啟動工具的基本設定請見根目錄 [README](../README.md)，`settings.ini` 進階欄位見 [平台套件說明](../Tools/agent_launcher/PACKAGE-README.md)，跨平台網路與 DDS 細節見 [開發與驗證指南](development.md)。以下只列 ROS2 節點參數。
 
 ## 參數設定
 
