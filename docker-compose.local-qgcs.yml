@@ -21,6 +21,7 @@
 # 建議使用 AutoTest/scripts/start_local_qgcs_agents.ps1 啟動；手動方式：
 #   $env:TAIPHOON_HOST_IP = '<主機區網 IPv4>'
 #   docker compose -f docker-compose.yml -f docker-compose.local-qgcs.yml up -d
+# Windows 另加 -f AutoTest/scripts/compose.no-ssh-agent.yml，移除無法使用的 SSH agent 掛載。
 # =============================================================================
 
 services:

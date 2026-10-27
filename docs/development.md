@@ -100,6 +100,8 @@ Windows Docker Desktop 上，主機的原生 Taiphoon QGCS 收不到容器 multi
 Taiphoon_QGCS.exe --interface <主機IP> --external-address 192.168.65.254 --no-multicast --peer <主機IP> --participant-index 50
 ```
 
+Windows 沒有可掛進 Linux 容器的 SSH agent socket，`docker-compose.yml` 的 `SSH_AUTH_SOCK` 掛載會讓 Agent 容器無法建立，因此腳本另外套用 `AutoTest/scripts/compose.no-ssh-agent.yml`，只掛載專案目錄（需 Docker Compose 2.24.4 以上）。在 Windows 手動執行 `docker compose up` 時（包含預設的多機啟動）也要加上 `-f AutoTest/scripts/compose.no-ssh-agent.yml`。
+
 此模式的 Agent 之間單播經 `dds_peer_relay` 轉送（見上節），可用於 GCS 連線與編隊功能測試，不作為編隊時序驗證；預設 `docker compose up -d` 與實機部署不受影響。同一時間只能有一組使用相同 UAV 編號的模擬環境。
 
 ## 維護文件

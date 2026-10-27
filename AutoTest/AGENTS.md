@@ -18,6 +18,7 @@
 | `scripts/dual_agent_regression_monitor.py` | 上述回歸在 Agent 容器內執行的步驟與判定；YAW 步驟量測轉向時間（需 ≥ 理論限速時間 × 0.8）、峰值角速率（需 ≤ `--yaw-rate-limit-deg-s` × 2，容許 PX4 起步落後後的追趕）與高度偏差（需 ≤ `--max-yaw-altitude-deviation-m`），並輸出 `TRACE_YAW` 軌跡 |
 | `scripts/time_sync_container_validation.sh` | 以一次性容器驗證 chrony 主機／客戶端設定與 `taiphoon_agent timesync` |
 | `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |
+| `scripts/compose.no-ssh-agent.yml` | 搭配 `docker-compose.yml` 的覆寫檔：移除 Windows 無法使用的 SSH agent 掛載，只掛載專案目錄 |
 | `Log/` | 測試紀錄（依根目錄 `AGENTS.md` 的 Verification 規範建立） |
 
 ## 標準測試流程
