@@ -16,6 +16,31 @@ Windows 指令為 `./taiphoon_agent.exe`；Mac Terminal 為 `./taiphoon_agent`�
 `bash install.sh` 或 `./install.ps1` 可選擇安裝至使用者目錄，之後直接使用 `taiphoon_agent`。
 首次 macOS 開啟依系統核准流程操作，套件尚未公證；不必停用安全機制。
 
+## 安裝、更新與切回（Linux／macOS）
+
+在本套件目錄執行 `bash install.sh`（不要加 sudo）：首次安裝或替換既有的 Agent 都用同一個指令，執行前列出計畫並確認。
+
+```text
+bash install.sh                       安裝或更新為本套件版本
+bash install.sh --yes                 不詢問；沿用既有設定與開機自動啟動狀態
+bash install.sh --yes --agent-id 2    首次安裝實機：建立無人機 2 的 deploy 設定
+bash install.sh --autostart           設定 systemd 開機自動啟動（taiphoon-agent.service）
+bash install.sh --no-autostart        取消開機自動啟動
+bash install.sh --no-start            只安裝，不啟動
+bash ~/.local/share/taiphoon_agent/install.sh --rollback   切回上一版
+```
+
+- 安裝到 `~/.local/share/taiphoon_agent/releases/<版本>`，`current` 指向目前版本，只保留目前與上一版；
+  `~/.local/bin/taiphoon_agent` 永遠執行目前版本。舊版 Docker 映像不自動刪除。
+- 會接手既有部署：舊版 `install.sh` 的安裝、systemd 服務指向的解壓縮套件，以及服務指定的
+  `TAIPHOON_AGENT_HOME`（`settings.ini` 複製到 `~/.config/taiphoon_agent`，原檔保留）。
+  同一無人機編號的舊入口容器（`uav_N_agent`／`fmuN_agent`）只停止並取消自動重啟，不刪除。
+- 舊版執行中時先載入新版映像再停止舊版；新版啟動失敗時自動切回上一版並恢復執行。
+  原本沒有執行的 Agent 更新後維持停止。
+- 開機自動啟動時改用 `sudo systemctl start／stop／restart taiphoon-agent` 管理，避免與手動啟停不同步；
+  啟動失敗原因見 `sudo journalctl -u taiphoon-agent -n 50`。
+- Linux 實機預設啟動前要求對時；主機沒有 chrony 時，更新會在停止舊版前中止（見下方「實機多機時間同步」）。
+
 ## 三種模式
 
 - **deploy**：填無人機編號，啟動一個 Agent；Wi-Fi 飛控預設 `192.168.1.14`，GCS IP 選填。

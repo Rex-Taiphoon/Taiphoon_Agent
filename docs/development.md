@@ -110,6 +110,7 @@ Windows 沒有可掛進 Linux 容器的 SSH agent socket，`docker-compose.yml` 
 - [CI/CD 與版本發布](ci-cd.md)
 - [各版本 Release 說明](releases/)
 - [部署設計](deployment-cross-platform.md)／[驗證紀錄](deployment-verification.md)
+- [安裝與替換設計](deployment-installer.md)：`install.sh` 的介面、資料流、失效情境與驗證
 - [ROS2 Node／Topic 介面](taiphoon-agent-interface.md)
 - [飛行命令](agent-commands.md)／[ROS2 參數](agent-configuration.md)
 - [多機時間同步](time-sync.md)：設計、失效情境與驗證

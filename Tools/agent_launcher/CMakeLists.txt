@@ -36,5 +36,7 @@ if(BUILD_TESTING)
       $<TARGET_FILE:taiphoon_agent>)
   add_test(NAME deployment_package_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../test/deployment_package_test.py)
+  add_test(NAME agent_installer_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../test/agent_installer_test.py)
 endif()
 install(TARGETS taiphoon_agent RUNTIME DESTINATION .)

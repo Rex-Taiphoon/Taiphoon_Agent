@@ -91,7 +91,7 @@ Agent 依總移動距離最短自動分配位置並避碰，先排成半徑 15 �
 <details>
 <summary>安裝注意事項</summary>
 
-- **安裝到使用者目錄（選用）**：Linux／macOS 在套件目錄執行 `bash install.sh`，Windows 執行 `./install.ps1`，之後在任何位置都能直接輸入 `taiphoon_agent`。沒有安裝時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+- **安裝到使用者目錄（選用）**：Linux／macOS 在套件目錄執行 `bash install.sh`，Windows 執行 `./install.ps1`，之後在任何位置都能直接輸入 `taiphoon_agent`。沒有安裝時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。更新既有的 Agent 也使用 `install.sh`，見[安裝與更新](#安裝與更新)。
 - **macOS**：套件尚未經 Apple 公證，第一次開啟會被系統阻擋。到「系統設定 → 隱私權與安全性」按「強制打開」即可，不需要停用安全機制。
 - **Windows**：找不到 Docker 時，先開啟 Docker Desktop；工具會自動尋找 PATH 與標準安裝位置。只安裝在 WSL Ubuntu 內的 Docker 無法使用，請改用 Docker Desktop。
 - **Docker Desktop**：請使用 Linux 容器模式。
@@ -137,6 +137,25 @@ Agent 依總移動距離最短自動分配位置並避碰，先排成半徑 15 �
 | `taiphoon_agent timesync` | 檢查本機對時狀態（實機多機） |
 
 沒有安裝到使用者目錄時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+
+### 安裝與更新
+
+在樹莓派等 Linux 主機（macOS 相同）解壓縮新版套件後執行 `install.sh`；首次安裝與更新既有的 Agent 都用同一個指令，執行前會列出計畫並詢問：
+
+```bash
+mkdir taiphoon_agent-new
+tar -xzf taiphoon_agent-<版本>-linux-arm64.tar.gz -C taiphoon_agent-new
+bash taiphoon_agent-new/install.sh
+```
+
+- **保留設定**：沿用原本的 `settings.ini`；原本手動指定其他設定目錄或用 systemd 服務啟動的部署，也會一併接手。
+- **縮短停機**：舊版仍在執行時先載入新版映像，再停止舊版、啟動新版並等待就緒；原本沒有執行的 Agent 更新後維持停止。
+- **失敗自動切回**：新版啟動失敗時自動切回上一版並恢復執行；之後也能手動切回：`bash ~/.local/share/taiphoon_agent/install.sh --rollback`。
+- **開機自動啟動**：加上 `--autostart` 設定 systemd 服務 `taiphoon-agent`，之後用 `sudo systemctl restart taiphoon-agent`／`stop` 管理；`--no-autostart` 取消。
+- **一次完成實機首次安裝**：`bash install.sh --yes --agent-id 2 --autostart`（無人機 2），`--yes` 表示不詢問。
+- 只保留目前與上一個版本；舊版 Docker 映像不會自動刪除。
+- Linux 實機沒有安裝 chrony 且 `settings.ini` 未設定 `time_sync=off` 時，新版一定無法啟動，因此更新會在停止舊版前先中止；請先完成[多機對時](#多機對時)。
+- 不要加 `sudo` 執行；需要管理 systemd 時腳本會自行詢問 sudo 密碼。
 
 ### 實機必要設定
 
