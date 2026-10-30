@@ -12,7 +12,7 @@
 | `HOLD` | 定點懸停 | 無 | `HOLD` |
 | `ARM` | 解鎖馬達 | 無 | `ARM` |
 | `DISARM` | 上鎖馬達 | 無 | `DISARM` |
-| `TAKEOFF` | 起飛至指定高度，無參數時使用預設值 | 高度 (m) | `TAKEOFF 10` |
+| `TAKEOFF` | 起飛至指定高度，無參數時使用預設值；高度不是數值（例如 `TAKEOFF abc`）時不執行 | 高度 (m) | `TAKEOFF 10` |
 | `MOVE_FORWARD` | 依命令收到當下機頭方向向前移動 | 距離 (m) | `MOVE_FORWARD 5` |
 | `MOVE_BACKWARD` | 依命令收到當下機頭方向向後移動 | 距離 (m) | `MOVE_BACKWARD 3` |
 | `MOVE_LEFT` | 依命令收到當下機頭方向向左移動 | 距離 (m) | `MOVE_LEFT 3` |
@@ -21,8 +21,47 @@
 | `MOVE_DOWN` | 向下移動 | 距離 (m) | `MOVE_DOWN 2` |
 | `YAW` | 累加到保存的目標航向並順時針旋轉；BasicController 以 `yaw_rate_limit_deg_s`（預設 30°/s）限速沿最短角度轉向 | 相對角度 (°) | `YAW 90` |
 | `MOVE_POINT` | 移動至指定 NED 絕對位置並設定絕對航向（同樣限速轉向） | x y z yaw | `MOVE_POINT 10 5 -15 90` |
+| `MISSION_START` | 開始已上傳的航點任務（僅單機 topic） | 任務識別碼 1～4294967295 | `MISSION_START 7` |
+| `MISSION_STOP` | 中止航點任務並停在目前位置（僅單機 topic） | 無 | `MISSION_STOP` |
+| `REBOOT_FC` | 重新啟動飛控（僅單機 topic）；已解鎖時一律拒絕 | 選填 `0`／`1`（強制） | `REBOOT_FC` |
 
 > 地面 `TAKEOFF` 會鎖定起飛當下的機頭航向，起飛過程不轉向。
+
+> 參數缺少或不合法的命令不會執行，Agent 會在 `/{agent_namespace}/events` 發布
+> `COMMAND_INVALID_PARAMS`（101）；無法解析的命令發布 `COMMAND_UNKNOWN`（100）。
+> 事件代碼與欄位見 [介面規格書 3.12](taiphoon-agent-interface.md#312-agentevent-taiphoon_agentmsgagentevent)。
+
+### 航點任務
+
+航點任務以 `WaypointMission` 上傳到 `/{agent_namespace}/mission/plan`，上傳只載入、不會移動；
+確認 `/{agent_namespace}/mission/status` 為 `LOADED` 後，再送 `MISSION_START <mission_id>`。
+載入後 10 秒內未開始會自動清除。
+
+- 高度以 PX4 local 原點起算（`altitude_frame=1`），與 QGCS 機群面板顯示的高度一致。
+- 開始時必須在 Offboard 懸停且不在編隊中；每段以一般移動目標規劃，同儕避碰與障礙物檢查照舊。
+- 執行中收到其他有效命令（含 `HOLD`、`YAW`、`MOVE_*`、`MODE_RTL`、`FORMATION_*`）時，
+  任務以 `COMMAND_OVERRIDE` 中止，Agent 先停在目前位置再執行該命令。
+- 完成後懸停在最後一個航點；中止與完成後都不自動返航或降落。
+
+```bash
+# 上傳兩點任務並開始
+docker compose exec uav_1_agent bash -c \
+  "ros2 topic pub --once /uav_1_agent/mission/plan taiphoon_agent/msg/WaypointMission \
+   '{mission_id: 7, altitude_frame: 1, waypoints: [
+     {latitude_deg: 24.0001, longitude_deg: 121.0, altitude_m: 10.0, dwell_s: 3.0, yaw_deg: .nan},
+     {latitude_deg: 24.0001, longitude_deg: 121.0001, altitude_m: 10.0, dwell_s: 0.0, yaw_deg: .nan}]}' && \
+   ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String 'data: MISSION_START 7'"
+```
+
+完整的狀態機、拒絕原因與中止條件見
+[介面規格書 4.3](taiphoon-agent-interface.md#43-航點任務waypoint-mission)。
+
+### 重新啟動飛控（`REBOOT_FC`）
+
+`REBOOT_FC` 重新啟動 PX4 飛控，與 Agent 容器的 shutdown service 不同。
+只在 PX4 已上鎖且確認落地時送出；PX4 狀態不明（VehicleStatus 逾時）時需改送 `REBOOT_FC 1`。
+送出後 15 秒內的 `REBOOT_FC` 一律拒絕。結果與重新連線都以事件回報
+（`PX4_COMMAND_ACCEPTED`、`PX4_COMMAND_REJECTED`、`PX4_COMMAND_TIMEOUT`、`PX4_RESTART_DETECTED`）。
 
 ### 編隊命令
 

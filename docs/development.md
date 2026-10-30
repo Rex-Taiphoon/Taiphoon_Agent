@@ -16,6 +16,27 @@ README 只保留使用者需要知道的行為；以下為完整規則與驗證�
 - 確認落地或解除解鎖後，Agent 會清除編隊、移動目標與舊本機軌跡，停止任務規劃。地面移動／編隊命令不會排隊到起飛後執行；再次起飛後須重新下達編隊命令。已降落的機體不再發布佔位，其他 Agent 依有效落地狀態移除其舊軌跡與編隊成員資格。降落生命週期回歸與 Docker 測試方式詳見 [驗證報告](codex/landing-mission-lifecycle-report.md)。
 - 編隊高度一律以 Home 為基準，先移動再下達編隊也不會疊加目前飛行高度。Agent 關閉後，存活成員會自動重組；飛行中重新啟動的 Agent 需重新下達 `FORMATION_*` 才會加入，期間其他成員維持目前編隊。規則詳見 [介面文件](taiphoon-agent-interface.md) 3.3 節。
 
+## 航點任務、事件與 REBOOT_FC
+
+規格與決策見 [航點任務與通訊介面調整指引](codex/agent-waypoint-mission-plan.md)（「Agent 端實作決策」一節優先），
+對外介面見 [介面文件](taiphoon-agent-interface.md) 3.9～3.13、4.3 與第 6 節。
+
+- 單元測試：`test_waypoint_mission_executor`（驗證、高度換算、狀態機、逾時）、`test_agent_event_codes`
+  （代碼、節流、轉換偵測、failsafe 位元）、`test_flight_controller_reboot`（C2 表格、冷卻、重新啟動偵測、
+  連線轉換）、`test_command_types`（`MISSION_*`、`REBOOT_FC`、`TAKEOFF abc`）。
+- SITL 與實機情境見指引 D3 的 16 項。PX4 SITL（POSIX 平台）沒有 `CONFIG_BOARDCTL_RESET`，Commander 對
+  `REBOOT_FC` 一律回 DENIED（事件 200，`px4_result=2`），因此 D3 #13 的實際重新啟動與 #15（解鎖時 DENIED，
+  `REBOOT_FC 1` 的安全前提）只能在實機驗證，未通過前 QGCS 不應提供強制重新啟動；
+  SITL 可改以重新啟動 PX4 容器驗證 301／305（2026-10-30 單機 SITL 已通過，重啟後起飛與航點任務正常，
+  紀錄見 `AutoTest/Log/px4-restart-20261030.md`）。
+- PX4 訊息版本（指引 D6 第 0 步）：2026-10-30 人類開發者決定維持目前版本，`PX4_MSGS_REF=main` 與現行
+  topic 名稱（`vehicle_status_v4`、`vehicle_command_ack_v1`）不變，不鎖定版本也不加訊息轉換節點。
+  飛控韌體若使用不同版本的訊息後綴（例如 PX4 v1.17.0 為 `vehicle_status_v1`、`vehicle_command_ack`），
+  Agent 收不到這兩個 topic，`health` 的 `px4_status_age_s`／`px4_command_ack_age_s` 會維持 -1，並發布事件 300。
+  `fmu/out/failsafe_flags` 缺少時只讓 `health.failsafe_flags_valid=false`。
+- 與舊版不相容的行為：`TAKEOFF abc` 不再以預設高度起飛；PX4 晚於 Agent 啟動時會出現一次
+  `PX4_RESTART_DETECTED`（Agent 會重建 WGS84→PX4 local 平移，屬預期行為）。
+
 ## 單元測試選項
 
 預設單元測試只建置現行控制鏈與必要回歸；舊 FormationCalculator、waypoint planner 與觀測式防撞測試可由 `-DTAIPHOON_BUILD_LEGACY_TESTS=ON` 啟用，原始測試檔仍保留。

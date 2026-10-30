@@ -10,6 +10,7 @@
 |------|------|
 | `PositionSafetyMonitor.hpp` | 純邏輯：NED 位置偏差（歐氏距離）與閾值比較，不依賴 ROS2 |
 | `StatePublisher.hpp` | 純邏輯靜態方法：把 PX4 odometry / GPS / battery 轉譯為 AgentState / AgentAttitude，不持有 publisher |
+| `AgentEventCodes.hpp` | 純邏輯：對外事件代碼（只增不改）、嚴重度、`AgentEventGate`（同代碼與命令 5 秒節流、序號）、`BooleanTransitionDetector`；節點依結果填入 `AgentEvent` |
 
 ## 核心原則
 
@@ -20,4 +21,5 @@
 
 ## 變更與驗證
 
-- 修改後執行 `colcon build --packages-select taiphoon_agent`，並執行 `colcon test --packages-select taiphoon_agent` 確認單元測試（對應測試：`test/position_safety_monitor_test.cpp`、`test/test_state_publisher.cpp`，gtest）。
+- 修改後執行 `colcon build --packages-select taiphoon_agent`，並執行 `colcon test --packages-select taiphoon_agent` 確認單元測試（對應測試：`test/position_safety_monitor_test.cpp`、`test/test_state_publisher.cpp`、`test/agent_event_codes_test.cpp`，gtest）。
+- 事件代碼是 GCS 契約：新增代碼時同步 `docs/taiphoon-agent-interface.md` 的事件代碼表，不得修改既有代碼的數值或意義。
