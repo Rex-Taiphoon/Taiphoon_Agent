@@ -8,8 +8,8 @@
 
 | 檔案 | 角色 |
 |------|------|
-| `basic_controller_node.hpp/.cpp` | `BasicControllerNode`：整合 `BasicController`、`AgentCommandHandler`、`PositionSafetyMonitor`、`StatePublisher`，以固定頻率驅動（控制迴圈 10Hz、狀態發布 10Hz） |
-| `ego_swarm_planner_node.hpp/.cpp` | `EgoSwarmPlannerNode`：組裝 EGO-Swarm 規劃、編隊、同儕軌跡與 trajectory safety，輸出 planner result |
+| `basic_controller_node.hpp/.cpp` | `BasicControllerNode`：整合 `BasicController`、`AgentCommandHandler`、`PositionSafetyMonitor`、`StatePublisher`，以固定頻率驅動（控制迴圈 10Hz、狀態發布 10Hz）；發布 `events`（命令與 PX4 類事件 100～305）與 `health`（預設 1Hz） |
+| `ego_swarm_planner_node.hpp/.cpp` | `EgoSwarmPlannerNode`：組裝 EGO-Swarm 規劃、編隊、同儕軌跡與 trajectory safety，輸出 planner result；掛載 `WaypointMissionExecutor`（`mission/plan`、`mission/status`、`MISSION_*`），發布 planner 事件 400～402，並訂閱 `events` 的 `PX4_RESTART_DETECTED` |
 | `obstacle_cloud_simulator_node.hpp/.cpp` | `ObstacleCloudSimulatorNode`：依 YAML 障礙物與選定 source mode 發布 PointCloud2 模擬資料 |
 
 ## 核心原則
@@ -20,6 +20,9 @@
 - Publisher / Subscriber 必須以 `shared_ptr` 成員持有（L1-12），回呼命名以 `_cb` 結尾（L2-17）。
 - 訂閱 PX4 資料（odometry / GPS / battery）必須檢查「已收到第一筆資料」旗標後才使用，避免以未初始化資料驅動控制。
 - 節點命名空間與 topic 命名遵守根目錄 AGENTS.md 的 `/uav_{N}_agent/...` 規則；新增 topic 需同步 `docs/taiphoon-agent-interface.md`。
+- 事件的唯一發布者規則：命令類事件（100～103）只由 `basic_controller_node` 發布；planner 只發布 400～402，
+  參數不合法的命令由 basic_controller 回報，planner 不重複發布。
+- 航點任務與事件節流使用 steady clock，planner 規劃迴圈仍使用 ROS 時間。
 
 ## 變更與驗證
 

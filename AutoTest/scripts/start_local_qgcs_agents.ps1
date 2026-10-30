@@ -5,6 +5,7 @@
 .DESCRIPTION
     自動取得主機區網 IPv4，以 docker-compose.yml + docker-compose.local-qgcs.yml
     啟動 uav_1_agent～uav_N_agent，並印出 PX4 SITL 與 QGCS 的啟動指令。
+    另套用 compose.no-ssh-agent.yml，移除 Windows 無法使用的 SSH agent 掛載。
     不執行 docker build、不修改防火牆或 Docker Desktop 設定，也不發送飛行命令。
 
 .PARAMETER Count
@@ -30,6 +31,8 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $baseCompose = Join-Path $projectRoot 'docker-compose.yml'
 $qgcsCompose = Join-Path $projectRoot 'docker-compose.local-qgcs.yml'
+$noSshCompose = Join-Path $PSScriptRoot 'compose.no-ssh-agent.yml'
+$composeArgs = @('-f', $baseCompose, '-f', $qgcsCompose, '-f', $noSshCompose)
 $services = 1..$Count | ForEach-Object { "uav_${_}_agent" }
 
 function Get-HostLanIpv4
@@ -61,12 +64,13 @@ if (-not [System.Net.IPAddress]::TryParse($HostIp, [ref]$parsedIp) -or
     throw "主機位址不是有效 IPv4：$HostIp"
 }
 
-# docker-compose.yml 會掛載 SSH_AUTH_SOCK；Windows 未設定時給一個不使用的路徑。
+# SSH agent 掛載已由 compose.no-ssh-agent.yml 移除；未設定時仍給佔位值，
+# 只為避免 compose 對 docker-compose.yml 每處 ${SSH_AUTH_SOCK} 印出未設定警告。
 $oldSshSock = $env:SSH_AUTH_SOCK
 $oldHostIp = $env:TAIPHOON_HOST_IP
 if ([string]::IsNullOrWhiteSpace($env:SSH_AUTH_SOCK))
 {
-    $env:SSH_AUTH_SOCK = 'C:/Windows/Temp/unused-ssh-agent'
+    $env:SSH_AUTH_SOCK = '/tmp/taiphoon-no-ssh-agent'
 }
 $env:TAIPHOON_HOST_IP = $HostIp
 
@@ -75,7 +79,7 @@ try
 {
     if ($Stop)
     {
-        docker compose -f $baseCompose -f $qgcsCompose stop @services
+        docker compose @composeArgs stop @services
         if ($LASTEXITCODE -ne 0) { throw 'Agent 容器停止失敗。' }
         return
     }
@@ -86,7 +90,7 @@ try
         throw 'Docker 網路 Taiphoon_Net 不存在，請先執行：docker network create Taiphoon_Net'
     }
 
-    docker compose -f $baseCompose -f $qgcsCompose up -d @services
+    docker compose @composeArgs up -d @services
     if ($LASTEXITCODE -ne 0) { throw 'Agent 容器啟動失敗。' }
 
     Write-Host ''

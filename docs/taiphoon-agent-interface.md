@@ -1,7 +1,7 @@
 # Taiphoon Agent ROS2 地面控制站 (GCS) 介面規格書
 
-> **版本**：1.9
-> **更新日期**：2026-08-27
+> **版本**：2.0
+> **更新日期**：2026-10-30
 > **適用對象**：ROS2 地面控制站 (GCS) 開發者
 >
 > 本文件完整列出 Taiphoon_Agent 專案中所有 ROS2 節點、Topic、Service、自訂訊息格式與命令協定，
@@ -79,6 +79,19 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 
 `basic_controller_node` 是唯一允許發布 PX4 `TrajectorySetpoint` 的 Agent 節點。
 
+**事件與健康狀態**：發布 `/{agent_namespace}/events`（`AgentEvent`，命令與 PX4 類事件 100～305）
+與 `/{agent_namespace}/health`（`AgentHealth`，PX4 完全沒有資料時也照常發布，age 為 -1）。
+另訂閱 PX4 `fmu/out/failsafe_flags`（best_effort）；PX4 沒有輸出這個 topic 時
+`failsafe_flags_valid=false`，其他功能不受影響。
+
+**事件與 REBOOT_FC 相關參數**：
+
+| 參數 | 型別 | Node 預設值 | 說明 |
+|------|------|-------------|------|
+| `health_publish_rate_hz` | `double` | `1.0` | `health` 發布頻率；非有限值、≤ 0 或大於 10 時回到 1.0 |
+| `px4_command_ack_timeout_s` | `double` | `3.0` | 送出 VehicleCommand 後等待 ack 的時限；逾時發布 `PX4_COMMAND_TIMEOUT` |
+| `reboot_cooldown_s` | `double` | `15.0` | `REBOOT_FC` 送出後的冷卻時間；冷卻中一律拒絕 |
+
 ### 2.2 ego_swarm_planner
 
 | 屬性 | 值 |
@@ -109,6 +122,9 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 - `SpatiotemporalRouteInitializer`：只在 Local Goal + `FIXED_Z` 且直線 seed 受阻時執行 bounded `(North, East, time)` A*；結果只作 B-spline seed，不新增 ROS2 介面
 - `FormationReservationPlanner`：以 future `AgentTrajectory.start_time` 表示 reservation，不新增 ROS2 message
 - `FormationConvergenceEvaluator`：由 fresh state、槽位誤差、epoch 與 terminal occupancy 推導 convergence；槽位到達不使用速度門檻
+- `WaypointMissionExecutor`：單機航點任務的驗證、WGS84／PX4 local 高度換算、狀態機、停留與單段逾時；
+  每段航點以一般 Final Target 流程規劃（同儕避碰、障礙物、reservation 與 safety validator 全部照舊），
+  詳見 [4.3 航點任務](#43-航點任務waypoint-mission)
 
 **實際參數**：
 
@@ -143,7 +159,7 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 相容參數名稱；WGS84 投影至本機 planner-local NED 的到達容許誤差 |
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
-| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本；只在 parent 與目前槽位數相同時加計 |
+| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本；只在 parent 與目前隊形類型相同、槽位數也相同時加計 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 | `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
@@ -152,6 +168,16 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `reservation_lead_time_s` | `double` | `0.0` | future trajectory reservation 最短提前時間；實機參數下 0.5 秒會使隊形切換最近距離降至 1.4～2.3 m，預設與開發環境一致為 0.0 |
 | `reservation_step_s` | `double` | `0.5` | reservation start time 搜尋步進 |
 | `reservation_horizon_s` | `double` | `5.0` | reservation start time 最遠搜尋範圍 |
+| `mission_max_waypoints` | `int` | `50` | 單一航點任務的航點上限（1～65535） |
+| `mission_min_altitude_m` | `double` | `1.0` | 航點高度下限（PX4 local，向上為正） |
+| `mission_max_altitude_m` | `double` | `120.0` | 航點高度上限；不大於下限時兩者都回到預設 |
+| `mission_max_range_m` | `double` | `1000.0` | 每個航點與目前位置的水平距離上限；上傳與 `MISSION_START` 時各檢查一次 |
+| `mission_max_dwell_s` | `double` | `60.0` | 航點停留時間上限 |
+| `mission_leg_base_timeout_s` | `double` | `30.0` | 單段逾時的基本時間 |
+| `mission_min_expected_speed_mps` | `double` | `0.3` | 單段逾時＝基本時間＋段長 ÷ 此速度 |
+| `mission_load_timeout_s` | `double` | `10.0` | 上傳後未收到 `MISSION_START` 即清除的時限 |
+| `mission_status_rate_hz` | `double` | `1.0` | `mission/status` 週期重送頻率（狀態改變時另外立即發布）；大於 10 時回到 1.0 |
+| `planner_failure_event_s` | `double` | `3.0` | 連續規劃失敗超過此秒數發布一次 `PLANNER_FAILURE_PERSISTENT` |
 
 ### 2.3 obstacle_cloud_simulator
 
@@ -209,7 +235,9 @@ Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 P
 任務階段，不代表最近收到的命令意圖。位置資訊由既有的 `position_ned` 與
 `position_global` 提供，不另外複製 PX4 Position 欄位。`position_global` 唯一取自
 `/uav_{N}/fmu/out/vehicle_global_position`；AgentState 名目發布頻率至少為 10 Hz，若 PX4
-原始資料更新較慢，期間會重複最近一筆有效值，不進行插值。
+原始資料更新較慢，期間會重複最近一筆有效值，不進行插值。收到第一筆 `VehicleOdometry` 之前不發布
+AgentState（位置未定義，避免同儕與 planner 把無效位置當成真實位置）；這段期間 GCS 以 `health`
+（固定發布）判斷 Agent 在線與 PX4 連線狀態。
 
 | 欄位 | 型別 | 說明 |
 |------|------|------|
@@ -221,8 +249,8 @@ Agent 對外狀態，由 `basic_controller_node` 發布。`flight_mode` 是經 P
 | `battery_voltage_v` | `float32` | 電池電壓（V），來自 PX4 BatteryStatus |
 | `battery_current_a` | `float32` | 電池電流（A），來自 PX4 BatteryStatus |
 | `online` | `bool` | Agent 是否在線 |
-| `armed` | `bool` | PX4 實際解鎖狀態 |
-| `landed` | `bool` | PX4 實際落地狀態 |
+| `armed` | `bool` | PX4 實際解鎖狀態；`px4_state_valid=false` 時保留最後收到的值，從未收到時為 `false`（以 `health.px4_arming_state` 區分） |
+| `landed` | `bool` | PX4 實際落地狀態；`px4_state_valid=false` 時保留最後收到的值，從未收到時為 `false`（以 `health.px4_land_detected_age_s` 區分） |
 | `px4_nav_state` | `uint8` | PX4 `VehicleStatus.nav_state` 原始值；Manual、Position、Offboard 等 PX4 原生模式由此欄位表示 |
 | `px4_state_valid` | `bool` | PX4 狀態欄位是否有效：`VehicleStatus` 與 `VehicleLandDetected` 皆在 5 秒內（單調時鐘）收到；只有此值為 `true` 時，`armed`、`landed` 與 `px4_nav_state` 才可信 |
 
@@ -362,6 +390,143 @@ EGO-Swarm Planner 狀態與安全指標。
 | `confidence` | `float32` | 觀測信心度（0.0 ~ 1.0） |
 | `valid` | `bool` | 觀測是否有效 |
 
+### 3.9 MissionWaypoint (`taiphoon_agent/msg/MissionWaypoint`)
+
+航點任務的單一航點。水平位置使用 WGS84，高度基準由 `WaypointMission.altitude_frame` 決定。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `latitude_deg` | `float64` | WGS84 緯度（度） |
+| `longitude_deg` | `float64` | WGS84 經度（度） |
+| `altitude_m` | `float32` | 高度（公尺，向上為正） |
+| `dwell_s` | `float32` | 到達後停留時間（秒）；最後一個航點不使用，到達即完成並懸停 |
+| `yaw_deg` | `float32` | 保留欄位；本版只接受 NaN（維持目前目標航向） |
+
+### 3.10 WaypointMission (`taiphoon_agent/msg/WaypointMission`)
+
+單機航點任務上傳。上傳只載入任務、不會移動；需另送 `MISSION_START <mission_id>` 才開始。
+
+| 欄位／常數 | 型別 | 說明 |
+|------|------|------|
+| `ALTITUDE_PX4_LOCAL=1` | `uint8` 常數 | 高度與 `-AgentState.position_ned[2]` 同基準（PX4 local 原點起算），與 QGCS 機群面板顯示的高度一致 |
+| `stamp` | `builtin_interfaces/Time` | 發布時間 |
+| `mission_id` | `uint32` | GCS 指定的任務識別碼，不得為 0 |
+| `altitude_frame` | `uint8` | 高度基準；本版只接受 `ALTITUDE_PX4_LOCAL`（0 視為未設定而拒絕） |
+| `waypoints` | `MissionWaypoint[]` | 依序執行的航點 |
+
+### 3.11 WaypointMissionStatus (`taiphoon_agent/msg/WaypointMissionStatus`)
+
+單機航點任務狀態。狀態、`current_index` 或原因改變時立即發布，並以 `mission_status_rate_hz` 週期重送。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 發布時間 |
+| `mission_id` | `uint32` | 狀態所屬任務；IDLE 時為 0 |
+| `state` | `uint8` | `IDLE=0`、`LOADED=1`、`RUNNING=2`、`DWELLING=3`、`COMPLETED=4`、`ABORTED=5`、`REJECTED=6` |
+| `reason` | `uint8` | REJECTED／ABORTED 的原因，其他狀態為 `REASON_NONE=0` |
+| `current_index` | `uint16` | 目前航點（0 起算）；`INVALID_PLAN`／`OUT_OF_RANGE` 時指向第一個不合法航點 |
+| `waypoint_count` | `uint16` | 航點數 |
+| `detail` | `string` | 英文補充說明（例如觸發中止的命令名稱） |
+
+| 原因碼 | 值 | 說明 |
+|--------|----|------|
+| `REASON_NONE` | 0 | — |
+| `REASON_INVALID_PLAN` | 1 | 航點數量、座標、高度、停留、航向或高度基準不合法 |
+| `REASON_OUT_OF_RANGE` | 2 | 航點與目前位置的水平距離超過 `mission_max_range_m` |
+| `REASON_NOT_READY` | 3 | 尚無有效狀態，或 Home／PX4 local 換算尚未建立 |
+| `REASON_NOT_HOVERING` | 4 | 未在 Offboard 懸停（未解鎖、已落地、移動中或遙控器接手） |
+| `REASON_BUSY` | 5 | 已有任務執行中，或編隊中 |
+| `REASON_ID_MISMATCH` | 6 | `MISSION_START` 的識別碼與已載入任務不符，或載入已逾時 |
+| `REASON_OPERATOR_STOP` | 10 | 收到 `MISSION_STOP` |
+| `REASON_COMMAND_OVERRIDE` | 11 | 收到其他有效命令（操作人員介入），`detail` 為命令名稱 |
+| `REASON_FLIGHT_STATE` | 12 | 飛行狀態離開 Offboard 懸停／移動（PX4 自行 RTL、LAND、failsafe 或遙控器切換） |
+| `REASON_LANDED` | 13 | 已落地、上鎖或偵測到 PX4 重新啟動 |
+| `REASON_LEG_TIMEOUT` | 14 | 單段逾時未到達 |
+
+> `REJECTED` 屬於事件：只對被拒的 `mission_id` 發布一次，目前狀態不變；下一次週期發布回到實際狀態
+> （可能是另一個任務的 RUNNING）。
+
+### 3.12 AgentEvent (`taiphoon_agent/msg/AgentEvent`)
+
+Agent 事件（錯誤、警告、資訊）。`basic_controller_node` 與 `ego_swarm_planner` 都發布到同一個
+`/{agent_namespace}/events`。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 事件時間 |
+| `sequence` | `uint32` | 各來源節點各自從 1 單調遞增，供 GCS 偵測遺失與去重（以 `source` + `sequence` 判斷） |
+| `severity` | `uint8` | `SEVERITY_INFO=0`、`SEVERITY_WARNING=1`、`SEVERITY_ERROR=2` |
+| `source` | `uint8` | `SOURCE_BASIC_CONTROLLER=1`、`SOURCE_PLANNER=2`、`SOURCE_SUPERVISOR=3`（保留） |
+| `code` | `uint16` | 事件代碼，見下表 |
+| `command` | `string` | 相關命令名稱（例如 `ARM`、`REBOOT_FC`），沒有時為空字串 |
+| `px4_result` | `int16` | 相關的 PX4 `VehicleCommandAck.result`；沒有時為 -1 |
+| `detail` | `string` | 英文補充說明，供日誌與未知代碼顯示 |
+
+**事件代碼**（只增不改；GCS 對未知代碼顯示 `detail`）：
+
+| 代碼 | 名稱 | 嚴重度 | 來源 | 觸發 |
+|------|------|--------|------|------|
+| 100 | `COMMAND_UNKNOWN` | WARNING | basic_controller | 無法解析的命令字串 |
+| 101 | `COMMAND_INVALID_PARAMS` | WARNING | basic_controller | 參數缺少或不合法（例如 `TAKEOFF abc`、`YAW` 無參數、`MISSION_START 1.5`） |
+| 102 | `COMMAND_REJECTED` | WARNING | basic_controller | Agent 狀態不允許（`REBOOT_FC` 安全條件或冷卻、全體 topic 的 `MISSION_*`／`REBOOT_FC`），`detail` 寫明原因 |
+| 103 | `COMMAND_FAILED` | ERROR | basic_controller | 命令處理失敗（例如 Offboard 前置條件不成立） |
+| 200 | `PX4_COMMAND_REJECTED` | ERROR | basic_controller | `VehicleCommandAck` 不是 ACCEPTED／IN_PROGRESS；`command` 為 ARM、DISARM、MODE_OFFBOARD、HOLD、MODE_RTL、MODE_LAND 或 REBOOT_FC，`px4_result` 為結果 |
+| 201 | `PX4_COMMAND_TIMEOUT` | ERROR | basic_controller | `px4_command_ack_timeout_s` 內沒有 ack，或 Offboard 等待確認逾時；`REBOOT_FC` 逾時的 `detail` 提示觀察 `health` 是否恢復 |
+| 202 | `PX4_COMMAND_ACCEPTED` | INFO | basic_controller | 只用於 ARM、DISARM、REBOOT_FC |
+| 203 | `TAKEOFF_CANCELLED` | WARNING | basic_controller | 排隊中的 TAKEOFF 因等待解鎖逾時取消 |
+| 204 | `OFFBOARD_LOST` | WARNING | basic_controller | PX4 離開 Offboard（failsafe 或遙控器切換） |
+| 300 | `PX4_STATUS_STALE` | ERROR | basic_controller | VehicleStatus 啟動 5 秒內從未收到，或超過 5 秒未更新（轉換時發布一次） |
+| 301 | `PX4_STATUS_RECOVERED` | INFO | basic_controller | VehicleStatus 恢復 |
+| 302 | `PX4_POSITION_STALE` | WARNING | basic_controller | VehicleOdometry 或 VehicleGlobalPosition 超過 1 秒未更新（`detail` 標明哪一個） |
+| 303 | `PX4_PREFLIGHT_FAILED` | WARNING | basic_controller | `pre_flight_checks_pass` 由 true 轉 false，或收到 ARM 時為 false；不去抖動，PX4 降落自動上鎖的瞬間可能短暫回報 false 而出現一筆，GCS 以 `health.px4_pre_flight_checks_pass` 確認是否持續 |
+| 304 | `PX4_FAILSAFE` | WARNING | basic_controller | `failsafe` 由 false 轉 true |
+| 305 | `PX4_RESTART_DETECTED` | INFO | basic_controller | 偵測到 PX4 重新連線或重新啟動（上鎖狀態下 VehicleStatus 逾時後恢復，或 `REBOOT_FC` 被接受後中斷再恢復） |
+| 400 | `PLANNER_COMMAND_REJECTED` | WARNING | planner | 編隊成員不足、幾何不安全、沒有新鮮姿態、Home 未建立、未在編隊中下達全體 MOVE 等 |
+| 401 | `PLANNER_EMERGENCY_BRAKE` | WARNING | planner | planner 啟動緊急煞停（同儕距離、規劃失敗等）；任務停止與到達時仍在移動的預期煞停不發布 |
+| 402 | `PLANNER_FAILURE_PERSISTENT` | ERROR | planner | 連續規劃失敗超過 `planner_failure_event_s`（每輪只發布一次） |
+| 500 | `SAFETY_POSITION_DEVIATION` | ERROR | — | 保留；PositionSafetyMonitor 介入目前停用，暫不發布 |
+
+- 同一代碼與 `command` 5 秒內只發布一次；狀態轉換事件（300、301、303、304）只在轉換時發布、不節流。
+- 原有的 WARN／ERROR 日誌保留，事件是額外發布。
+- 事件使用 volatile：GCS 連上前的舊事件不重播；持續性的問題由 `health` 週期呈現。
+
+### 3.13 AgentHealth (`taiphoon_agent/msg/AgentHealth`)
+
+Agent 與 PX4 連線健康狀態，`basic_controller_node` 以 `health_publish_rate_hz`（預設 1 Hz）發布。
+`*_age_s` 為距離最後一筆訊息的秒數，從未收到為 -1。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 發布時間 |
+| `px4_status_age_s` | `float32` | VehicleStatus |
+| `px4_odometry_age_s` | `float32` | VehicleOdometry |
+| `px4_global_position_age_s` | `float32` | VehicleGlobalPosition |
+| `px4_land_detected_age_s` | `float32` | VehicleLandDetected |
+| `px4_battery_age_s` | `float32` | BatteryStatus |
+| `px4_command_ack_age_s` | `float32` | VehicleCommandAck；沒有命令時會很大 |
+| `px4_pre_flight_checks_pass` | `bool` | 以下 `px4_*` 欄位只在 VehicleStatus 新鮮時可信 |
+| `px4_failsafe` | `bool` | PX4 failsafe 是否啟動 |
+| `px4_arming_state` | `uint8` | VehicleStatus.arming_state（1=DISARMED、2=ARMED，0 表示從未收到）；逾時後保留最後收到的值 |
+| `px4_latest_arming_reason` | `uint8` | VehicleStatus.latest_arming_reason |
+| `failsafe_flags_valid` | `bool` | 5 秒內收到 `fmu/out/failsafe_flags` 才為 true |
+| `failsafe_flags` | `uint32` | `FAILSAFE_*` 位元；無效時為 0 |
+| `offboard_session_active` | `bool` | Agent 是否持有 Offboard session |
+
+| 位元常數 | 值 | PX4 FailsafeFlags 欄位 |
+|----------|----|------------------------|
+| `FAILSAFE_LOCAL_POSITION_INVALID` | 1 | `local_position_invalid` |
+| `FAILSAFE_GLOBAL_POSITION_INVALID` | 2 | `global_position_invalid` |
+| `FAILSAFE_HOME_POSITION_INVALID` | 4 | `home_position_invalid` |
+| `FAILSAFE_ATTITUDE_INVALID` | 8 | `attitude_invalid` |
+| `FAILSAFE_MANUAL_CONTROL_LOST` | 16 | `manual_control_signal_lost` |
+| `FAILSAFE_OFFBOARD_SIGNAL_LOST` | 32 | `offboard_control_signal_lost` |
+| `FAILSAFE_BATTERY_WARNING` | 64 | `battery_warning`（非 0 即設定） |
+| `FAILSAFE_BATTERY_UNHEALTHY` | 128 | `battery_unhealthy` |
+| `FAILSAFE_GEOFENCE_BREACHED` | 256 | `geofence_breached` |
+| `FAILSAFE_FD_CRITICAL_FAILURE` | 512 | `fd_critical_failure` |
+| `FAILSAFE_FD_ESC_ARMING_FAILURE` | 1024 | `fd_esc_arming_failure` |
+| `FAILSAFE_LOCAL_POSITION_ACCURACY_LOW` | 2048 | `position_accuracy_low` |
+
 ---
 
 ## 4. Topic 完整清單
@@ -379,6 +544,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | `fmu/out/vehicle_global_position` | 訂閱 ← PX4 | `px4_msgs/VehicleGlobalPosition` | best_effort (10) |
 | `fmu/out/vehicle_command_ack_v1` | 訂閱 ← PX4 | `px4_msgs/VehicleCommandAck` | best_effort (10) |
 | `fmu/out/vehicle_status_v4` | 訂閱 ← PX4 | `px4_msgs/VehicleStatus` | best_effort (10) |
+| `fmu/out/failsafe_flags` | 訂閱 ← PX4 | `px4_msgs/FailsafeFlags` | best_effort (10)；不存在時只讓 `health.failsafe_flags_valid=false` |
 
 > **注意**：Topic 名稱為相對路徑，實際解析後會加上節點命名空間，例如 `/uav_1/fmu/in/offboard_control_mode`。
 
@@ -397,6 +563,9 @@ EGO-Swarm Planner 狀態與安全指標。
 |------------|------|------|------|-----|
 | `/{agent_namespace}/state` | Agent 狀態（位置、飛行模式、電量） | `taiphoon_agent/AgentState` | ≥ 10 Hz（名目） | reliable (10) |
 | `/{agent_namespace}/attitude` | Agent 姿態（四元數） | `taiphoon_agent/AgentAttitude` | ≥ 10 Hz（名目） | reliable (10) |
+| `/{agent_namespace}/mission/status` | 航點任務狀態（ego_swarm_planner） | `taiphoon_agent/WaypointMissionStatus` | 改變時立即＋1 Hz 重送 | reliable、transient_local (1) |
+| `/{agent_namespace}/events` | Agent 事件（basic_controller_node 與 ego_swarm_planner） | `taiphoon_agent/AgentEvent` | 事件發生時 | reliable、volatile (20) |
+| `/{agent_namespace}/health` | Agent 與 PX4 連線健康狀態（basic_controller_node） | `taiphoon_agent/AgentHealth` | 1 Hz | reliable、volatile (1) |
 
 **實際範例**（4 機部署）：
 
@@ -413,11 +582,14 @@ EGO-Swarm Planner 狀態與安全指標。
 |-------|------|------|-----|
 | `/{agent_namespace}/command` | 發送命令給**指定** Agent | `std_msgs/String` | reliable (10) |
 | `/uav_all_agent/command` | 廣播命令給**所有** Agent | `std_msgs/String` | reliable (10) |
+| `/{agent_namespace}/mission/plan` | 上傳航點任務給**指定** Agent（只載入，不會移動） | `taiphoon_agent/WaypointMission` | reliable、volatile (10) |
 
 > **GCS 設計建議**：
 > - 使用 `/{agent_namespace}/command` 對單一無人機下達移動、模式切換命令。
 > - 使用 `/uav_all_agent/command` 發送編隊命令（FORMATION_*）或全體同步命令（如全體 RTL）。
 > - 命令格式詳見 [第 6 節](#6-命令協定-command-protocol)。
+> - 航點任務先發布 `mission/plan`，確認 `mission/status` 為 `LOADED` 後再送 `MISSION_START <mission_id>`；
+>   流程詳見 [4.3 航點任務](#43-航點任務waypoint-mission)。
 
 #### 4.2.3 內部控制流（Agent 內部通訊，GCS 可監控）
 
@@ -431,6 +603,9 @@ EGO-Swarm Planner 狀態與安全指標。
 | `/uav_all_agent/swarm/formation_epochs` | Leaderless 編隊 epoch、WGS84 snapshot 與 ADOPTED heartbeat | `taiphoon_agent/FormationEpoch` | reliable + transient_local (10) |
 | `/{agent_namespace}/ned_target` | 舊 NED 目標介面；EGO-Swarm 取代後僅作相容或純邏輯測試用途 | `taiphoon_agent/NedTarget` | 既有介面 |
 | `/{agent_namespace}/waypoints` | 舊 waypoint 介面；EGO-Swarm 取代後僅作純邏輯測試用途，不能視為 PX4 控制來源 | `taiphoon_agent/WaypointSequence` | 既有介面 |
+
+> `ego_swarm_planner` 也訂閱 `/{agent_namespace}/events`，只處理 `source=SOURCE_BASIC_CONTROLLER`
+> 的 `PX4_RESTART_DETECTED`：清除任務與編隊，並重建 planner-local 至 PX4 local 的平移（planner Home 保留）。
 
 #### 4.2.4 跨 Agent 通訊（同儕發現）
 
@@ -500,10 +675,19 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   地面起飛時 BasicController 鎖定當下航向，planner 也在落地時清除 target yaw、下次由 attitude 初始化，兩者一致。
 - 編隊 assignment 的基礎條件是總移動距離最短：以 FormationEpoch center 為原點的
   canonical NED（只取決於 epoch 內容，各 Agent 逐位元相同）計算三維距離，加上換槽
-  penalty（僅 parent 與目前槽位數相同時）做 deterministic Hungarian，再以 crossing
+  penalty（僅 parent 與目前隊形類型相同、槽位數也相同時）做 deterministic Hungarian，再以 crossing
   penalty 減少水平交叉。CIRCLE 的槽位相位不影響隊形，另以 0.5° 解析度搜尋總成本最低
   的相位（同成本取較小相位），因此成員減少時存活成員只做最短的移動，不會整圈換位。
   成員 discovery 連續兩次穩定後自動重編隊。
+  隊形類型改變（例如一字 → 燕行）時，提案端不帶入 parent 槽位歸屬，因為兩種隊形的
+  槽位編號代表不同幾何角色，指派只依新隊形的幾何決定。
+- 編隊到位以 planner-local 誤差 ≤ `global_arrival_tolerance_m` 判斷，並直接以槽位座標
+  建立 terminal hold；PX4 會以位置控制直線飛完剩下的距離，不經 optimizer 與 validator。
+  因此只有「目前位置 → 槽位」直線與每台編隊同儕的路徑都保持
+  `max(formation_min_distance_m, peer_collision_min_distance_m)` 時才直接到位；同儕路徑為
+  即時位置接上 fresh 軌跡未來 4 s 的取樣（terminal hold 同儕即為「即時位置 → hold 槽位」）。
+  不通過或同儕資料無效時繼續一般規劃，直到 PX4 local 誤差 ≤ `local_arrival_tolerance_m`
+  才建立 terminal hold；已建立的同槽位 hold 不重新檢查。
 - 編隊至少需要 2 台穩定成員：少於 2 台的 `FORMATION_*` 直接拒絕、不排隊；編隊中成員
   只剩本機時解散編隊並以目前位置原地懸停，不飛往單機虛擬槽位。
 - 槽位中心距離小於 `formation_min_distance_m` 的編隊參數（例如半徑過小）會在命令階段
@@ -534,6 +718,54 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   用於建立 `box`、`cylinder` 與 `wall` 等模擬場景。
 - `mission_planner`、`trajectory_controller` 與第一版觀測式防撞已被 EGO-Swarm
   取代；舊 `/ned_target` 與 `/waypoints` 僅保留相容或純邏輯測試用途。
+
+### 4.3 航點任務（Waypoint Mission）
+
+單機航點任務由本機 `ego_swarm_planner` 執行；GCS 斷線不影響執行。
+
+```
+         上傳成功                MISSION_START(id 相符)
+ IDLE ──────────────▶ LOADED ─────────────────────────▶ RUNNING ◀──────┐
+  ▲  ◀── 載入逾時 ─────┘ │                                │  到達非最後點   │ 停留結束
+  │      MISSION_STOP    │ 新上傳取代                      ▼              │
+  │                      ▼                              DWELLING ───────┘
+  │                    LOADED(新 id)                       │
+  │                                                   到達最後點 ▼
+  └──── 新上傳時才離開 ── COMPLETED／ABORTED ◀── 中止條件（RUNNING／DWELLING）
+```
+
+**上傳驗證**（不符即發布一次 `REJECTED`，目前狀態不變）：任務執行中或編隊中（BUSY）；
+`mission_id == 0`、`altitude_frame` 不是 `ALTITUDE_PX4_LOCAL`、航點數為 0 或超過上限、經緯度不合法、
+高度不在 `mission_min_altitude_m`～`mission_max_altitude_m`、`dwell_s` 不合法、`yaw_deg` 不是 NaN（INVALID_PLAN）；
+沒有有效 AgentState、planner Home 或 PX4 local 換算（NOT_READY）；任一航點水平距離超過上限（OUT_OF_RANGE）。
+上傳本身不需在懸停；新上傳會取代已載入、已完成或已中止的任務。
+
+**座標換算**：水平以 planner Home 由 WGS84 換算；垂直以 PX4 local 換算
+（`z_planner = -altitude_m - planner_to_px4_ned_offset.z`）。換算在上傳時完成並保存，執行中不重算。
+
+**開始條件**（`MISSION_START <id>`，不符即 `REJECTED`）：狀態為 LOADED 且識別碼相符（ID_MISMATCH）；
+PX4 為 Offboard（`px4_nav_state=14`）、AgentState `flight_mode=HOVER`、`px4_state_valid`（NOT_HOVERING）；
+不在編隊中（BUSY）；再檢查一次水平距離上限（OUT_OF_RANGE）。開始時不改變目標航向。
+
+**執行**：每段以航點為 Final Target，到達判斷與單機 `MOVE_POINT` 相同（PX4 local 與 planner-local 都在容許誤差內）。
+非最後一點到達後停留 `dwell_s`（terminal hold），最後一點到達即 COMPLETED 並懸停。
+單段逾時＝`mission_leg_base_timeout_s`＋段長 ÷ `mission_min_expected_speed_mps`，同儕仲裁、煞停與規劃失敗的等待都計入。
+
+**中止條件**：
+
+| 觸發 | 原因碼 | Agent 動作 |
+|------|--------|------------|
+| `MISSION_STOP` | `OPERATOR_STOP` | 依目前速度煞停並停在原地 |
+| 單機或全體 topic 收到任何非 `MISSION_*` 的有效命令（含 `HOLD`、`YAW`、`ARM`、`MODE_RTL`、`MODE_LAND`、`FORMATION_*`、`REBOOT_FC`）；`ned_target`、`mission_intent` 收到目標 | `COMMAND_OVERRIDE`（`detail` 為命令名稱） | 先煞停並停在原地，再照常處理該命令 |
+| PX4 離開 Offboard，或 `flight_mode` 不是 HOVER／MOVING（PX4 自行 RTL、LAND、failsafe、遙控器切換） | `FLIGHT_STATE` | 只清除 planner 目標，不發布停止軌跡（控制權已在 PX4） |
+| 確認落地、上鎖或偵測到 PX4 重新啟動 | `LANDED` | 隨既有流程清除 |
+| 單段逾時 | `LEG_TIMEOUT` | 煞停並停在原地 |
+
+- 無法解析或參數不合法的命令不算介入（改發布 `COMMAND_UNKNOWN`／`COMMAND_INVALID_PARAMS`）。
+- 全體 topic 的 `MISSION_*`／`REBOOT_FC` 會被拒絕（`COMMAND_REJECTED`），也不算介入。
+- LOADED 只會因載入逾時、`MISSION_STOP`、新上傳或落地清除；其他命令不影響已載入的任務。
+- 煞停終點作為之後相對 `MOVE_*` 的累加基準；中止與完成後都不自動執行 RTL、LAND 或其他命令。
+- Agent 重新啟動後任務遺失並發布 IDLE；QGCS 以狀態不符判定任務中止。
 
 ---
 
@@ -617,14 +849,47 @@ docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} restart={{.R
 |----------|------|------|
 | `ARM` | 無 | 解鎖；PX4 未解鎖且尚無 Offboard session 時，先自動進入 Offboard（10 筆心跳 prestream → 模式請求 → VehicleStatus 確認）再送出 ARM |
 | `DISARM` | 無 | 上鎖 |
-| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛；PX4 已落地且尚無 Offboard session 時先自動進入 Offboard，並等 PX4 回報已解鎖才起飛（3 秒內未解鎖即取消） |
+| `TAKEOFF [altitude]` | 高度 (公尺，預設 3.0) | 起飛；PX4 已落地且尚無 Offboard session 時先自動進入 Offboard，並等 PX4 回報已解鎖才起飛（3 秒內未解鎖即取消，發布 `TAKEOFF_CANCELLED`）。高度必須是數值，`TAKEOFF abc` 不執行並發布 `COMMAND_INVALID_PARAMS` |
 
 > 降落後的地面狀態：PX4 已上鎖、仍停在 Offboard 而 Agent 沒有 Offboard session 時
 > （RTL、LAND、DISARM 或自動上鎖之後），BasicController 會把 PX4 切到 Hold
 > （`DO_SET_MODE` main mode 4 AUTO + sub mode 3 LOITER），避免 PX4 停在缺少心跳的
 > Offboard 而預檢失敗。因此降落後可直接送 `ARM` → `TAKEOFF`，不必先送 `MODE_OFFBOARD`。
-> PX4 拒絕 ARM 時，Agent 記錄 WARN（含 VehicleCommandAck result）並停止 Offboard session；
-> 拒絕原因目前只出現在 Agent 日誌，尚未回報至 QGCS。
+> PX4 拒絕 ARM 時，Agent 記錄 WARN（含 VehicleCommandAck result）、停止 Offboard session，
+> 並發布 `PX4_COMMAND_REJECTED`（`command=ARM`、`px4_result` 為 ack 結果）。
+
+#### 航點任務與飛控命令（僅透過 `/{agent_namespace}/command`）
+
+| 命令字串 | 參數 | 說明 |
+|----------|------|------|
+| `MISSION_START <mission_id>` | 十進位整數 1～4294967295（不接受小數點、指數或正負號） | 開始已載入的航點任務；結果以 `mission/status` 回報（RUNNING 或 REJECTED） |
+| `MISSION_STOP` | 無 | 中止執行中的任務並停在目前位置（ABORTED／OPERATOR_STOP）；只有已載入時清除為 IDLE |
+| `REBOOT_FC [force]` | 選填 `0` 或 `1`（預設 0） | 重新啟動**飛控**（PX4 `VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN`，param1=1、param2=0）；與 Agent 容器的 shutdown service 不同 |
+
+`REBOOT_FC` 安全條件：
+
+| PX4 狀態 | `force = 0` | `force = 1` |
+|----------|-------------|-------------|
+| VehicleStatus 新鮮、已上鎖、land detected 新鮮且已落地 | 送出 | 送出 |
+| VehicleStatus 新鮮、已解鎖 | 拒絕 | **拒絕** |
+| VehicleStatus 新鮮、已上鎖但未確認落地 | 拒絕 | 拒絕 |
+| VehicleStatus 從未收到或逾時（狀態不明） | 拒絕，`detail` 提示可用 force | 送出（依賴 PX4 在解鎖時自行拒絕） |
+
+- 任何拒絕都發布 `COMMAND_REJECTED`（`command=REBOOT_FC`），`detail` 說明是哪一條。
+- 送出前停止 Offboard session、清除排隊中的 ARM／TAKEOFF 與 timed trajectory，飛行狀態回到 IDLE。
+- 送出後 `reboot_cooldown_s`（預設 15 秒）內的 `REBOOT_FC` 一律拒絕。
+- 結果以 `PX4_COMMAND_ACCEPTED`／`PX4_COMMAND_REJECTED`／`PX4_COMMAND_TIMEOUT` 回報；
+  飛控重新連線後發布 `PX4_RESTART_DETECTED`，Agent 清除任務、編隊與 Offboard 狀態並重建 PX4 local 平移。
+- `force=1` 的安全前提（PX4 解鎖時以 DENIED 拒絕重新啟動）必須在實機驗證。PX4 SITL（POSIX 平台）不支援重新啟動，
+  `REBOOT_FC` 一律收到 `PX4_COMMAND_REJECTED`（DENIED，`px4_result=2`），無法用來驗證此前提。
+
+#### 參數錯誤與事件
+
+- 參數缺少或不合法（例如 `TAKEOFF abc`、`YAW` 無參數、`MISSION_START 1.5`、`MISSION_START 1e3`、
+  `MISSION_START 4294967296`、`REBOOT_FC 2`）：
+  不執行並發布 `COMMAND_INVALID_PARAMS`。
+- 無法解析的命令字串：發布 `COMMAND_UNKNOWN`（`detail` 保留前 64 個字元）。
+- 全體 topic 收到 `MISSION_*` 或 `REBOOT_FC`：忽略並發布 `COMMAND_REJECTED`。
 
 #### 編隊命令（僅透過 `/uav_all_agent/command` 廣播）
 
@@ -673,6 +938,18 @@ ros2 topic pub /uav_all_agent/command std_msgs/msg/String \
 
 # uav_2 向前移動 3 公尺
 ros2 topic pub /uav_2_agent/command std_msgs/msg/String "data: 'MOVE_FORWARD 3'"
+
+# 上傳 uav_1 的航點任務（兩點，高度 10 公尺，第一點停留 3 秒）後開始
+ros2 topic pub --once /uav_1_agent/mission/plan taiphoon_agent/msg/WaypointMission \
+  "{mission_id: 7, altitude_frame: 1, waypoints: [
+    {latitude_deg: 24.00010, longitude_deg: 121.00000, altitude_m: 10.0, dwell_s: 3.0, yaw_deg: .nan},
+    {latitude_deg: 24.00010, longitude_deg: 121.00010, altitude_m: 10.0, dwell_s: 0.0, yaw_deg: .nan}]}"
+ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String "data: 'MISSION_START 7'"
+
+# 觀察任務狀態、事件與健康狀態
+ros2 topic echo /uav_1_agent/mission/status
+ros2 topic echo /uav_1_agent/events
+ros2 topic echo /uav_1_agent/health
 ```
 
 ---
@@ -717,8 +994,13 @@ PX4 uXRCE-DDS topic 的固定路徑元件，不代表 UAV 的實例識別碼。
 | `/uav_all_agent/swarm/agent_trajectories` | reliable (pub) / best_effort (sub) | volatile | 10 |
 | `/{agent_namespace}/perception/obstacles` | best_effort | volatile | 10 |
 | `/{agent_namespace}/planning/status`、`/planning/trajectory` | reliable | volatile | 10 |
+| `/{agent_namespace}/mission/plan` | reliable | volatile | 10 |
+| `/{agent_namespace}/mission/status` | reliable | transient_local | 1 |
+| `/{agent_namespace}/events` | reliable | volatile | 20 |
+| `/{agent_namespace}/health` | reliable | volatile | 1 |
 
-> 上述 QoS 與目前 `ego_swarm_planner`、`obstacle_cloud_simulator` 實作一致。
+> 上述 QoS 與目前 `basic_controller_node`、`ego_swarm_planner`、`obstacle_cloud_simulator` 實作一致。
+> `mission/status` 使用 transient_local，晚加入的 GCS 會先收到最後一筆狀態；`events` 刻意使用 volatile，不重播舊事件。
 
 ---
 

@@ -23,6 +23,8 @@
 - **實機與模擬共用**：樹莓派實機與電腦上的模擬機群使用同一套工具，首次設定後，之後一鍵啟動。
 - **多機自動編隊與避碰**：Agent 之間互相交換接下來的飛行軌跡，依總移動距離最短自動分配隊形位置，並保持機間安全距離。
 - **成員離線自動重組**：有 Agent 離線時，其餘成員自動重組隊形；只剩 1 台時解散編隊並原地懸停。
+- **單機航點任務**：在 QGCS 規劃航點後交給 Agent 執行，飛行途中與其他無人機照常避碰；地面站斷線也會繼續執行。
+- **錯誤即時回報**：命令被拒、PX4 拒絕解鎖、飛控連線中斷等狀況會直接回報到 QGCS，不必翻日誌。
 - **安全預設**：啟動時不會解鎖或起飛；缺少障礙物地圖或多機時間未同步時，無人機原地等待，不會貿然移動。
 - **多平台套件**：提供 Raspberry Pi、Linux、Windows 與 macOS 的完整套件，內含預先編譯好的 Agent 映像。
 
@@ -91,7 +93,7 @@ Agent 依總移動距離最短自動分配位置並避碰，先排成半徑 15 �
 <details>
 <summary>安裝注意事項</summary>
 
-- **安裝到使用者目錄（選用）**：Linux／macOS 在套件目錄執行 `bash install.sh`，Windows 執行 `./install.ps1`，之後在任何位置都能直接輸入 `taiphoon_agent`。沒有安裝時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+- **安裝到使用者目錄（選用）**：Linux／macOS 在套件目錄執行 `bash install.sh`，Windows 執行 `./install.ps1`，之後在任何位置都能直接輸入 `taiphoon_agent`。沒有安裝時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。更新既有的 Agent 也使用 `install.sh`，見[安裝與更新](#安裝與更新)。
 - **macOS**：套件尚未經 Apple 公證，第一次開啟會被系統阻擋。到「系統設定 → 隱私權與安全性」按「強制打開」即可，不需要停用安全機制。
 - **Windows**：找不到 Docker 時，先開啟 Docker Desktop；工具會自動尋找 PATH 與標準安裝位置。只安裝在 WSL Ubuntu 內的 Docker 無法使用，請改用 Docker Desktop。
 - **Docker Desktop**：請使用 Linux 容器模式。
@@ -137,6 +139,25 @@ Agent 依總移動距離最短自動分配位置並避碰，先排成半徑 15 �
 | `taiphoon_agent timesync` | 檢查本機對時狀態（實機多機） |
 
 沒有安裝到使用者目錄時，Linux／macOS 在指令前加 `./`，Windows 使用 `./taiphoon_agent.exe`。
+
+### 安裝與更新
+
+在樹莓派等 Linux 主機（macOS 相同）解壓縮新版套件後執行 `install.sh`；首次安裝與更新既有的 Agent 都用同一個指令，執行前會列出計畫並詢問：
+
+```bash
+mkdir taiphoon_agent-new
+tar -xzf taiphoon_agent-<版本>-linux-arm64.tar.gz -C taiphoon_agent-new
+bash taiphoon_agent-new/install.sh
+```
+
+- **保留設定**：沿用原本的 `settings.ini`；原本手動指定其他設定目錄或用 systemd 服務啟動的部署，也會一併接手。
+- **縮短停機**：舊版仍在執行時先載入新版映像，再停止舊版、啟動新版並等待就緒；原本沒有執行的 Agent 更新後維持停止。
+- **失敗自動切回**：新版啟動失敗時自動切回上一版並恢復執行；之後也能手動切回：`bash ~/.local/share/taiphoon_agent/install.sh --rollback`。
+- **開機自動啟動**：加上 `--autostart` 設定 systemd 服務 `taiphoon-agent`，之後用 `sudo systemctl restart taiphoon-agent`／`stop` 管理；`--no-autostart` 取消。
+- **一次完成實機首次安裝**：`bash install.sh --yes --agent-id 2 --autostart`（無人機 2），`--yes` 表示不詢問。
+- 只保留目前與上一個版本；舊版 Docker 映像不會自動刪除。
+- Linux 實機沒有安裝 chrony 且 `settings.ini` 未設定 `time_sync=off` 時，新版一定無法啟動，因此更新會在停止舊版前先中止；請先完成[多機對時](#多機對時)。
+- 不要加 `sudo` 執行；需要管理 systemd 時腳本會自行詢問 sudo 密碼。
 
 ### 實機必要設定
 
@@ -184,6 +205,19 @@ obstacle_source=explicit_empty
 - 編隊至少需要 2 台無人機，編隊高度以起飛點（Home）為基準。
 - 降落或上鎖後，Agent 會清除編隊與移動目標；在地面下達的移動或編隊命令不會保留到起飛後，再次起飛後要重新下達編隊。
 - 有 Agent 離線時，其餘成員自動重組；飛行中重新啟動的 Agent 要重新下達編隊才會加入，期間其他成員維持目前隊形。
+
+### 航點任務
+
+- 在 QGCS 上傳航點任務後再按開始；上傳後 10 秒內沒有開始，任務會自動清除。
+- 開始時無人機必須已起飛並在 Offboard 懸停，且不在編隊中。航點高度以起飛點為基準，與 QGCS 機群面板顯示的高度相同。
+- 執行中下達其他命令（懸停、轉向、移動、返航、降落、編隊等）會中止任務，無人機先停在目前位置再執行該命令；
+  遙控器接手或 PX4 自行返航時任務也會中止。
+- 任務完成後懸停在最後一個航點，不會自動返航或降落。
+
+### 重新啟動飛控
+
+QGCS 可以要求 Agent 重新啟動 PX4 飛控（例如修改飛控參數後）。只有無人機已上鎖並停在地面時才會執行，
+解鎖中一律拒絕；送出後 15 秒內不接受第二次。飛控重新連線後，Agent 會自動清除任務與編隊狀態。
 
 ### 與 Taiphoon QGCS 連線
 

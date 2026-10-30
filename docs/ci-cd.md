@@ -29,7 +29,7 @@ CI 使用唯讀權限；Release 呼叫端提供 contents write，用於未公開
 ## 驗證範圍
 
 - AMD64／ARM64 原生 ROS2 workspace 建置與套件測試；ARM64 不以 QEMU 編譯 Agent。
-- Docker 內三組 CTest：設定／Compose／程序、CLI 生命週期與映像儲存方式、五個平台打包。
+- Docker 內四組 CTest：設定／Compose／程序、CLI 生命週期與映像儲存方式、五個平台打包、安裝與替換腳本。
 - Linux 兩種架構在隔離 DDS domain 執行降落／重飛的 planner 節點回歸，並驗證 cubic 曲線邊界判定。
 - runtime 無飛控健康檢查；AMD64 再以真正 CLI 啟動 1／4 組 PX4 SIH，只讀取狀態並正常停止。
 - Windows MSVC 與 macOS Intel／Apple Silicon universal 原生工具編譯；不在 host 執行 ROS2。
@@ -80,7 +80,7 @@ git push origin v1.3.0-rc.4
 | Release 內容與格式 | docs/releases/*.md、docs/ci-cd.md |
 | 平台打包與安裝 | Tools/agent_launcher/package_release.py、install.* |
 | 模式、網路、程序與設定 | Tools/agent_launcher/*.cpp |
-| CTest、真實模擬與唯讀觀測 | test/agent_launcher*、test/deployment_* |
+| CTest、真實模擬與唯讀觀測 | test/agent_launcher*、test/agent_installer_test.py、test/deployment_* |
 
 內部 manifest 的 ID／完整 Config 可能受 Docker 儲存方式影響；啟動工具以 ID 或完整檔案層確認
 映像內容，再確認 CPU／OS。舊 Config 欄位保留相容性，不當作環境一致性 Gate。

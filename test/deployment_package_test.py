@@ -71,6 +71,7 @@ def main():
             with tarfile.open(path, 'r:gz') as archive:
                 members = {member.name.removeprefix('./'): member for member in archive.getmembers()}
                 assert 'taiphoon_agent' in members and members['taiphoon_agent'].mode & 0o111
+                assert members['install.sh'].mode & 0o111, 'Linux／macOS 套件缺少安裝腳本'
                 manifest = archive.extractfile(members['release.manifest']).read().decode()
                 metadata = dict(line.split('=', 1) for line in manifest.splitlines())
                 for kind in ('runtime', 'dev'):
@@ -86,17 +87,8 @@ def main():
                     assert 'setup_time_sync.sh' not in members, 'macOS 不使用 chrony 設定腳本'
                 else:
                     assert members['setup_time_sync.sh'].mode & 0o111, 'Linux 套件缺少主機對時腳本'
-    home = root / 'home with 中文 spaces'
-    home.mkdir()
-    install_environment = dict(os.environ, HOME=str(home), SHELL='/bin/zsh')
-    installer = root / 'packages/linux-amd64/install.sh'
-    for _ in range(2):
-        subprocess.run(['bash', str(installer)], env=install_environment, check=True,
-                       capture_output=True, text=True, timeout=10)
-    assert (home / '.local/bin/taiphoon_agent').is_file()
-    assert (home / '.local/share/taiphoon_agent/images/taiphoon-agent-dev-linux-amd64.tar.gz').is_file()
-    assert (home / '.zshrc').read_text().count('export PATH=') == 1, '安裝應可重複且不重複加入 PATH'
-    print('PASS: 五個自包含平台包、兩種映像、正確架構、執行權限、Linux 對時腳本、無獨立校驗檔')
+    # 安裝與替換流程需要可執行的啟動工具，另由 agent_installer_test.py 以替身驗證。
+    print('PASS: 五個自包含平台包、兩種映像、正確架構、執行權限、安裝腳本、Linux 對時腳本、無獨立校驗檔')
 
 
 if __name__ == '__main__':

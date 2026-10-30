@@ -9,7 +9,9 @@
 | 檔案 | 角色 |
 |------|------|
 | `BasicController.hpp/.cpp` | 實作 `core::IBasicFlightController`，透過 PX4 Offboard 控制無人機；內含飛行狀態機 `FlightState` |
-| `Px4LinkFreshness.hpp` | 純邏輯：PX4 狀態新鮮度（單調時鐘）與 Offboard 輸出持續／停止決策 |
+| `Px4LinkFreshness.hpp` | 純邏輯：PX4 狀態新鮮度（單調時鐘）、Offboard 輸出持續／停止決策，以及 `Px4LinkMonitor` 逾時／恢復轉換 |
+| `FlightControllerReboot.hpp` | 純邏輯：`REBOOT_FC` 安全條件（含冷卻）與 `Px4RestartDetector` PX4 重新啟動偵測 |
+| `Px4HealthFlags.hpp` | 純邏輯：PX4 `FailsafeFlags` 轉為 `AgentHealth.failsafe_flags` 位元（樣板，不依賴 px4_msgs） |
 | `YawSlewLimiter.hpp` | 純邏輯：偏航角正規化、最短角度與逐週期限速逼近（含 yawspeed 前饋） |
 | `AgentCommandHandler.hpp/.cpp` | 訂閱 `/{agent_namespace}/command` 與 `/uav_all_agent/command`，解析命令字串後以 callback 交回節點執行 |
 
@@ -22,6 +24,10 @@
 - 與 PX4 的資料交換統一透過 `px4_msgs` topic，禁止在此層直接撰寫 MAVLink 協定。
 - `BasicController` 是現行 runtime 唯一允許發布 PX4 `TrajectorySetpoint` 的 component。
 - Controller 可以執行 planner trajectory 的 p/v/a sampling 與 PX4 message translation，但不得做 formation assignment、swarm collision planning 或 obstacle path planning。
+- 事件以注入的 `EventCallback`（`set_event_callback()`）送出，controller 不建立 ROS2 publisher；
+  事件只在控制迴圈或命令處理中送出，PX4 callback 只排入佇列，不做耗時工作。
+- `AgentCommandHandler` 以 `set_sourced_command_callback()` 交回命令來源（單機／全體），
+  `set_unknown_command_callback()` 交回無法解析的命令字串。
 
 ## 變更與驗證
 

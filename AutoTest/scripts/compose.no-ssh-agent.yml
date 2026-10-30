@@ -1,0 +1,25 @@
+# @file compose.no-ssh-agent.yml
+# @brief 移除 docker-compose.yml 的 SSH agent 掛載（Windows Docker Desktop 用）
+# @author Taiphoon Agent Team
+# @date 2026-10-27
+#
+# docker-compose.yml 以 ${SSH_AUTH_SOCK} 同時作為 bind mount 的來源與容器內路徑，
+# 但 Windows 沒有可掛進 Linux 容器的 SSH agent socket：變數未設定時掛載路徑變成 '.'，
+# 填入 C:/ 路徑則容器內路徑含冒號，兩者都會讓 Agent 容器無法建立。
+# 本檔把 volumes 換成只掛載專案目錄，容器內不轉送 SSH agent。
+# 需 Docker Compose 2.24.4 以上（!override）。
+#
+# 搭配專案根目錄的 docker-compose.yml 使用（相對路徑以第一個 compose 檔所在目錄為準）：
+#   docker compose -f docker-compose.yml -f AutoTest/scripts/compose.no-ssh-agent.yml up -d ...
+
+x-project-volume-only: &project-volume-only
+  volumes: !override
+    - type: bind
+      source: .
+      target: /home/taiphoon/Taiphoon_Agent
+
+services:
+  uav_1_agent: *project-volume-only
+  uav_2_agent: *project-volume-only
+  uav_3_agent: *project-volume-only
+  uav_4_agent: *project-volume-only

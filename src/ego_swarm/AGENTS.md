@@ -32,6 +32,9 @@
 - trajectory-level peer collision checking
 - continuous trajectory safety validation
 - emergency braking trajectory
+- waypoint mission（`WaypointMissionExecutor`：上傳驗證、WGS84／PX4 local 高度換算、
+  狀態機、停留與單段逾時；目標設定、到達判斷與停在原地由 `ego_swarm_planner_node`
+  依回傳結果執行，executor 不直接改變 planner 狀態）
 
 ---
 
@@ -131,6 +134,9 @@ ContinuousSafetyValidator
 UAV 仍有顯著 velocity 時：
 
 不得以 repeated-current-position control points 取代 braking trajectory。
+
+航點任務的「停在目前位置」也使用 `EmergencyBrakePlanner` 依目前速度煞停，
+不得把 Final Target 直接改成目前位置。
 
 ### 9. Freshness 是 safety contract
 

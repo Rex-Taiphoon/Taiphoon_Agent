@@ -12,11 +12,13 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "px4_msgs/msg/failsafe_flags.hpp"
 #include "px4_msgs/msg/offboard_control_mode.hpp"
 #include "px4_msgs/msg/trajectory_setpoint.hpp"
 #include "px4_msgs/msg/vehicle_command.hpp"
@@ -26,10 +28,12 @@
 #include "px4_msgs/msg/vehicle_land_detected.hpp"
 
 #include "core/IBasicFlightController.hpp"
+#include "controllers/FlightControllerReboot.hpp"
 #include "controllers/FlightState.hpp"
 #include "controllers/FlightStateResolver.hpp"
 #include "controllers/Px4LinkFreshness.hpp"
 #include "controllers/YawSlewLimiter.hpp"
+#include "safety/AgentEventCodes.hpp"
 
 namespace taiphoon
 {
@@ -83,6 +87,38 @@ constexpr int DEFAULT_QOS_DEPTH = 10;
 /// 預設目標系統 ID
 constexpr uint8_t DEFAULT_TARGET_SYSTEM = 1;
 
+/// 送出 VehicleCommand 後等待 VehicleCommandAck 的預設時限（秒）
+constexpr double DEFAULT_PX4_COMMAND_ACK_TIMEOUT_S = 3.0;
+
+/**
+ * @brief 供 AgentHealth 使用的 PX4 狀態摘要
+ *
+ * 接收時間為單調時鐘奈秒，0 表示從未收到；px4_* 欄位只在
+ * VehicleStatus 新鮮時可信。
+ */
+struct Px4HealthSnapshot
+{
+    int64_t status_received_ns{0};
+    int64_t land_detected_received_ns{0};
+    int64_t command_ack_received_ns{0};
+    int64_t failsafe_flags_received_ns{0};
+    bool pre_flight_checks_pass{false};
+    bool failsafe{false};
+    uint8_t arming_state{0U};
+    uint8_t latest_arming_reason{0U};
+    uint32_t failsafe_flag_bits{0U};
+    bool offboard_session_active{false};
+};
+
+/**
+ * @brief REBOOT_FC 請求結果
+ */
+struct FlightControllerRebootResult
+{
+    bool is_sent{false};   ///< true 表示已送出 VehicleCommand
+    std::string detail;    ///< 拒絕原因（英文，填入事件 detail）
+};
+
 /**
  * @brief 可由軌跡規劃器提供的定時 B-spline 軌跡資料。
  *
@@ -125,6 +161,14 @@ enum class TimedTrajectorySampleResult : uint8_t
 class BasicController : public core::IBasicFlightController
 {
 public:
+    /**
+     * @brief 事件回呼類型
+     *
+     * 只在控制迴圈或命令處理流程中呼叫，不在 PX4 訂閱回呼中呼叫；
+     * 節點負責節流與發布 AgentEvent。
+     */
+    using EventCallback = std::function<void(const safety::AgentEventRecord&)>;
+
     /**
      * @brief 建構子
      *
@@ -400,6 +444,45 @@ public:
      */
     bool hold_current_position();
 
+    // ==================== 事件、健康狀態與飛控重新啟動 ====================
+
+    /**
+     * @brief 設定事件回呼（ack 結果、逾時、PX4 狀態轉換等）
+     * @param callback 事件回呼；空值表示不回報
+     */
+    void set_event_callback(EventCallback callback);
+
+    /**
+     * @brief 設定 VehicleCommandAck 等待時限
+     * @param timeout_s 時限（秒），必須為正有限值
+     * @return true 設定成功；false 參數非法並保留原設定
+     */
+    bool set_command_ack_timeout_s(double timeout_s);
+
+    /**
+     * @brief 設定 REBOOT_FC 冷卻時間
+     * @param cooldown_s 冷卻時間（秒），必須為非負有限值
+     * @return true 設定成功；false 參數非法並保留原設定
+     */
+    bool set_reboot_cooldown_s(double cooldown_s);
+
+    /**
+     * @brief 依安全條件送出 PX4 重新啟動命令（REBOOT_FC）
+     *
+     * 送出前停止 Offboard session、清除排隊命令與定時軌跡，
+     * flight state 回到 IDLE。結果由 ack 事件回報。
+     *
+     * @param is_forced true 表示 REBOOT_FC 1（只放寬「狀態不明」一項）
+     * @return 是否送出與拒絕原因
+     */
+    FlightControllerRebootResult reboot_flight_controller(bool is_forced);
+
+    /**
+     * @brief 取得 AgentHealth 所需的 PX4 狀態摘要
+     * @return 狀態摘要
+     */
+    Px4HealthSnapshot get_px4_health_snapshot() const;
+
 private:
     // ==================== Publisher 初始化 (單一職責) ====================
 
@@ -458,6 +541,16 @@ private:
      * @return true 建立成功
      */
     bool create_vehicle_land_detected_subscriber();
+
+    /**
+     * @brief 建立 FailsafeFlags Subscriber
+     *
+     * 訂閱 fmu/out/failsafe_flags；PX4 未輸出此 topic 時只會使
+     * AgentHealth.failsafe_flags_valid 為 false，不影響其他功能。
+     *
+     * @return true 建立成功
+     */
+    bool create_failsafe_flags_subscriber();
 
     // ==================== 狀態機處理 (單一職責) ====================
 
@@ -576,6 +669,58 @@ private:
     bool send_hold_mode_command();
 
     /**
+     * @brief 發送重新啟動飛控命令
+     *
+     * PX4: command=246 (VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN),
+     * param1=1.0 (重新啟動飛控), param2=0.0 (不影響機上電腦)
+     *
+     * @return true 發送成功
+     */
+    bool send_reboot_command();
+
+    /**
+     * @brief 記錄已送出、等待 ack 的 VehicleCommand
+     *
+     * 同一 PX4 command id 只保留最新一筆（例如 ARM／DISARM 共用 400，
+     * Offboard／Hold 共用 176），ack 依 command id 對應最新送出的命令。
+     *
+     * @param px4_command VehicleCommand.command
+     * @param command_name 事件中的命令名稱
+     */
+    void track_px4_command(uint32_t px4_command, const char* command_name);
+
+    /**
+     * @brief 處理 ack callback 暫存的 VehicleCommandAck，發布對應事件
+     */
+    void process_command_acks();
+
+    /**
+     * @brief 回報並移除超過時限仍未收到 ack 的命令
+     */
+    void expire_pending_px4_commands();
+
+    /**
+     * @brief 偵測 PX4 狀態轉換（逾時／恢復、預檢、failsafe、重新啟動）並發布事件
+     */
+    void update_px4_link_events();
+
+    /**
+     * @brief PX4 重新啟動後重設 Offboard session、鎖定航向與排隊命令
+     */
+    void reset_after_px4_restart();
+
+    /**
+     * @brief 經由事件回呼送出事件
+     *
+     * @param code 事件代碼
+     * @param command 相關命令名稱
+     * @param px4_result 相關 ack 結果（沒有時為 PX4_RESULT_NONE）
+     * @param detail 英文補充說明
+     */
+    void emit_event(safety::AgentEventCode code, const std::string& command,
+                    int16_t px4_result, const std::string& detail);
+
+    /**
      * @brief 立即送出 ARM 並進入 ARMED 狀態，等待 PX4 回應。
      *
      * @return true 發送成功
@@ -643,6 +788,13 @@ private:
      */
     void vehicle_land_detected_cb(
         const px4_msgs::msg::VehicleLandDetected::SharedPtr msg);
+
+    /**
+     * @brief FailsafeFlags 回呼（整理為 AgentHealth 位元）
+     *
+     * @param msg FailsafeFlags 訊息
+     */
+    void failsafe_flags_cb(const px4_msgs::msg::FailsafeFlags::SharedPtr msg);
 
     /**
      * @brief 依 PX4 觀測資料更新已完成或逾時的命令意圖
@@ -889,6 +1041,66 @@ private:
     bool has_parking_hold_sent_{false};
     rclcpp::Time last_parking_hold_time_{
         static_cast<int64_t>(0), RCL_ROS_TIME};
+
+    // --- 事件與健康狀態 ---
+
+    /**
+     * @brief ack callback 暫存的 VehicleCommandAck
+     */
+    struct Px4CommandAckRecord
+    {
+        uint32_t command{0U};
+        uint8_t result{0U};
+    };
+
+    /**
+     * @brief 已送出、等待 ack 的 VehicleCommand
+     */
+    struct PendingPx4Command
+    {
+        uint32_t px4_command{0U};
+        std::string name;
+        int64_t sent_ns{0};
+    };
+
+    rclcpp::Subscription<px4_msgs::msg::FailsafeFlags>::SharedPtr
+        failsafe_flags_sub_;
+
+    /// 事件回呼（由節點注入）
+    EventCallback event_callback_;
+
+    /// ack callback 只暫存，控制迴圈統一處理並發布事件
+    std::mutex command_ack_mutex_;
+    std::vector<Px4CommandAckRecord> received_command_acks_;
+
+    /// 等待 ack 的命令（只在控制迴圈與命令處理流程存取）
+    std::vector<PendingPx4Command> pending_px4_commands_;
+    int64_t command_ack_timeout_ns_{static_cast<int64_t>(
+        DEFAULT_PX4_COMMAND_ACK_TIMEOUT_S * 1.0e9)};
+
+    /// REBOOT_FC 冷卻
+    int64_t reboot_cooldown_ns_{static_cast<int64_t>(
+        DEFAULT_REBOOT_COOLDOWN_S * 1.0e9)};
+    int64_t last_reboot_request_ns_{0};
+
+    /// 最新接收時間（單調時鐘奈秒，0 表示從未收到）
+    std::atomic<int64_t> last_command_ack_ns_{0};
+    std::atomic<int64_t> last_failsafe_flags_ns_{0};
+
+    /// VehicleStatus 摘要
+    std::atomic<bool> pre_flight_checks_pass_{false};
+    std::atomic<bool> px4_failsafe_{false};
+    std::atomic<uint8_t> latest_arming_reason_{0U};
+
+    /// FailsafeFlags 整理後的 AgentHealth 位元
+    std::atomic<uint32_t> failsafe_flag_bits_{0U};
+
+    /// PX4 狀態轉換偵測（只在控制迴圈存取）
+    Px4LinkMonitor status_link_monitor_{
+        PX4_STATE_TIMEOUT_NS, PX4_STARTUP_GRACE_NS};
+    Px4RestartDetector restart_detector_;
+    safety::BooleanTransitionDetector preflight_transition_;
+    safety::BooleanTransitionDetector failsafe_transition_;
 };
 
 }  // namespace controllers

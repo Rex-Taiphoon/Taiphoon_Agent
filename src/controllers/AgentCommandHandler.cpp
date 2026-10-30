@@ -65,7 +65,29 @@ bool AgentCommandHandler::initialize()
 
 void AgentCommandHandler::set_command_callback(CommandCallback callback)
 {
-    command_callback_ = callback;
+    if (!callback)
+    {
+        command_callback_ = nullptr;
+        return;
+    }
+    // 舊介面不需要來源，轉接成含來源的回呼保存。
+    command_callback_ =
+        [callback](const utils::ParsedCommand& cmd, utils::CommandSource)
+        {
+            callback(cmd);
+        };
+}
+
+void AgentCommandHandler::set_sourced_command_callback(
+    SourcedCommandCallback callback)
+{
+    command_callback_ = std::move(callback);
+}
+
+void AgentCommandHandler::set_unknown_command_callback(
+    UnknownCommandCallback callback)
+{
+    unknown_command_callback_ = std::move(callback);
 }
 
 const std::string& AgentCommandHandler::get_agent_namespace() const
@@ -146,22 +168,33 @@ void AgentCommandHandler::agent_command_cb(
                 "Received agent command on '%s': '%s'",
                 agent_namespace_.c_str(), cmd_str.c_str());
 
-    // 解析命令字串
+    dispatch_command(cmd_str, utils::CommandSource::AGENT);
+}
+
+void AgentCommandHandler::dispatch_command(
+    const std::string& cmd_str, const utils::CommandSource source)
+{
+    // 全體命令與個別命令使用相同的解析邏輯
     utils::ParsedCommand parsed = utils::parse_command_string(cmd_str);
 
     // L1-03：檢查解析結果是否有效
     if (parsed.command == utils::AgentCommand::UNKNOWN)
     {
         RCLCPP_WARN(rclcpp::get_logger("AgentCommandHandler"),
-                    "Unknown command received: '%s'",
+                    "Unknown %s command received: '%s'",
+                    source == utils::CommandSource::BROADCAST ? "broadcast" : "agent",
                     cmd_str.c_str());
+        if (unknown_command_callback_)
+        {
+            unknown_command_callback_(cmd_str, source);
+        }
         return;
     }
 
     // 如果有註冊回呼則執行
     if (command_callback_)
     {
-        command_callback_(parsed);
+        command_callback_(parsed, source);
     }
     else
     {
@@ -188,29 +221,7 @@ void AgentCommandHandler::all_agent_command_cb(
                 "Received broadcast command for agent '%s': '%s'",
                 agent_namespace_.c_str(), cmd_str.c_str());
 
-    // 全體命令與個別命令使用相同的解析邏輯
-    utils::ParsedCommand parsed = utils::parse_command_string(cmd_str);
-
-    // L1-03：檢查解析結果是否有效
-    if (parsed.command == utils::AgentCommand::UNKNOWN)
-    {
-        RCLCPP_WARN(rclcpp::get_logger("AgentCommandHandler"),
-                    "Unknown broadcast command received: '%s'",
-                    cmd_str.c_str());
-        return;
-    }
-
-    // 如果有註冊回呼則執行
-    if (command_callback_)
-    {
-        command_callback_(parsed);
-    }
-    else
-    {
-        RCLCPP_WARN(rclcpp::get_logger("AgentCommandHandler"),
-                    "No command callback registered, broadcast command '%s' ignored",
-                    cmd_str.c_str());
-    }
+    dispatch_command(cmd_str, utils::CommandSource::BROADCAST);
 }
 
 }  // namespace controllers

@@ -67,7 +67,7 @@ ros2 run taiphoon_agent formation_node --ros-args \
 | `MODE_LAND` | `MODE_LAND` | 切換至降落模式 |
 | `ARM` | `ARM` | 解鎖 |
 | `DISARM` | `DISARM` | 上鎖 |
-| `TAKEOFF` | `TAKEOFF [高度]` | 起飛至指定高度（公尺），無參數時使用預設值 3.0m |
+| `TAKEOFF` | `TAKEOFF [高度]` | 起飛至指定高度（公尺），無參數時使用預設值 3.0m；高度不是數值時不執行 |
 | `HOLD` | `HOLD` | 保持目前位置懸停 |
 | `MOVE_FORWARD` | `MOVE_FORWARD [距離]` | 向前移動指定距離（公尺） |
 | `MOVE_BACKWARD` | `MOVE_BACKWARD [距離]` | 向後移動指定距離（公尺） |
@@ -77,6 +77,13 @@ ros2 run taiphoon_agent formation_node --ros-args \
 | `MOVE_DOWN` | `MOVE_DOWN [距離]` | 向下移動指定距離（公尺），最低不低於 1m |
 | `YAW` | `YAW [角度]` | 順時針旋轉指定角度（度），累加到目標航向；以 `yaw_rate_limit_deg_s`（預設 30 deg/s）限速轉向 |
 | `MOVE_POINT` | `MOVE_POINT x y z yaw` | 移動至指定 NED 絕對位置（x/y/z/yaw）；yaw 同樣限速轉向 |
+| `MISSION_START` | `MISSION_START <任務識別碼>` | 轉交 ego_swarm_planner 開始已上傳的航點任務；僅單機 topic |
+| `MISSION_STOP` | `MISSION_STOP` | 轉交 ego_swarm_planner 中止航點任務；僅單機 topic |
+| `REBOOT_FC` | `REBOOT_FC [0\|1]` | 重新啟動飛控（VehicleCommand 246，param1=1、param2=0）；僅單機 topic，安全條件見下方 |
+
+> 參數缺少或不合法（例如 `TAKEOFF abc`、`YAW` 無參數）時不執行，並發布 `COMMAND_INVALID_PARAMS` 事件；
+> 舊版 `TAKEOFF abc` 會以預設高度起飛，現在改為拒絕。全體 topic 收到 `MISSION_*` 或 `REBOOT_FC`
+> 時忽略並發布 `COMMAND_REJECTED`。
 
 ### 編隊命令（FormationNode 處理，僅限 `/uav_all_agent/command`）
 
@@ -220,6 +227,50 @@ BasicController 以 PX4 的 `VehicleStatus` 確認 Offboard 狀態，並以 `Veh
 中止、未收到與時間倒退）；`test/basic_controller_setpoint_test.cpp` 以真實等待確認 3 秒無狀態
 仍維持 Offboard、超過 5 秒停止；SITL 以 `basic_controller_offboard_validation.sh` 與
 `dual_agent_regression_sitl_validation.sh --count 3`（三機）驗證。
+
+## 事件與健康狀態
+
+`basic_controller_node` 發布 `/{agent_namespace}/events`（`AgentEvent`）與
+`/{agent_namespace}/health`（`AgentHealth`，預設 1 Hz）。代碼與欄位見
+[介面規格書 3.12、3.13](taiphoon-agent-interface.md#312-agentevent-taiphoon_agentmsgagentevent)。
+
+- 事件回呼由 `BasicController` 注入（`set_event_callback()`），只在控制迴圈或命令處理中呼叫；
+  PX4 ack callback 只把結果排入佇列，由下一個控制週期比對並發布。
+- 追蹤的 PX4 命令（ARM、DISARM、MODE_OFFBOARD、HOLD、MODE_RTL、MODE_LAND、REBOOT_FC）在
+  `px4_command_ack_timeout_s`（預設 3 秒）內沒有 ack 即發布 `PX4_COMMAND_TIMEOUT`；
+  拒絕發布 `PX4_COMMAND_REJECTED`，ARM／DISARM／REBOOT_FC 被接受另發布 `PX4_COMMAND_ACCEPTED`。
+- 同一代碼與命令 5 秒內只發布一次；`PX4_STATUS_STALE`／`RECOVERED`、`PX4_PREFLIGHT_FAILED`、
+  `PX4_FAILSAFE` 只在狀態轉換時發布。
+- 位置資料（VehicleOdometry、VehicleGlobalPosition）超過 1 秒未更新發布 `PX4_POSITION_STALE`；
+  啟動 5 秒內從未收到才視為「從未收到」。
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `health_publish_rate_hz` | 1.0 | `health` 發布頻率；不合法或大於 10 時回到 1.0 |
+| `px4_command_ack_timeout_s` | 3.0 | PX4 命令 ack 等待時限 |
+| `reboot_cooldown_s` | 15.0 | `REBOOT_FC` 送出後的冷卻時間 |
+
+## 重新啟動飛控（REBOOT_FC）
+
+安全條件（`controllers/FlightControllerReboot.hpp`，純邏輯）：
+
+| PX4 狀態 | `REBOOT_FC` / `REBOOT_FC 0` | `REBOOT_FC 1` |
+|----------|-----------------------------|---------------|
+| VehicleStatus 新鮮、已上鎖、land detected 新鮮且已落地 | 送出 | 送出 |
+| VehicleStatus 新鮮、已解鎖 | 拒絕 | 拒絕 |
+| VehicleStatus 新鮮、已上鎖但未確認落地 | 拒絕 | 拒絕 |
+| VehicleStatus 從未收到或逾時 | 拒絕，提示可用 force | 送出 |
+
+- 冷卻（`reboot_cooldown_s`）優先於上表；任何拒絕都發布 `COMMAND_REJECTED` 並在 `detail` 寫明原因。
+- 送出前停止 Offboard session、清除排隊中的 ARM／TAKEOFF 與 timed trajectory，flight state 回到 IDLE。
+- `REBOOT_FC 1` 的前提是 PX4 Commander 在解鎖時以 DENIED 拒絕重新啟動，必須在實機驗證；
+  若實機韌體不拒絕，`force` 改為不提供。PX4 SITL（POSIX 平台）不支援重新啟動，`REBOOT_FC` 一律回 DENIED。
+
+**重新啟動偵測（`Px4RestartDetector`）**：上鎖狀態下 VehicleStatus 逾時後恢復，或 `REBOOT_FC`
+被接受後出現超過 1.5 秒的中斷再恢復（60 秒內），即視為 PX4 重新啟動。BasicController 先清除
+Offboard session、排隊命令、目標航向與暫存狀態，再發布 `PX4_RESTART_DETECTED`；
+`basic_controller_node` 同時重建 WGS84→PX4 local 的軌跡平移，`ego_swarm_planner` 收到事件後清除
+任務與編隊並重建 planner-local→PX4 local 平移。PX4 晚於 Agent 啟動時也會出現一次此事件，屬正常現象。
 
 ## 偏航限速與起飛航向
 

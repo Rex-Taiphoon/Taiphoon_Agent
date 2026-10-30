@@ -25,11 +25,14 @@
 #include "controllers/BasicController.hpp"
 #include "controllers/AgentCommandHandler.hpp"
 #include "taiphoon_agent/msg/ned_target.hpp"
+#include "taiphoon_agent/msg/agent_event.hpp"
+#include "taiphoon_agent/msg/agent_health.hpp"
 #include "taiphoon_agent/msg/agent_state.hpp"
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_trajectory.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "ego_swarm/LocalNedFrame.hpp"
+#include "safety/AgentEventCodes.hpp"
 #include "safety/PositionSafetyMonitor.hpp"
 #include "safety/StatePublisher.hpp"
 #include "formation/FormationCalculator.hpp"
@@ -44,6 +47,10 @@ constexpr double DEFAULT_HOVER_DURATION_S = 3.0;
 constexpr double CONTROL_LOOP_RATE_HZ = 10.0;
 constexpr double DEFAULT_STATE_PUBLISH_RATE_HZ = 10.0;
 constexpr double DEFAULT_POSITION_DEVIATION_THRESHOLD_M = 2.0;
+constexpr double DEFAULT_HEALTH_PUBLISH_RATE_HZ = 1.0;
+
+/// /{agent_namespace}/health 的 QoS depth（reliable、volatile）
+constexpr std::size_t AGENT_HEALTH_QOS_DEPTH = 1U;
 
 /**
  * @brief BasicController ROS2 節點類別
@@ -121,11 +128,76 @@ private:
     /**
      * @brief 高階命令處理回呼
      *
-     * 將 AgentCommandHandler 解析的命令轉譯為 BasicController 的呼叫
+     * 將 AgentCommandHandler 解析的命令轉譯為 BasicController 的呼叫；
+     * 全體 topic 的 MISSION_*／REBOOT_FC 與參數不合法的命令不執行並發布事件。
      *
      * @param cmd 解析後的高階命令
+     * @param source 命令來源 topic
      */
-    void on_agent_command(const utils::ParsedCommand& cmd);
+    void on_agent_command(const utils::ParsedCommand& cmd,
+                          utils::CommandSource source);
+
+    /**
+     * @brief 無法解析的命令回呼，發布 COMMAND_UNKNOWN 事件
+     *
+     * @param raw_command 原始命令字串
+     * @param source 命令來源 topic
+     */
+    void on_unknown_command(const std::string& raw_command,
+                            utils::CommandSource source);
+
+    /**
+     * @brief 處理 REBOOT_FC，拒絕時發布 COMMAND_REJECTED
+     *
+     * @param cmd 解析後的 REBOOT_FC
+     * @return true 表示已送出 VehicleCommand 或已發布拒絕事件（不再回報失敗）
+     */
+    bool handle_reboot_command(const utils::ParsedCommand& cmd);
+
+    /**
+     * @brief 控制器事件回呼：轉為 AgentEvent 發布，並處理 PX4 重新啟動
+     *
+     * @param event 控制器事件
+     */
+    void on_controller_event(const safety::AgentEventRecord& event);
+
+    /**
+     * @brief 依節流規則發布 AgentEvent
+     *
+     * @param event 事件內容
+     */
+    void publish_event(const safety::AgentEventRecord& event);
+
+    /**
+     * @brief 以指定節流鍵發布 AgentEvent
+     *
+     * @param event 事件內容
+     * @param throttle_key 節流鍵（同代碼不同鍵各自節流）
+     */
+    void publish_event(const safety::AgentEventRecord& event,
+                       const std::string& throttle_key);
+
+    /**
+     * @brief 依代碼建立並發布事件的簡便函式
+     */
+    void publish_event(safety::AgentEventCode code, const std::string& command,
+                       const std::string& detail);
+
+    /**
+     * @brief 檢查 odometry 與 global position 是否逾時，轉換時發布 PX4_POSITION_STALE
+     */
+    void update_position_link_events();
+
+    /**
+     * @brief AgentHealth 發布計時器回呼
+     */
+    void health_publish_cb();
+
+    /**
+     * @brief 建立 events 與 health 發布者
+     * @return true 建立成功
+     */
+    bool initialize_event_and_health_publishers();
 
     /**
      * @brief 初始化 AgentCommandHandler
@@ -189,6 +261,7 @@ private:
     std::string agent_namespace_{"uav_1_agent"};
     double state_publish_rate_hz_{DEFAULT_STATE_PUBLISH_RATE_HZ};
     double position_deviation_threshold_m_{DEFAULT_POSITION_DEVIATION_THRESHOLD_M};
+    double health_publish_rate_hz_{DEFAULT_HEALTH_PUBLISH_RATE_HZ};
 
     // ==================== 時間 ====================
 
@@ -227,6 +300,12 @@ private:
     /// 送往 EGO-Swarm Planner 的任務意圖發布者
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mission_intent_pub_;
 
+    /// Agent 事件發布者（/{agent_namespace}/events）
+    rclcpp::Publisher<taiphoon_agent::msg::AgentEvent>::SharedPtr events_pub_;
+
+    /// Agent 健康狀態發布者（/{agent_namespace}/health）
+    rclcpp::Publisher<taiphoon_agent::msg::AgentHealth>::SharedPtr health_pub_;
+
     // ==================== 控制器 ====================
 
     std::unique_ptr<controllers::BasicController> controller_;
@@ -244,6 +323,23 @@ private:
 
     rclcpp::TimerBase::SharedPtr control_loop_timer_;
     rclcpp::TimerBase::SharedPtr state_publish_timer_;
+    rclcpp::TimerBase::SharedPtr health_publish_timer_;
+
+    // ==================== 事件與健康狀態 ====================
+
+    /// 事件序號與同代碼節流
+    safety::AgentEventGate event_gate_;
+
+    /// PX4 位置資料最近接收時間（單調時鐘奈秒，0 表示從未收到）
+    int64_t last_odometry_ns_{0};
+    int64_t last_global_position_ns_{0};
+    int64_t last_battery_ns_{0};
+
+    /// 位置資料逾時轉換偵測
+    controllers::Px4LinkMonitor odometry_link_monitor_{
+        controllers::PX4_POSITION_TIMEOUT_NS, controllers::PX4_STARTUP_GRACE_NS};
+    controllers::Px4LinkMonitor global_position_link_monitor_{
+        controllers::PX4_POSITION_TIMEOUT_NS, controllers::PX4_STARTUP_GRACE_NS};
 
     // ==================== PX4 資料快取 ====================
 
