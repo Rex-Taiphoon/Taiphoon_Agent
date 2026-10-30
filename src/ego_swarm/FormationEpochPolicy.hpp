@@ -143,6 +143,27 @@ inline bool can_include_formation_peer(
 }
 
 /**
+ * @brief 判斷新 proposal 是否帶入 parent epoch 的槽位歸屬。
+ *
+ * 換槽成本假設相同槽位編號代表相同幾何角色。隊形類型改變時編號語意
+ * 不同（一字是「由西到東第 n 個」，燕行是「機頭／左翼近位…」），沿用舊
+ * 歸屬只會讓指派偏向保留無意義的編號，因此只在隊形類型相同時帶入。
+ * 由提案端決定，所有 Agent 收到的 epoch 內容一致，指派仍逐位元相同。
+ *
+ * @param has_accepted_epoch 本機是否已有 accepted epoch
+ * @param parent_formation_type parent epoch 的隊形類型
+ * @param proposal_formation_type 新 proposal 的隊形類型
+ * @return true 表示應帶入 parent assignment
+ */
+inline bool should_carry_parent_assignment(
+    const bool has_accepted_epoch,
+    const uint8_t parent_formation_type,
+    const uint8_t proposal_formation_type)
+{
+    return has_accepted_epoch && parent_formation_type == proposal_formation_type;
+}
+
+/**
  * @brief 判斷未完成的候選 epoch 是否已逾時。
  * @param candidate_age_s 候選 epoch 建立或採用後的經過時間（秒）
  * @return true 表示應丟棄並等待重新提案

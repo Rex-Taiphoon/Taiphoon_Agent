@@ -6,9 +6,11 @@
  */
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <limits>
 #include <vector>
 
+#include "ego_swarm/EgoSwarmTypes.hpp"
 #include "ego_swarm/FormationEpochPolicy.hpp"
 
 using taiphoon::ego_swarm::ExpiredFormationEpochs;
@@ -16,11 +18,28 @@ using taiphoon::ego_swarm::FORMATION_EPOCH_PROPOSAL_TIMEOUT_S;
 using taiphoon::ego_swarm::FORMATION_EXPIRED_EPOCH_HISTORY_SIZE;
 using taiphoon::ego_swarm::FORMATION_JOIN_READY_TIMEOUT_S;
 using taiphoon::ego_swarm::FormationEpochKey;
+using taiphoon::ego_swarm::FormationType;
 using taiphoon::ego_swarm::can_include_formation_peer;
 using taiphoon::ego_swarm::has_departed_member;
 using taiphoon::ego_swarm::is_epoch_lineage_acceptable;
 using taiphoon::ego_swarm::is_epoch_proposal_expired;
 using taiphoon::ego_swarm::is_membership_departure;
+using taiphoon::ego_swarm::should_carry_parent_assignment;
+
+namespace
+{
+
+/**
+ * @brief 轉成 FormationEpoch 訊息使用的隊形類型編碼
+ * @param type 隊形類型
+ * @return 訊息欄位值
+ */
+uint8_t to_message_type(const FormationType type)
+{
+    return static_cast<uint8_t>(type);
+}
+
+}  // namespace
 
 TEST(FormationEpochPolicy, NewerEpochWithDifferentParentIsAcceptable)
 {
@@ -116,4 +135,32 @@ TEST(FormationEpochPolicy, ExpiredHistoryIsBounded)
     EXPECT_TRUE(expired.contains(FormationEpochKey{
         FORMATION_EXPIRED_EPOCH_HISTORY_SIZE + 1U,
         FORMATION_EXPIRED_EPOCH_HISTORY_SIZE + 1U, 1}));
+}
+
+TEST(FormationEpochPolicy, ParentAssignmentCarriedOnlyForSameFormationType)
+{
+    // 同隊形的成員變更或群組 MOVE 保留換槽成本，避免無謂交換槽位。
+    EXPECT_TRUE(should_carry_parent_assignment(
+        true, to_message_type(FormationType::HORI_LINEAR),
+        to_message_type(FormationType::HORI_LINEAR)));
+    EXPECT_TRUE(should_carry_parent_assignment(
+        true, to_message_type(FormationType::V_SHAPE),
+        to_message_type(FormationType::V_SHAPE)));
+    // 一字 → 燕行：槽位編號語意不同，不帶入舊歸屬。
+    EXPECT_FALSE(should_carry_parent_assignment(
+        true, to_message_type(FormationType::HORI_LINEAR),
+        to_message_type(FormationType::V_SHAPE)));
+    EXPECT_FALSE(should_carry_parent_assignment(
+        true, to_message_type(FormationType::V_SHAPE),
+        to_message_type(FormationType::HORI_LINEAR)));
+    EXPECT_FALSE(should_carry_parent_assignment(
+        true, to_message_type(FormationType::CIRCLE),
+        to_message_type(FormationType::VERT_LINEAR)));
+}
+
+TEST(FormationEpochPolicy, NoAcceptedEpochHasNoParentAssignment)
+{
+    EXPECT_FALSE(should_carry_parent_assignment(
+        false, to_message_type(FormationType::HORI_LINEAR),
+        to_message_type(FormationType::HORI_LINEAR)));
 }

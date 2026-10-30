@@ -40,6 +40,7 @@
 #include "ego_swarm/EmergencyBrakePlanner.hpp"
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
+#include "ego_swarm/FormationTerminalSnapPolicy.hpp"
 #include "ego_swarm/ITrajectoryPlanner.hpp"
 #include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
@@ -283,6 +284,24 @@ private:
         const ego_swarm::FormationConfig& second) const;
     ego_swarm::LivePeerDistanceResult live_peer_min_distance(
         const ego_swarm::Vector3& current) const;
+    /**
+     * @brief 判斷本機是否已在指定 Final Target 建立編隊 terminal hold
+     * @param final_target planner-local NED Final Target
+     * @return true 表示 hold 已存在且位於該槽位容許範圍內
+     */
+    bool is_formation_target_hold_active(
+        const ego_swarm::Vector3& final_target) const;
+    /**
+     * @brief 判斷「目前位置 → 槽位」直線是否避開所有編隊同儕
+     * @param current 本機 planner-local NED 位置
+     * @param final_target planner-local NED 槽位
+     * @param now_s 共同時間（秒）
+     * @return true 表示可直接建立槽位 terminal hold；同儕資料無效時回傳 false
+     */
+    bool is_formation_terminal_snap_clear(
+        const ego_swarm::Vector3& current,
+        const ego_swarm::Vector3& final_target,
+        double now_s) const;
     ego_swarm::PeerDeconflictionInput make_peer_deconfliction_input(
         const ego_swarm::Vector3& current,
         const ego_swarm::Vector3& final_target,

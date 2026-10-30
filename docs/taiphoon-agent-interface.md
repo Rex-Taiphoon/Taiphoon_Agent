@@ -159,7 +159,7 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `local_arrival_tolerance_m` | `double` | `0.5` | PX4 local NED 到達容許誤差 |
 | `global_arrival_tolerance_m` | `double` | `1.0` | 相容參數名稱；WGS84 投影至本機 planner-local NED 的到達容許誤差 |
 | `move_attitude_timeout_s` | `double` | `1.0` | 水平 MOVE 接受的 AgentAttitude freshness window |
-| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本；只在 parent 與目前槽位數相同時加計 |
+| `formation_slot_switch_penalty_m` | `double` | `2.0` | minimum-cost assignment 換槽位成本；只在 parent 與目前隊形類型相同、槽位數也相同時加計 |
 | `formation_member_stable_scan_count` | `int` | `2` | 成員集合連續穩定 discovery 次數 |
 | `planner_backend` | `string` | `optimized` | 只接受 `optimized`；其他值使 planner 初始化失敗 |
 | `optimizer_max_iterations` | `int` | `40` | optimized projected-gradient iteration 上限 |
@@ -675,10 +675,19 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   地面起飛時 BasicController 鎖定當下航向，planner 也在落地時清除 target yaw、下次由 attitude 初始化，兩者一致。
 - 編隊 assignment 的基礎條件是總移動距離最短：以 FormationEpoch center 為原點的
   canonical NED（只取決於 epoch 內容，各 Agent 逐位元相同）計算三維距離，加上換槽
-  penalty（僅 parent 與目前槽位數相同時）做 deterministic Hungarian，再以 crossing
+  penalty（僅 parent 與目前隊形類型相同、槽位數也相同時）做 deterministic Hungarian，再以 crossing
   penalty 減少水平交叉。CIRCLE 的槽位相位不影響隊形，另以 0.5° 解析度搜尋總成本最低
   的相位（同成本取較小相位），因此成員減少時存活成員只做最短的移動，不會整圈換位。
   成員 discovery 連續兩次穩定後自動重編隊。
+  隊形類型改變（例如一字 → 燕行）時，提案端不帶入 parent 槽位歸屬，因為兩種隊形的
+  槽位編號代表不同幾何角色，指派只依新隊形的幾何決定。
+- 編隊到位以 planner-local 誤差 ≤ `global_arrival_tolerance_m` 判斷，並直接以槽位座標
+  建立 terminal hold；PX4 會以位置控制直線飛完剩下的距離，不經 optimizer 與 validator。
+  因此只有「目前位置 → 槽位」直線與每台編隊同儕的路徑都保持
+  `max(formation_min_distance_m, peer_collision_min_distance_m)` 時才直接到位；同儕路徑為
+  即時位置接上 fresh 軌跡未來 4 s 的取樣（terminal hold 同儕即為「即時位置 → hold 槽位」）。
+  不通過或同儕資料無效時繼續一般規劃，直到 PX4 local 誤差 ≤ `local_arrival_tolerance_m`
+  才建立 terminal hold；已建立的同槽位 hold 不重新檢查。
 - 編隊至少需要 2 台穩定成員：少於 2 台的 `FORMATION_*` 直接拒絕、不排隊；編隊中成員
   只剩本機時解散編隊並以目前位置原地懸停，不飛往單機虛擬槽位。
 - 槽位中心距離小於 `formation_min_distance_m` 的編隊參數（例如半徑過小）會在命令階段

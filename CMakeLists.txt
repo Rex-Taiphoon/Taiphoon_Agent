@@ -381,6 +381,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 編隊直接到位直線段同儕淨空判定測試
+  ament_add_gtest(test_formation_terminal_snap_policy
+    test/formation_terminal_snap_policy_test.cpp
+  )
+
+  target_include_directories(test_formation_terminal_snap_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # PX4 狀態新鮮度與 Offboard 輸出決策純邏輯測試
   ament_add_gtest(test_px4_link_freshness
     test/px4_link_freshness_test.cpp

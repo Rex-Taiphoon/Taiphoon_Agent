@@ -1573,6 +1573,70 @@ EgoSwarmPlannerNode::live_peer_min_distance(
         true, std::isfinite(minimum_distance), minimum_distance};
 }
 
+bool EgoSwarmPlannerNode::is_formation_target_hold_active(
+    const ego_swarm::Vector3& final_target) const
+{
+    return has_formation_ && has_terminal_hold_ &&
+        ego_swarm::distance_between_centers(
+            terminal_hold_position_, final_target) <=
+        planner_arrival_tolerance_m_;
+}
+
+bool EgoSwarmPlannerNode::is_formation_terminal_snap_clear(
+    const ego_swarm::Vector3& current,
+    const ego_swarm::Vector3& final_target,
+    const double now_s) const
+{
+    // 同儕集合與 live peer 碰撞判定一致，讓兩者對「誰需要避開」有相同答案。
+    std::vector<int> peer_ids;
+    if (has_formation_ && has_accepted_formation_epoch_)
+    {
+        peer_ids = accepted_formation_epoch_.member_agent_ids;
+    }
+    else
+    {
+        peer_ids.reserve(peers_.size());
+        for (const auto& entry : peers_)
+        {
+            peer_ids.push_back(entry.first);
+        }
+    }
+
+    std::vector<ego_swarm::FormationSnapPeerSegment> peer_segments;
+    for (const int peer_id : peer_ids)
+    {
+        if (peer_id == agent_index_ || is_grounded_peer(peer_id))
+        {
+            continue;
+        }
+        const auto peer_iterator = peers_.find(peer_id);
+        ego_swarm::Vector3 peer_position{};
+        if (peer_iterator == peers_.end() ||
+            !peer_iterator->second.has_state ||
+            !is_finite_state_position(peer_iterator->second.state) ||
+            !get_position_in_planner_frame(
+                peer_iterator->second.state, peer_position))
+        {
+            return false;
+        }
+        ego_swarm::PeerTrajectory peer_trajectory;
+        const bool has_peer_trajectory =
+            peer_trajectories_.get_fresh(peer_id, now_s, peer_trajectory);
+        if (!ego_swarm::append_formation_snap_peer_path(
+                peer_position, has_peer_trajectory, peer_trajectory, now_s,
+                ego_swarm::FORMATION_TERMINAL_SNAP_PEER_LOOKAHEAD_S,
+                ego_swarm::FORMATION_TERMINAL_SNAP_PEER_SAMPLE_STEP_S,
+                peer_segments))
+        {
+            return false;
+        }
+    }
+    const double clearance_m = std::max(
+        formation_min_distance_m_, planner_config_.peer_collision_min_distance_m);
+    return ego_swarm::is_formation_terminal_snap_clear(
+        current, final_target, peer_segments, clearance_m);
+}
+
 ego_swarm::PeerDeconflictionInput
 EgoSwarmPlannerNode::make_peer_deconfliction_input(
     const ego_swarm::Vector3& current,
@@ -2053,11 +2117,18 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         proposal.center_latitude_deg = proposal_center.latitude_deg;
         proposal.center_longitude_deg = proposal_center.longitude_deg;
         proposal.center_altitude_m = proposal_center.altitude_m;
-        for (const auto& entry : formation_assignment_)
+        // 隊形類型改變時不帶入舊歸屬，換槽成本因此不生效，指派只依新幾何決定。
+        if (ego_swarm::should_carry_parent_assignment(
+                has_accepted_formation_epoch_,
+                accepted_formation_epoch_.formation_type,
+                proposal.formation_type))
         {
-            proposal.parent_assignment_agent_ids.push_back(entry.first);
-            proposal.parent_assignment_slot_indices.push_back(
-                static_cast<int32_t>(entry.second));
+            for (const auto& entry : formation_assignment_)
+            {
+                proposal.parent_assignment_agent_ids.push_back(entry.first);
+                proposal.parent_assignment_slot_indices.push_back(
+                    static_cast<int32_t>(entry.second));
+            }
         }
     }
 
@@ -3118,9 +3189,22 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // 時以 GPS 投影所得的 planner-local NED 判斷，避免已在槽位內的 Agent
     // 永遠無法建立 terminal hold；一般 MOVE 仍要求 PX4 local 與
     // planner-local 兩者都通過。
-    const bool formation_planner_arrived = has_formation_ &&
+    bool formation_planner_arrived = has_formation_ &&
         arrival.planner_valid &&
         arrival.planner_error_m <= planner_arrival_tolerance_m_;
+    // 容許誤差內直接建立的槽位 hold 會讓 PX4 以位置控制飛完剩下最多
+    // 3 m 的直線，不經 optimizer 與 validator；這段直線穿過同儕時改走一般
+    // 規劃。已建立的同槽位 hold 不重新檢查，避免同儕經過時反覆切換。
+    if (formation_planner_arrived && !arrival.reached &&
+        !is_formation_target_hold_active(final_target) &&
+        !is_formation_terminal_snap_clear(current, final_target, now_s))
+    {
+        formation_planner_arrived = false;
+        RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Formation slot snap path crosses a peer (error %.2f m); continuing planning",
+            arrival.planner_error_m);
+    }
     if (arrival.reached || formation_planner_arrived)
     {
         const double speed_mps = std::sqrt(
@@ -3130,12 +3214,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         // one-shot move。保留 has_formation_，讓後續 Agent 能以此機的
         // Final Target terminal hold 判斷 transition readiness；同時避免每個
         // planner tick 重建相同的 hold trajectory。
-        const bool formation_target_hold_active = has_formation_ &&
-            has_terminal_hold_ &&
-            ego_swarm::distance_between_centers(
-                terminal_hold_position_, final_target) <=
-            planner_arrival_tolerance_m_;
-        if (formation_target_hold_active)
+        if (is_formation_target_hold_active(final_target))
         {
             publish_plan(
                 terminal_hold_plan_, terminal_hold_position_, now,
