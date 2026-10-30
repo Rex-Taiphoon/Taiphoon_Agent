@@ -4,7 +4,7 @@
 
 ## 版本與發布
 
-- 目前版本：`v1.3.0-rc.9` 預發布版，詳見 [版本說明](releases/v1.3.0-rc.9.md)；各版本說明在 [docs/releases/](releases/)。
+- 目前版本：`v1.4.0-rc.1` 預發布版，詳見 [版本說明](releases/v1.4.0-rc.1.md)；各版本說明在 [docs/releases/](releases/)。
 - 提交／PR 自動驗證 Ubuntu AMD64／ARM64 與 Windows／Mac 編譯，版本標籤通過後才發布五個完整平台包。流程見 [CI/CD 與版本發布](ci-cd.md)。
 - 使用者以 GitHub Releases 取得版本資訊；README 不寫目前版本、驗證計畫或未完成項目。
 
