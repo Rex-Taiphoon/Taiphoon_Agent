@@ -20,12 +20,15 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/string.hpp"
 
+#include "taiphoon_agent/msg/agent_event.hpp"
 #include "taiphoon_agent/msg/agent_state.hpp"
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_trajectory.hpp"
 #include "taiphoon_agent/msg/formation_epoch.hpp"
 #include "taiphoon_agent/msg/ned_target.hpp"
 #include "taiphoon_agent/msg/planner_status.hpp"
+#include "taiphoon_agent/msg/waypoint_mission.hpp"
+#include "taiphoon_agent/msg/waypoint_mission_status.hpp"
 
 #include "ego_swarm/ContinuousSafetyValidator.hpp"
 #include "ego_swarm/FormationCenterPolicy.hpp"
@@ -53,8 +56,10 @@
 #include "ego_swarm/LocalNedFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
 #include "ego_swarm/TrajectoryReservationPolicy.hpp"
+#include "ego_swarm/WaypointMissionExecutor.hpp"
 #include "formation/PeerMatcher.hpp"
 #include "perception/RawPointObstacleMap.hpp"
+#include "safety/AgentEventCodes.hpp"
 #include "utils/CommandTypes.hpp"
 
 namespace taiphoon
@@ -97,6 +102,16 @@ constexpr double DEFAULT_RESERVATION_STEP_S = 0.5;
 constexpr double DEFAULT_RESERVATION_HORIZON_S = 5.0;
 constexpr double DEFAULT_PEER_DECONFLICTION_RELEASE_MARGIN_M = 1.0;
 constexpr double DEFAULT_PEER_DECONFLICTION_MAX_ESCAPE_DISTANCE_M = 12.0;
+/// mission/status 週期重送頻率；狀態改變時另外立即發布
+constexpr double DEFAULT_MISSION_STATUS_RATE_HZ = 1.0;
+/// mission_status_rate_hz 上限，超過時回到預設值以免佔用頻寬
+constexpr double MAX_MISSION_STATUS_RATE_HZ = 10.0;
+/// 連續規劃失敗持續超過此秒數即發布 PLANNER_FAILURE_PERSISTENT
+constexpr double DEFAULT_PLANNER_FAILURE_EVENT_S = 3.0;
+/// /{agent_namespace}/mission/plan 的 QoS depth（reliable、volatile）
+constexpr std::size_t MISSION_PLAN_QOS_DEPTH = 10U;
+/// /{agent_namespace}/mission/status 的 QoS depth（reliable、transient_local）
+constexpr std::size_t MISSION_STATUS_QOS_DEPTH = 1U;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -146,6 +161,76 @@ private:
     void scan_peers_cb();
     void formation_epoch_cb(
         const taiphoon_agent::msg::FormationEpoch::SharedPtr msg);
+    /** @brief 驗證、換算並載入 GCS 上傳的航點任務。 */
+    void mission_plan_cb(
+        const taiphoon_agent::msg::WaypointMission::SharedPtr msg);
+    /** @brief 只處理 basic_controller 發布的 PX4_RESTART_DETECTED。 */
+    void agent_event_cb(const taiphoon_agent::msg::AgentEvent::SharedPtr msg);
+    /** @brief 載入逾時檢查與 mission/status 週期重送。 */
+    void mission_status_timer_cb();
+
+    /**
+     * @brief 處理 MISSION_START／MISSION_STOP（只來自本機 command topic）
+     * @param parsed 已解析且參數合法的命令
+     */
+    void handle_mission_command(const utils::ParsedCommand& parsed);
+    /**
+     * @brief 有效的介入命令到達時中止執行中的任務並停在目前位置
+     * @param command_name 寫入 status detail 的命令名稱
+     */
+    void abort_mission_for_command(const std::string& command_name);
+    /**
+     * @brief 中止任務後依目前速度煞停，煞停終點作為之後相對命令的基準
+     * @param reason 寫入日誌與 PlannerStatus 的原因
+     */
+    void stop_mission_in_place(const std::string& reason);
+    /**
+     * @brief 在 planner 迴圈中推進任務：設定到期目標與檢查單段逾時
+     */
+    void update_waypoint_mission();
+    /**
+     * @brief 設定位置型 Final Target（MOVE_POINT 與航點共用）
+     * @param target planner-local NED 目標
+     * @return true 表示目標有限並已套用
+     */
+    bool apply_position_goal(const ego_swarm::Vector3& target);
+    /** @brief 依 executor 目前狀態發布 mission/status。 */
+    void publish_mission_status();
+    /**
+     * @brief 發布一次 REJECTED，executor 狀態不變
+     * @param mission_id 被拒的任務識別碼
+     * @param decision 拒絕原因與航點索引
+     * @param waypoint_count 被拒任務的航點數
+     */
+    void publish_mission_rejection(
+        uint32_t mission_id,
+        const ego_swarm::WaypointMissionDecision& decision,
+        std::size_t waypoint_count);
+    void publish_mission_status_snapshot(
+        const ego_swarm::WaypointMissionStatusSnapshot& snapshot);
+    /** @brief 取得 MISSION_START 的開始條件（Offboard 懸停、非編隊）。 */
+    ego_swarm::WaypointMissionStartConditions mission_start_conditions() const;
+    /** @brief 以 AgentEvent（SOURCE_PLANNER）發布 400～402。 */
+    void publish_planner_event(
+        safety::AgentEventCode code,
+        const std::string& command,
+        const std::string& detail);
+    /**
+     * @brief 發布 PLANNER_COMMAND_REJECTED；參數不合法的命令已由
+     * basic_controller 回報 COMMAND_INVALID_PARAMS，這裡不重複發布
+     * @param parsed 被拒的命令
+     * @param detail 英文拒絕原因
+     */
+    void report_command_rejection(
+        const utils::ParsedCommand& parsed, const std::string& detail);
+    /**
+     * @brief 追蹤連續規劃失敗時間，超過門檻時發布一次事件
+     * @param now_s planner 時間（秒）
+     * @param failure_reason 最近一次失敗原因
+     */
+    void track_planner_failure(double now_s, const std::string& failure_reason);
+    /** @brief 列出應有新鮮軌跡的同儕（已發現、非本機、未落地）。 */
+    std::vector<int> collect_expected_peer_ids() const;
 
     bool initialize_subscribers();
     bool initialize_publishers();
@@ -247,12 +332,17 @@ private:
         double now_s,
         double trajectory_start_time_s,
         const std::vector<ego_swarm::PeerTrajectory>* peer_snapshot = nullptr) const;
+    /**
+     * @param report_event false 表示預期中的停止（到達時仍在移動、任務停止），
+     * 不發布 PLANNER_EMERGENCY_BRAKE
+     */
     bool publish_emergency_brake(
         const ego_swarm::VehiclePlanningState& state,
         const ego_swarm::Vector3& active_target,
         const std::string& reason,
         const rclcpp::Time& now,
-        bool peer_data_valid);
+        bool peer_data_valid,
+        bool report_event = true);
     bool publish_waiting_hold(
         const ego_swarm::Vector3& current,
         const ego_swarm::Vector3& target,
@@ -306,6 +396,18 @@ private:
     double optimizer_time_budget_ms_{DEFAULT_OPTIMIZER_TIME_BUDGET_MS};
     /// 連續規劃失敗次數；成功規劃後歸零，只用於日誌升級，不改變控制決策
     std::size_t consecutive_planner_failures_{0U};
+    /// 本輪連續失敗的開始時間與是否已發布 PLANNER_FAILURE_PERSISTENT
+    double planner_failure_since_s_{0.0};
+    double planner_failure_last_s_{0.0};
+    bool planner_failure_event_sent_{false};
+    double planner_failure_event_s_{DEFAULT_PLANNER_FAILURE_EVENT_S};
+    double mission_status_rate_hz_{DEFAULT_MISSION_STATUS_RATE_HZ};
+    /// 航點任務狀態機；時間一律使用 steady clock 秒數
+    ego_swarm::WaypointMissionExecutor waypoint_mission_executor_{};
+    /// 上一次發布的任務狀態，用於判斷是否需要立即發布
+    ego_swarm::WaypointMissionStatusSnapshot last_mission_status_{};
+    bool has_published_mission_status_{false};
+    safety::AgentEventGate event_gate_{};
     double formation_crossing_penalty_m_ =
         DEFAULT_FORMATION_CROSSING_PENALTY_M;
     double reservation_lead_time_s_{DEFAULT_RESERVATION_LEAD_TIME_S};
@@ -423,6 +525,10 @@ private:
         trajectory_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::FormationEpoch>::SharedPtr
         formation_epoch_sub_;
+    rclcpp::Subscription<taiphoon_agent::msg::WaypointMission>::SharedPtr
+        mission_plan_sub_;
+    rclcpp::Subscription<taiphoon_agent::msg::AgentEvent>::SharedPtr
+        agent_event_sub_;
 
     rclcpp::Publisher<taiphoon_agent::msg::AgentTrajectory>::SharedPtr
         trajectory_pub_;
@@ -431,8 +537,12 @@ private:
     rclcpp::Publisher<taiphoon_agent::msg::PlannerStatus>::SharedPtr status_pub_;
     rclcpp::Publisher<taiphoon_agent::msg::FormationEpoch>::SharedPtr
         formation_epoch_pub_;
+    rclcpp::Publisher<taiphoon_agent::msg::WaypointMissionStatus>::SharedPtr
+        mission_status_pub_;
+    rclcpp::Publisher<taiphoon_agent::msg::AgentEvent>::SharedPtr events_pub_;
     rclcpp::TimerBase::SharedPtr planner_timer_;
     rclcpp::TimerBase::SharedPtr peer_scan_timer_;
+    rclcpp::TimerBase::SharedPtr mission_status_timer_;
 };
 
 }  // namespace nodes

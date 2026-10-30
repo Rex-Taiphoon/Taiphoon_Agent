@@ -11,10 +11,13 @@
  */
 
 #include "controllers/BasicController.hpp"
+#include "controllers/Px4HealthFlags.hpp"
 #include "ego_swarm/BsplineTrajectory.hpp"
 #include "utils/math_utils.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 
 #include <limits>
 
@@ -31,6 +34,17 @@ int64_t steady_now_ns()
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176U;
+constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20U;
+constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21U;
+constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400U;
+
+/// 事件 detail 的格式化緩衝區大小
+constexpr std::size_t EVENT_DETAIL_BUFFER_SIZE = 160U;
+
+/// 秒換算奈秒
+constexpr double NANOSECONDS_PER_SECOND = 1.0e9;
 }  // namespace
 
 // =============================================================================
@@ -86,6 +100,14 @@ bool BasicController::initialize()
         return false;
     }
 
+    // FailsafeFlags 只用於 AgentHealth，建立失敗不影響飛行控制。
+    if (!create_failsafe_flags_subscriber())
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "FailsafeFlags subscriber unavailable; "
+                    "health failsafe_flags_valid stays false");
+    }
+
     is_initialized_.store(true);
     flight_state_.store(FlightState::IDLE);
 
@@ -116,6 +138,8 @@ void BasicController::shutdown()
     vehicle_command_ack_sub_.reset();
     vehicle_status_sub_.reset();
     vehicle_land_detected_sub_.reset();
+    failsafe_flags_sub_.reset();
+    pending_px4_commands_.clear();
 
     is_initialized_.store(false);
     flight_state_.store(FlightState::IDLE);
@@ -201,6 +225,18 @@ bool BasicController::arm()
         RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
                      "Cannot arm: not initialized");
         return false;
+    }
+
+    // 預檢未通過時 PX4 必定拒絕 ARM；先讓 GCS 知道原因，仍照常送出以取得 ack 結果。
+    if (is_vehicle_status_fresh() && !pre_flight_checks_pass_.load())
+    {
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail),
+                      "ARM requested while PX4 preflight checks fail "
+                      "(latest_arming_reason=%u)",
+                      static_cast<unsigned int>(latest_arming_reason_.load()));
+        emit_event(safety::AgentEventCode::PX4_PREFLIGHT_FAILED, "ARM",
+                   safety::PX4_RESULT_NONE, detail);
     }
 
     if (flight_state_.load() == FlightState::OFFBOARD_INIT)
@@ -987,6 +1023,16 @@ bool BasicController::create_vehicle_land_detected_subscriber()
     return true;
 }
 
+bool BasicController::create_failsafe_flags_subscriber()
+{
+    failsafe_flags_sub_ =
+        node_->create_subscription<px4_msgs::msg::FailsafeFlags>(
+            "fmu/out/failsafe_flags", rclcpp::QoS(DEFAULT_QOS_DEPTH).best_effort(),
+            std::bind(&BasicController::failsafe_flags_cb, this,
+                      std::placeholders::_1));
+    return failsafe_flags_sub_ != nullptr;
+}
+
 
 // =============================================================================
 // 控制命令發布 (主要計時器回呼)
@@ -998,6 +1044,11 @@ void BasicController::publish_control_commands()
     {
         return;
     }
+
+    // 事件處理放在控制迴圈：PX4 訂閱回呼只暫存資料，不做發布。
+    process_command_acks();
+    expire_pending_px4_commands();
+    update_px4_link_events();
 
     // Offboard session 成功後，任何外部模式切換都必須先關閉兩個 PX4
     // setpoint publisher。OFFBOARD_INIT 期間的非 Offboard nav_state 是
@@ -1017,6 +1068,13 @@ void BasicController::publish_control_commands()
                             "PX4 left Offboard (nav_state=%u); "
                             "stopping Offboard output",
                             static_cast<unsigned int>(px4_nav_state_.load()));
+                char detail[EVENT_DETAIL_BUFFER_SIZE];
+                std::snprintf(detail, sizeof(detail),
+                              "PX4 left Offboard (nav_state=%u); "
+                              "Agent stopped Offboard output",
+                              static_cast<unsigned int>(px4_nav_state_.load()));
+                emit_event(safety::AgentEventCode::OFFBOARD_LOST, "",
+                           safety::PX4_RESULT_NONE, detail);
             }
             else
             {
@@ -1089,6 +1147,9 @@ void BasicController::publish_control_commands()
             {
                 offboard_mode_request_sent_.store(false);
                 fail_offboard_entry("unable to publish DO_SET_MODE");
+                emit_event(safety::AgentEventCode::COMMAND_FAILED,
+                           "MODE_OFFBOARD", safety::PX4_RESULT_NONE,
+                           "Offboard entry failed: unable to publish DO_SET_MODE");
                 return;
             }
             RCLCPP_INFO(rclcpp::get_logger("BasicController"),
@@ -1562,11 +1623,15 @@ void BasicController::handle_offboard_init_state()
     if (!is_vehicle_status_fresh())
     {
         fail_offboard_entry("VehicleStatus is unavailable or stale");
+        emit_event(safety::AgentEventCode::COMMAND_FAILED, "MODE_OFFBOARD",
+                   safety::PX4_RESULT_NONE,
+                   "Offboard entry failed: VehicleStatus is unavailable or stale");
         return;
     }
 
     if (offboard_cmd_rejected_.load())
     {
+        // ack 結果已由 process_command_acks() 以 PX4_COMMAND_REJECTED 回報。
         fail_offboard_entry("PX4 rejected DO_SET_MODE");
         return;
     }
@@ -1589,6 +1654,9 @@ void BasicController::handle_offboard_init_state()
         {
             fail_offboard_entry(
                 "VehicleStatus did not confirm Offboard before timeout");
+            emit_event(safety::AgentEventCode::PX4_COMMAND_TIMEOUT,
+                       "MODE_OFFBOARD", safety::PX4_RESULT_NONE,
+                       "VehicleStatus did not confirm Offboard before timeout");
         }
     }
 }
@@ -1779,6 +1847,12 @@ void BasicController::execute_queued_commands()
         RCLCPP_WARN(rclcpp::get_logger("BasicController"),
                     "Queued TAKEOFF cancelled: PX4 not armed within %d ms; "
                     "send ARM before TAKEOFF", QUEUED_TAKEOFF_ARM_TIMEOUT_MS);
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail),
+                      "Queued TAKEOFF cancelled: PX4 not armed within %d ms; "
+                      "send ARM before TAKEOFF", QUEUED_TAKEOFF_ARM_TIMEOUT_MS);
+        emit_event(safety::AgentEventCode::TAKEOFF_CANCELLED, "TAKEOFF",
+                   safety::PX4_RESULT_NONE, detail);
     }
 }
 
@@ -1869,7 +1943,6 @@ bool BasicController::send_arm_command(bool do_arm)
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
-    constexpr uint32_t VEHICLE_CMD_COMPONENT_ARM_DISARM = 400;
     cmd.command = VEHICLE_CMD_COMPONENT_ARM_DISARM;
     cmd.param1 = do_arm ? 1.0F : 0.0F;
     cmd.target_system = target_system_;
@@ -1878,6 +1951,7 @@ bool BasicController::send_arm_command(bool do_arm)
     cmd.source_component = 1;
     cmd.from_external = true;
     vehicle_command_pub_->publish(cmd);
+    track_px4_command(VEHICLE_CMD_COMPONENT_ARM_DISARM, do_arm ? "ARM" : "DISARM");
     RCLCPP_INFO(rclcpp::get_logger("BasicController"), "%s command sent (target_system=%d)",
                 do_arm ? "ARM" : "DISARM", target_system_);
     return true;
@@ -1893,7 +1967,6 @@ bool BasicController::send_offboard_mode_command()
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
-    constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
     cmd.param1 = 1.0F;
     cmd.param2 = 6.0F;
@@ -1903,6 +1976,7 @@ bool BasicController::send_offboard_mode_command()
     cmd.source_component = 1;
     cmd.from_external = true;
     vehicle_command_pub_->publish(cmd);
+    track_px4_command(VEHICLE_CMD_DO_SET_MODE, "MODE_OFFBOARD");
     return true;
 }
 
@@ -1916,7 +1990,6 @@ bool BasicController::send_rtl_command()
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
-    constexpr uint32_t VEHICLE_CMD_NAV_RETURN_TO_LAUNCH = 20;
     cmd.command = VEHICLE_CMD_NAV_RETURN_TO_LAUNCH;
     cmd.param1 = 0.0F;
     cmd.target_system = target_system_;
@@ -1925,6 +1998,7 @@ bool BasicController::send_rtl_command()
     cmd.source_component = 1;
     cmd.from_external = true;
     vehicle_command_pub_->publish(cmd);
+    track_px4_command(VEHICLE_CMD_NAV_RETURN_TO_LAUNCH, "MODE_RTL");
     RCLCPP_INFO(rclcpp::get_logger("BasicController"), "RTL command sent (target_system=%d)", target_system_);
     return true;
 }
@@ -1939,7 +2013,6 @@ bool BasicController::send_land_command()
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
-    constexpr uint32_t VEHICLE_CMD_NAV_LAND = 21;
     cmd.command = VEHICLE_CMD_NAV_LAND;
     cmd.param1 = 0.0F;
     cmd.target_system = target_system_;
@@ -1948,6 +2021,7 @@ bool BasicController::send_land_command()
     cmd.source_component = 1;
     cmd.from_external = true;
     vehicle_command_pub_->publish(cmd);
+    track_px4_command(VEHICLE_CMD_NAV_LAND, "MODE_LAND");
     RCLCPP_INFO(rclcpp::get_logger("BasicController"), "LAND command sent (target_system=%d)", target_system_);
     return true;
 }
@@ -1962,7 +2036,6 @@ bool BasicController::send_hold_mode_command()
     }
     auto cmd = px4_msgs::msg::VehicleCommand();
     cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
-    constexpr uint32_t VEHICLE_CMD_DO_SET_MODE = 176;
     cmd.command = VEHICLE_CMD_DO_SET_MODE;
     cmd.param1 = PX4_MODE_FLAG_CUSTOM_MODE_ENABLED;
     cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;
@@ -1973,8 +2046,34 @@ bool BasicController::send_hold_mode_command()
     cmd.source_component = 1;
     cmd.from_external = true;
     vehicle_command_pub_->publish(cmd);
+    track_px4_command(VEHICLE_CMD_DO_SET_MODE, "HOLD");
     RCLCPP_INFO(rclcpp::get_logger("BasicController"),
                 "HOLD mode command sent (target_system=%d)", target_system_);
+    return true;
+}
+
+bool BasicController::send_reboot_command()
+{
+    if (vehicle_command_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("BasicController"),
+                     "VehicleCommand Publisher is nullptr in send_reboot_command");
+        return false;
+    }
+    auto cmd = px4_msgs::msg::VehicleCommand();
+    cmd.timestamp = PX4_INBOUND_TIMESTAMP_US;
+    cmd.command = PX4_VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN;
+    cmd.param1 = PX4_REBOOT_AUTOPILOT;
+    cmd.param2 = PX4_REBOOT_ONBOARD_COMPUTER_NONE;
+    cmd.target_system = target_system_;
+    cmd.target_component = 1;
+    cmd.source_system = target_system_;
+    cmd.source_component = 1;
+    cmd.from_external = true;
+    vehicle_command_pub_->publish(cmd);
+    track_px4_command(PX4_VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN, "REBOOT_FC");
+    RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                "REBOOT_FC command sent (target_system=%d)", target_system_);
     return true;
 }
 
@@ -1999,6 +2098,13 @@ void BasicController::vehicle_command_ack_cb(const px4_msgs::msg::VehicleCommand
     {
         RCLCPP_WARN(rclcpp::get_logger("BasicController"), "vehicle_command_ack_cb received nullptr");
         return;
+    }
+    last_command_ack_ns_.store(steady_now_ns());
+    {
+        // 事件由控制迴圈的 process_command_acks() 統一發布。
+        std::lock_guard<std::mutex> lock(command_ack_mutex_);
+        received_command_acks_.push_back(
+            Px4CommandAckRecord{msg->command, msg->result});
     }
     if (msg->command == 176)
     {
@@ -2064,6 +2170,9 @@ void BasicController::vehicle_status_cb(const px4_msgs::msg::VehicleStatus::Shar
         clear_timed_trajectory();
     }
     px4_nav_state_.store(msg->nav_state);
+    pre_flight_checks_pass_.store(msg->pre_flight_checks_pass);
+    px4_failsafe_.store(msg->failsafe);
+    latest_arming_reason_.store(msg->latest_arming_reason);
     const int64_t received_ns = steady_now_ns();
     const int64_t previous_ns = last_vehicle_status_ns_.exchange(received_ns);
     if (is_px4_status_gap_notable(previous_ns, received_ns,
@@ -2092,6 +2201,319 @@ void BasicController::vehicle_land_detected_cb(
         clear_timed_trajectory();
     }
     last_land_detected_ns_.store(steady_now_ns());
+}
+
+void BasicController::failsafe_flags_cb(
+    const px4_msgs::msg::FailsafeFlags::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "failsafe_flags_cb received nullptr");
+        return;
+    }
+    failsafe_flag_bits_.store(make_failsafe_flag_bits(*msg));
+    last_failsafe_flags_ns_.store(steady_now_ns());
+}
+
+// =============================================================================
+// 事件、健康狀態與飛控重新啟動
+// =============================================================================
+
+void BasicController::set_event_callback(EventCallback callback)
+{
+    event_callback_ = std::move(callback);
+}
+
+bool BasicController::set_command_ack_timeout_s(const double timeout_s)
+{
+    if (!std::isfinite(timeout_s) || timeout_s <= 0.0)
+    {
+        return false;
+    }
+    command_ack_timeout_ns_ =
+        static_cast<int64_t>(timeout_s * NANOSECONDS_PER_SECOND);
+    return true;
+}
+
+bool BasicController::set_reboot_cooldown_s(const double cooldown_s)
+{
+    if (!std::isfinite(cooldown_s) || cooldown_s < 0.0)
+    {
+        return false;
+    }
+    reboot_cooldown_ns_ =
+        static_cast<int64_t>(cooldown_s * NANOSECONDS_PER_SECOND);
+    return true;
+}
+
+FlightControllerRebootResult BasicController::reboot_flight_controller(
+    const bool is_forced)
+{
+    FlightControllerRebootResult result;
+    if (!is_initialized_.load())
+    {
+        result.detail = "REBOOT_FC rejected: controller is not initialized";
+        return result;
+    }
+
+    const int64_t now_ns = steady_now_ns();
+    FlightControllerRebootConditions conditions;
+    conditions.is_status_fresh = is_vehicle_status_fresh();
+    conditions.is_armed = arming_state_.load() ==
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+    conditions.is_land_detected_fresh = is_px4_message_fresh(
+        last_land_detected_ns_.load(), now_ns, PX4_STATE_TIMEOUT_NS);
+    conditions.is_landed = is_landed_.load();
+    conditions.is_forced = is_forced;
+    conditions.is_cooldown_active = last_reboot_request_ns_ > 0 &&
+        now_ns >= last_reboot_request_ns_ &&
+        now_ns - last_reboot_request_ns_ < reboot_cooldown_ns_;
+
+    const auto decision = evaluate_flight_controller_reboot(conditions);
+    if (decision != FlightControllerRebootDecision::SEND)
+    {
+        result.detail = flight_controller_reboot_decision_detail(decision);
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"), "%s",
+                    result.detail.c_str());
+        return result;
+    }
+
+    // 重新啟動後 PX4 local NED 可能改變，舊 session、排隊命令與軌跡都不可沿用。
+    stop_offboard_session();
+    flight_state_.store(FlightState::IDLE);
+    rtl_cmd_sent_ = false;
+    land_cmd_sent_ = false;
+    is_arm_ack_pending_.store(false);
+
+    if (!send_reboot_command())
+    {
+        result.detail = "REBOOT_FC failed: unable to publish VehicleCommand";
+        return result;
+    }
+    last_reboot_request_ns_ = now_ns;
+    result.is_sent = true;
+    return result;
+}
+
+Px4HealthSnapshot BasicController::get_px4_health_snapshot() const
+{
+    Px4HealthSnapshot snapshot;
+    snapshot.status_received_ns = last_vehicle_status_ns_.load();
+    snapshot.land_detected_received_ns = last_land_detected_ns_.load();
+    snapshot.command_ack_received_ns = last_command_ack_ns_.load();
+    snapshot.failsafe_flags_received_ns = last_failsafe_flags_ns_.load();
+    snapshot.pre_flight_checks_pass = pre_flight_checks_pass_.load();
+    snapshot.failsafe = px4_failsafe_.load();
+    snapshot.arming_state = arming_state_.load();
+    snapshot.latest_arming_reason = latest_arming_reason_.load();
+    snapshot.failsafe_flag_bits = failsafe_flag_bits_.load();
+    snapshot.offboard_session_active = offboard_session_active_.load();
+    return snapshot;
+}
+
+void BasicController::track_px4_command(const uint32_t px4_command,
+                                        const char* command_name)
+{
+    pending_px4_commands_.erase(
+        std::remove_if(pending_px4_commands_.begin(), pending_px4_commands_.end(),
+                       [px4_command](const PendingPx4Command& pending)
+                       {
+                           return pending.px4_command == px4_command;
+                       }),
+        pending_px4_commands_.end());
+    pending_px4_commands_.push_back(
+        PendingPx4Command{px4_command, command_name, steady_now_ns()});
+}
+
+void BasicController::process_command_acks()
+{
+    std::vector<Px4CommandAckRecord> acks;
+    {
+        std::lock_guard<std::mutex> lock(command_ack_mutex_);
+        acks.swap(received_command_acks_);
+    }
+
+    for (const auto& ack : acks)
+    {
+        const auto pending = std::find_if(
+            pending_px4_commands_.begin(), pending_px4_commands_.end(),
+            [&ack](const PendingPx4Command& candidate)
+            {
+                return candidate.px4_command == ack.command;
+            });
+        if (pending == pending_px4_commands_.end())
+        {
+            // 非 Agent 送出（例如其他 GCS）或已逾時的命令不回報。
+            continue;
+        }
+
+        if (ack.result ==
+            px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_IN_PROGRESS)
+        {
+            // 執行中：重新計時，等待最終結果。
+            pending->sent_ns = steady_now_ns();
+            continue;
+        }
+
+        const std::string command_name = pending->name;
+        pending_px4_commands_.erase(pending);
+
+        if (ack.result ==
+            px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
+        {
+            if (command_name == "REBOOT_FC")
+            {
+                restart_detector_.on_reboot_accepted(steady_now_ns());
+            }
+            if (command_name == "ARM" || command_name == "DISARM" ||
+                command_name == "REBOOT_FC")
+            {
+                emit_event(safety::AgentEventCode::PX4_COMMAND_ACCEPTED,
+                           command_name,
+                           safety::to_px4_result_field(ack.result),
+                           command_name + " accepted by PX4");
+            }
+            continue;
+        }
+
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail), "PX4 rejected %s (result=%u %s)",
+                      command_name.c_str(), static_cast<unsigned int>(ack.result),
+                      safety::px4_command_result_name(ack.result));
+        emit_event(safety::AgentEventCode::PX4_COMMAND_REJECTED, command_name,
+                   safety::to_px4_result_field(ack.result), detail);
+    }
+}
+
+void BasicController::expire_pending_px4_commands()
+{
+    const int64_t now_ns = steady_now_ns();
+    for (auto pending = pending_px4_commands_.begin();
+         pending != pending_px4_commands_.end();)
+    {
+        if (now_ns - pending->sent_ns < command_ack_timeout_ns_)
+        {
+            ++pending;
+            continue;
+        }
+
+        const std::string detail = pending->name == "REBOOT_FC" ?
+            "No ack for REBOOT_FC; PX4 may be restarting or the link is down, "
+            "watch health to confirm recovery" :
+            "No ack from PX4 for " + pending->name;
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"), "%s",
+                    detail.c_str());
+        emit_event(safety::AgentEventCode::PX4_COMMAND_TIMEOUT, pending->name,
+                   safety::PX4_RESULT_NONE, detail);
+        pending = pending_px4_commands_.erase(pending);
+    }
+}
+
+void BasicController::update_px4_link_events()
+{
+    const int64_t now_ns = steady_now_ns();
+    const int64_t status_received_ns = last_vehicle_status_ns_.load();
+    const auto status_transition =
+        status_link_monitor_.update(status_received_ns, now_ns);
+
+    if (status_transition == Px4LinkTransition::NEVER_RECEIVED)
+    {
+        emit_event(safety::AgentEventCode::PX4_STATUS_STALE, "",
+                   safety::PX4_RESULT_NONE, "VehicleStatus never received");
+    }
+    else if (status_transition == Px4LinkTransition::BECAME_STALE)
+    {
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail),
+                      "VehicleStatus not received for more than %d ms",
+                      PX4_STATE_TIMEOUT_MS);
+        emit_event(safety::AgentEventCode::PX4_STATUS_STALE, "",
+                   safety::PX4_RESULT_NONE, detail);
+    }
+    else if (status_transition == Px4LinkTransition::RECOVERED)
+    {
+        emit_event(safety::AgentEventCode::PX4_STATUS_RECOVERED, "",
+                   safety::PX4_RESULT_NONE, "VehicleStatus recovered");
+    }
+
+    const bool is_armed = arming_state_.load() ==
+        px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+    if (restart_detector_.update(status_transition, status_received_ns,
+                                 is_armed, now_ns))
+    {
+        RCLCPP_WARN(rclcpp::get_logger("BasicController"),
+                    "PX4 restart detected; resetting Offboard session and "
+                    "locked heading");
+        // 先重設再通知，讓節點收到事件時控制器已回到 IDLE。
+        reset_after_px4_restart();
+        emit_event(safety::AgentEventCode::PX4_RESTART_DETECTED, "",
+                   safety::PX4_RESULT_NONE,
+                   "PX4 restart or reconnection detected; Agent state reset");
+    }
+
+    if (!is_vehicle_status_fresh())
+    {
+        return;
+    }
+
+    if (preflight_transition_.update(pre_flight_checks_pass_.load()) ==
+        safety::BooleanTransition::BECAME_FALSE)
+    {
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail),
+                      "PX4 preflight checks no longer pass "
+                      "(latest_arming_reason=%u)",
+                      static_cast<unsigned int>(latest_arming_reason_.load()));
+        emit_event(safety::AgentEventCode::PX4_PREFLIGHT_FAILED, "",
+                   safety::PX4_RESULT_NONE, detail);
+    }
+
+    if (failsafe_transition_.update(px4_failsafe_.load()) ==
+        safety::BooleanTransition::BECAME_TRUE)
+    {
+        char detail[EVENT_DETAIL_BUFFER_SIZE];
+        std::snprintf(detail, sizeof(detail),
+                      "PX4 entered failsafe (nav_state=%u)",
+                      static_cast<unsigned int>(px4_nav_state_.load()));
+        emit_event(safety::AgentEventCode::PX4_FAILSAFE, "",
+                   safety::PX4_RESULT_NONE, detail);
+    }
+}
+
+void BasicController::reset_after_px4_restart()
+{
+    stop_offboard_session();
+    offboard_entry_failed_.store(false);
+    flight_state_.store(FlightState::IDLE);
+    rtl_cmd_sent_ = false;
+    land_cmd_sent_ = false;
+    hold_cmd_sent_ = false;
+    has_parking_hold_sent_ = false;
+    is_arm_ack_pending_.store(false);
+    is_arm_rejected_.store(false);
+    // 新的 PX4 instance 航向基準可能不同；下次起飛重新鎖定目前航向。
+    target_yaw_rad_ = std::numeric_limits<float>::quiet_NaN();
+    pending_px4_commands_.clear();
+    preflight_transition_.reset();
+    failsafe_transition_.reset();
+}
+
+void BasicController::emit_event(const safety::AgentEventCode code,
+                                 const std::string& command,
+                                 const int16_t px4_result,
+                                 const std::string& detail)
+{
+    if (!event_callback_)
+    {
+        return;
+    }
+    safety::AgentEventRecord record;
+    record.code = code;
+    record.command = command;
+    record.px4_result = px4_result;
+    record.detail = detail;
+    event_callback_(record);
 }
 
 void BasicController::update_command_state_from_observation()

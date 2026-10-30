@@ -31,6 +31,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlannerStatus.msg"
   "msg/FormationEpoch.msg"
   "msg/RelativeAgentObservation.msg"
+  "msg/MissionWaypoint.msg"
+  "msg/WaypointMission.msg"
+  "msg/WaypointMissionStatus.msg"
+  "msg/AgentEvent.msg"
+  "msg/AgentHealth.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 
@@ -87,6 +92,7 @@ add_executable(ego_swarm_planner
   src/ego_swarm/OptimizedEgoPlanner.cpp
   src/ego_swarm/ProjectedGradientSolver.cpp
   src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+  src/ego_swarm/WaypointMissionExecutor.cpp
   src/perception/RawPointObstacleMap.cpp
 )
 
@@ -481,6 +487,43 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_basic_controller_trajectory
     rclcpp
     px4_msgs
+  )
+
+  # 航點任務驗證、座標換算與狀態機純邏輯測試
+  ament_add_gtest(test_waypoint_mission_executor
+    test/waypoint_mission_executor_test.cpp
+    src/ego_swarm/WaypointMissionExecutor.cpp
+  )
+
+  target_include_directories(test_waypoint_mission_executor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 事件代碼、節流、狀態轉換與 failsafe 位元純邏輯測試
+  ament_add_gtest(test_agent_event_codes
+    test/agent_event_codes_test.cpp
+  )
+
+  target_include_directories(test_agent_event_codes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # REBOOT_FC 安全條件、PX4 重新啟動偵測與連線轉換純邏輯測試
+  ament_add_gtest(test_flight_controller_reboot
+    test/flight_controller_reboot_test.cpp
+  )
+
+  target_include_directories(test_flight_controller_reboot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 命令解析與有效命令判斷測試
+  ament_add_gtest(test_command_types
+    test/command_types_test.cpp
+  )
+
+  target_include_directories(test_command_types PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 endif()
 

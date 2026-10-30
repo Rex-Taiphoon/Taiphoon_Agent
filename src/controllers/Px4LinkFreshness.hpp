@@ -109,5 +109,138 @@ inline bool is_px4_status_gap_notable(
         received_ns - previous_received_ns > warn_ns;
 }
 
+/// 位置資料（odometry、global position）沉默門檻（毫秒），與 CONTEXT.md 的沉默失效定義一致
+constexpr int PX4_POSITION_TIMEOUT_MS = 1000;
+
+/// 啟動後超過此時間仍未收到任何資料，才視為「從未收到」（毫秒）
+constexpr int PX4_STARTUP_GRACE_MS = 5000;
+
+/// 位置資料沉默門檻（奈秒）
+constexpr int64_t PX4_POSITION_TIMEOUT_NS =
+    static_cast<int64_t>(PX4_POSITION_TIMEOUT_MS) * NANOSECONDS_PER_MILLISECOND;
+
+/// 啟動寬限時間（奈秒）
+constexpr int64_t PX4_STARTUP_GRACE_NS =
+    static_cast<int64_t>(PX4_STARTUP_GRACE_MS) * NANOSECONDS_PER_MILLISECOND;
+
+/// 奈秒換算秒
+constexpr double SECONDS_PER_NANOSECOND = 1.0e-9;
+
+/**
+ * @brief 計算訊息年齡（秒），供 AgentHealth 的 *_age_s 欄位使用
+ *
+ * @param received_ns 最近一次收到訊息的單調時鐘奈秒（0 表示從未收到）
+ * @param now_ns 目前單調時鐘奈秒
+ * @return 年齡秒數；從未收到回傳 -1
+ */
+inline double px4_message_age_s(const int64_t received_ns, const int64_t now_ns)
+{
+    if (received_ns <= 0)
+    {
+        return -1.0;
+    }
+    if (now_ns <= received_ns)
+    {
+        return 0.0;
+    }
+    return static_cast<double>(now_ns - received_ns) * SECONDS_PER_NANOSECOND;
+}
+
+/**
+ * @brief PX4 資料連線狀態轉換
+ */
+enum class Px4LinkTransition : uint8_t
+{
+    NONE = 0U,            ///< 沒有轉換
+    BECAME_STALE = 1U,    ///< 曾經新鮮，現在逾時
+    NEVER_RECEIVED = 2U,  ///< 啟動寬限期過後仍未收到任何資料
+    RECOVERED = 3U        ///< 逾時（含從未收到）後恢復新鮮
+};
+
+/**
+ * @brief PX4 單一 topic 的新鮮度轉換監控
+ *
+ * 在控制迴圈每週期輸入最近接收時間，只在狀態轉換時回報一次，
+ * 讓事件不會在逾時期間持續洗版。第一次 update() 的時間視為監控起點。
+ */
+class Px4LinkMonitor
+{
+public:
+    /**
+     * @brief 建構子
+     * @param timeout_ns 新鮮度門檻（奈秒）
+     * @param startup_grace_ns 從未收到資料時的啟動寬限（奈秒）
+     */
+    Px4LinkMonitor(const int64_t timeout_ns, const int64_t startup_grace_ns)
+        : timeout_ns_(timeout_ns),
+          startup_grace_ns_(startup_grace_ns)
+    {
+    }
+
+    /**
+     * @brief 輸入最近接收時間並取得轉換
+     *
+     * @param received_ns 最近一次收到訊息的單調時鐘奈秒（0 表示從未收到）
+     * @param now_ns 目前單調時鐘奈秒
+     * @return 本次的狀態轉換
+     */
+    Px4LinkTransition update(const int64_t received_ns, const int64_t now_ns)
+    {
+        if (monitor_start_ns_ <= 0)
+        {
+            monitor_start_ns_ = now_ns;
+        }
+
+        if (is_px4_message_fresh(received_ns, now_ns, timeout_ns_))
+        {
+            const LinkState previous_state = state_;
+            state_ = LinkState::FRESH;
+            return previous_state == LinkState::STALE ?
+                Px4LinkTransition::RECOVERED : Px4LinkTransition::NONE;
+        }
+
+        if (state_ == LinkState::FRESH)
+        {
+            state_ = LinkState::STALE;
+            return Px4LinkTransition::BECAME_STALE;
+        }
+
+        if (state_ == LinkState::UNKNOWN)
+        {
+            if (received_ns > 0)
+            {
+                // 監控開始前曾收到但已逾時，等同曾經新鮮後逾時。
+                state_ = LinkState::STALE;
+                return Px4LinkTransition::BECAME_STALE;
+            }
+            if (now_ns - monitor_start_ns_ >= startup_grace_ns_)
+            {
+                state_ = LinkState::STALE;
+                return Px4LinkTransition::NEVER_RECEIVED;
+            }
+        }
+        return Px4LinkTransition::NONE;
+    }
+
+    /** @brief 目前是否處於逾時（含從未收到） */
+    bool is_stale() const
+    {
+        return state_ == LinkState::STALE;
+    }
+
+private:
+    enum class LinkState : uint8_t
+    {
+        UNKNOWN = 0U,
+        FRESH = 1U,
+        STALE = 2U
+    };
+
+    int64_t timeout_ns_{PX4_STATE_TIMEOUT_NS};
+    int64_t startup_grace_ns_{PX4_STARTUP_GRACE_NS};
+    int64_t monitor_start_ns_{0};
+    LinkState state_{LinkState::UNKNOWN};
+};
+
 }  // namespace controllers
 }  // namespace taiphoon

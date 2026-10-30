@@ -7,10 +7,13 @@
 
 #pragma once
 
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <sstream>
-#include <cstdint>
 
 namespace taiphoon
 {
@@ -45,7 +48,27 @@ enum class AgentCommand : uint8_t
     FORMATION_HORI_LINEAR, ///< 水平直列編隊 (參數: 間距 高度)
     FORMATION_VERT_LINEAR, ///< 垂直直列編隊 (參數: 間距)
     FORMATION_CANCEL,     ///< 取消當前編隊任務
-    FORMATION_V_SHAPE     ///< V 字（燕行）編隊 (參數: 翼上間距 高度)；列舉值附加於尾端以維持既有數值
+    FORMATION_V_SHAPE,    ///< V 字（燕行）編隊 (參數: 翼上間距 高度)；列舉值附加於尾端以維持既有數值
+    MISSION_START,        ///< 開始已載入的航點任務 (參數: mission_id)
+    MISSION_STOP,         ///< 停止航點任務並停在目前位置
+    REBOOT_FC             ///< 重新啟動飛控 (選填參數: force，0 或 1)
+};
+
+/// MISSION_START 識別碼上限（uint32 最大值）
+constexpr uint64_t MAX_MISSION_ID = 4294967295ULL;
+
+/// REBOOT_FC 的 force 參數只接受 0 或 1
+constexpr float REBOOT_FC_FORCE_ENABLED = 1.0F;
+
+/**
+ * @brief 命令來源 topic
+ *
+ * 部分命令（MISSION_*、REBOOT_FC）只允許單機 topic，需依來源判斷。
+ */
+enum class CommandSource : uint8_t
+{
+    AGENT = 0,      ///< /{agent_namespace}/command
+    BROADCAST = 1   ///< /uav_all_agent/command
 };
 
 /**
@@ -62,7 +85,48 @@ struct ParsedCommand
     float param3{0.0F};                           ///< 第三參數 (z / altitude)
     float param4{0.0F};                           ///< 第四參數 (yaw)
     bool has_multi_params{false};                 ///< 是否為多參數命令
+
+    /// MISSION_START 的任務識別碼；float 無法精確表示 32 位元整數，因此獨立保存
+    uint32_t mission_id{0U};
+
+    /// 有提供參數但格式或範圍不合法（例如 `TAKEOFF abc`、`REBOOT_FC 2`）
+    bool has_param_error{false};
 };
+
+/**
+ * @brief 解析 MISSION_START 的任務識別碼
+ *
+ * 只接受 1～4294967295 的十進位整數；小數、指數、正負號與 0 皆拒絕，
+ * 因為 GCS 以整數輸出識別碼，其他格式代表上游資料錯誤。
+ *
+ * @param token 參數字串
+ * @param mission_id 輸出識別碼
+ * @return true 解析成功
+ */
+inline bool parse_mission_id_token(const std::string& token, uint32_t& mission_id)
+{
+    mission_id = 0U;
+    constexpr std::size_t MAX_MISSION_ID_DIGITS = 10U;
+    if (token.empty() || token.size() > MAX_MISSION_ID_DIGITS)
+    {
+        return false;
+    }
+    uint64_t value = 0U;
+    for (const char ch : token)
+    {
+        if (ch < '0' || ch > '9')
+        {
+            return false;
+        }
+        value = value * 10U + static_cast<uint64_t>(ch - '0');
+    }
+    if (value == 0U || value > MAX_MISSION_ID)
+    {
+        return false;
+    }
+    mission_id = static_cast<uint32_t>(value);
+    return true;
+}
 
 /**
  * @brief 將字串解析為高階命令
@@ -137,6 +201,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -154,6 +219,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -171,6 +237,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -188,6 +255,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -213,6 +281,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -234,6 +303,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -251,6 +321,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -268,6 +339,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -287,6 +359,9 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             catch (...)
             {
                 result.param_value = 0.0F;
+                result.has_param = false;
+                result.has_multi_params = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -305,6 +380,9 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             catch (...)
             {
                 result.param_value = 0.0F;
+                result.has_param = false;
+                result.has_multi_params = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -323,6 +401,9 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             catch (...)
             {
                 result.param_value = 0.0F;
+                result.has_param = false;
+                result.has_multi_params = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -342,6 +423,7 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             {
                 result.param_value = 0.0F;
                 result.has_param = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -360,6 +442,9 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
             catch (...)
             {
                 result.param_value = 0.0F;
+                result.has_param = false;
+                result.has_multi_params = false;
+                result.has_param_error = true;
             }
         }
     }
@@ -367,12 +452,120 @@ inline ParsedCommand parse_command_string(const std::string& cmd_str)
     {
         result.command = AgentCommand::FORMATION_CANCEL;
     }
+    else if (cmd_name == "MISSION_START")
+    {
+        result.command = AgentCommand::MISSION_START;
+        if (tokens.size() >= 2)
+        {
+            result.has_param = parse_mission_id_token(tokens[1], result.mission_id);
+            result.has_param_error = !result.has_param;
+            result.param_value = static_cast<float>(result.mission_id);
+        }
+    }
+    else if (cmd_name == "MISSION_STOP")
+    {
+        result.command = AgentCommand::MISSION_STOP;
+    }
+    else if (cmd_name == "REBOOT_FC")
+    {
+        result.command = AgentCommand::REBOOT_FC;
+        if (tokens.size() >= 2)
+        {
+            // force 只接受 0／1；其他值可能是誤送，不能默默當成 0 或 1。
+            if (tokens[1] == "0" || tokens[1] == "1")
+            {
+                result.param_value = tokens[1] == "1" ? REBOOT_FC_FORCE_ENABLED : 0.0F;
+                result.has_param = true;
+            }
+            else
+            {
+                result.has_param_error = true;
+            }
+        }
+    }
     else
     {
         result.command = AgentCommand::UNKNOWN;
     }
 
     return result;
+}
+
+/**
+ * @brief 判斷命令是否只允許經由單機 topic 下達
+ *
+ * @param cmd 命令列舉值
+ * @return true 表示全體 topic 收到時必須忽略
+ */
+inline bool is_agent_only_command(AgentCommand cmd)
+{
+    return cmd == AgentCommand::MISSION_START ||
+        cmd == AgentCommand::MISSION_STOP ||
+        cmd == AgentCommand::REBOOT_FC;
+}
+
+/**
+ * @brief 判斷命令是否為航點任務控制命令
+ *
+ * @param cmd 命令列舉值
+ * @return true 表示 MISSION_START 或 MISSION_STOP
+ */
+inline bool is_mission_command(AgentCommand cmd)
+{
+    return cmd == AgentCommand::MISSION_START ||
+        cmd == AgentCommand::MISSION_STOP;
+}
+
+/**
+ * @brief 判斷已解析命令的必要參數是否齊全且為有限值
+ *
+ * 用於統一「有效命令」的定義：參數缺少或不合法的命令不執行，
+ * 也不視為航點任務的操作人員介入。
+ *
+ * @param cmd 解析後的命令
+ * @return true 表示可以執行
+ */
+inline bool has_valid_command_params(const ParsedCommand& cmd)
+{
+    if (cmd.command == AgentCommand::UNKNOWN || cmd.has_param_error)
+    {
+        return false;
+    }
+
+    const auto is_finite_param = [](const float value)
+        {
+            return std::isfinite(value);
+        };
+
+    switch (cmd.command)
+    {
+        case AgentCommand::MOVE_FORWARD:
+        case AgentCommand::MOVE_BACKWARD:
+        case AgentCommand::MOVE_LEFT:
+        case AgentCommand::MOVE_RIGHT:
+        case AgentCommand::MOVE_UP:
+        case AgentCommand::MOVE_DOWN:
+        case AgentCommand::YAW:
+        case AgentCommand::FORMATION_VERT_LINEAR:
+            return cmd.has_param && is_finite_param(cmd.param_value);
+        case AgentCommand::TAKEOFF:
+            // 未給高度時使用節點預設值；有給則必須為有限值。
+            return !cmd.has_param || is_finite_param(cmd.param_value);
+        case AgentCommand::MOVE_POINT:
+            // yaw 允許 NaN（不控制偏航）；位置必須是有限值。
+            return cmd.has_multi_params && is_finite_param(cmd.param_value) &&
+                is_finite_param(cmd.param2) && is_finite_param(cmd.param3) &&
+                !std::isinf(cmd.param4);
+        case AgentCommand::FORMATION_CIRCLE:
+        case AgentCommand::FORMATION_HORI_LINEAR:
+        case AgentCommand::FORMATION_V_SHAPE:
+            return cmd.has_multi_params && is_finite_param(cmd.param_value) &&
+                is_finite_param(cmd.param2);
+        case AgentCommand::MISSION_START:
+            return cmd.has_param && cmd.mission_id != 0U;
+        default:
+            return true;
+    }
 }
 
 /**
@@ -405,6 +598,9 @@ inline const char* agent_command_to_string(AgentCommand cmd)
         case AgentCommand::FORMATION_VERT_LINEAR: return "FORMATION_VERT_LINEAR";
         case AgentCommand::FORMATION_CANCEL:      return "FORMATION_CANCEL";
         case AgentCommand::FORMATION_V_SHAPE:     return "FORMATION_V_SHAPE";
+        case AgentCommand::MISSION_START:         return "MISSION_START";
+        case AgentCommand::MISSION_STOP:          return "MISSION_STOP";
+        case AgentCommand::REBOOT_FC:             return "REBOOT_FC";
         default:                                   return "UNKNOWN";
     }
 }

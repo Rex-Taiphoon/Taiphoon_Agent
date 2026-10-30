@@ -7,7 +7,9 @@
 
 #include "nodes/basic_controller_node.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace taiphoon
 {
@@ -19,6 +21,16 @@ namespace
 constexpr double RATE_COMPARISON_EPSILON = 1.0E-6;
 constexpr char VEHICLE_GLOBAL_POSITION_TOPIC[] =
     "fmu/out/vehicle_global_position";
+
+/// COMMAND_UNKNOWN 事件 detail 保留的原始命令長度上限
+constexpr std::size_t MAX_UNKNOWN_COMMAND_DETAIL_LENGTH = 64U;
+
+/// 健康狀態與位置逾時使用單調時鐘，與 BasicController 的 PX4 新鮮度一致。
+int64_t steady_now_ns()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 /** @brief 驗證三維向量的所有分量均為有限值。 */
 bool is_finite_vector3(const std::array<float, 3>& value)
@@ -42,6 +54,12 @@ BasicControllerNode::BasicControllerNode()
                                     DEFAULT_POSITION_DEVIATION_THRESHOLD_M);
     this->declare_parameter<double>("yaw_rate_limit_deg_s",
                                     controllers::DEFAULT_YAW_RATE_LIMIT_DEG_S);
+    this->declare_parameter<double>("health_publish_rate_hz",
+                                    DEFAULT_HEALTH_PUBLISH_RATE_HZ);
+    this->declare_parameter<double>("px4_command_ack_timeout_s",
+                                    controllers::DEFAULT_PX4_COMMAND_ACK_TIMEOUT_S);
+    this->declare_parameter<double>("reboot_cooldown_s",
+                                    controllers::DEFAULT_REBOOT_COOLDOWN_S);
 
     target_altitude_m_ = this->get_parameter("target_altitude_m").as_double();
     hover_duration_s_ = this->get_parameter("hover_duration_s").as_double();
@@ -112,6 +130,49 @@ BasicControllerNode::BasicControllerNode()
     }
     RCLCPP_INFO(this->get_logger(), "Yaw rate limit %.1f deg/s",
                 yaw_rate_limit_deg_s);
+
+    // --- 事件與健康狀態：控制器事件經由回呼交回節點發布 ---
+    const double requested_health_rate_hz =
+        this->get_parameter("health_publish_rate_hz").as_double();
+    health_publish_rate_hz_ = requested_health_rate_hz;
+    if (!std::isfinite(requested_health_rate_hz) ||
+        requested_health_rate_hz <= 0.0 ||
+        requested_health_rate_hz > CONTROL_LOOP_RATE_HZ)
+    {
+        health_publish_rate_hz_ = DEFAULT_HEALTH_PUBLISH_RATE_HZ;
+        RCLCPP_WARN(this->get_logger(),
+                    "Requested health publish rate %.3f Hz is invalid; "
+                    "using %.1f Hz",
+                    requested_health_rate_hz, health_publish_rate_hz_);
+    }
+    const double requested_ack_timeout_s =
+        this->get_parameter("px4_command_ack_timeout_s").as_double();
+    if (!controller_->set_command_ack_timeout_s(requested_ack_timeout_s))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Requested PX4 command ack timeout %.3f s is invalid; "
+                    "using %.1f s",
+                    requested_ack_timeout_s,
+                    controllers::DEFAULT_PX4_COMMAND_ACK_TIMEOUT_S);
+    }
+    const double requested_reboot_cooldown_s =
+        this->get_parameter("reboot_cooldown_s").as_double();
+    if (!controller_->set_reboot_cooldown_s(requested_reboot_cooldown_s))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Requested reboot cooldown %.3f s is invalid; using %.1f s",
+                    requested_reboot_cooldown_s,
+                    controllers::DEFAULT_REBOOT_COOLDOWN_S);
+    }
+    if (!initialize_event_and_health_publishers())
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Event and health publishers init failed");
+        return;
+    }
+    controller_->set_event_callback(
+        std::bind(&BasicControllerNode::on_controller_event, this,
+                  std::placeholders::_1));
 
     // --- 初始化位置安全監控器 ---
     position_safety_monitor_ = safety::PositionSafetyMonitor(
@@ -188,10 +249,50 @@ BasicControllerNode::BasicControllerNode()
         state_period_ms,
         std::bind(&BasicControllerNode::state_publish_cb, this));
 
+    // --- 建立健康狀態發布計時器：PX4 完全沒有資料時也照常發布 ---
+    auto health_period_ms = std::chrono::milliseconds(
+        static_cast<int>(1000.0 / health_publish_rate_hz_));
+
+    health_publish_timer_ = this->create_wall_timer(
+        health_period_ms,
+        std::bind(&BasicControllerNode::health_publish_cb, this));
+
     RCLCPP_INFO(this->get_logger(),
                 "BasicControllerNode initialized, control rate %.0f Hz, "
-                "state publish rate %.1f Hz",
-                CONTROL_LOOP_RATE_HZ, state_publish_rate_hz_);
+                "state publish rate %.1f Hz, health publish rate %.1f Hz",
+                CONTROL_LOOP_RATE_HZ, state_publish_rate_hz_,
+                health_publish_rate_hz_);
+}
+
+bool BasicControllerNode::initialize_event_and_health_publishers()
+{
+    const std::string events_topic = "/" + agent_namespace_ + "/events";
+    const std::string health_topic = "/" + agent_namespace_ + "/health";
+
+    // 事件不重播：GCS 連上前的舊事件可能被誤認為新錯誤，持續性問題由 health 呈現。
+    events_pub_ = this->create_publisher<taiphoon_agent::msg::AgentEvent>(
+        events_topic, rclcpp::QoS(safety::AGENT_EVENT_QOS_DEPTH).reliable().durability_volatile());
+    if (events_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create AgentEvent publisher on '%s'",
+                     events_topic.c_str());
+        return false;
+    }
+
+    health_pub_ = this->create_publisher<taiphoon_agent::msg::AgentHealth>(
+        health_topic, rclcpp::QoS(AGENT_HEALTH_QOS_DEPTH).reliable().durability_volatile());
+    if (health_pub_ == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create AgentHealth publisher on '%s'",
+                     health_topic.c_str());
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Event and health publishers created: %s, %s",
+                events_topic.c_str(), health_topic.c_str());
+    return true;
 }
 
 bool BasicControllerNode::initialize_odometry_subscriber()
@@ -332,9 +433,12 @@ bool BasicControllerNode::initialize_agent_command_handler()
         return false;
     }
 
-    agent_cmd_handler_->set_command_callback(
+    agent_cmd_handler_->set_sourced_command_callback(
         std::bind(&BasicControllerNode::on_agent_command, this,
-                  std::placeholders::_1));
+                  std::placeholders::_1, std::placeholders::_2));
+    agent_cmd_handler_->set_unknown_command_callback(
+        std::bind(&BasicControllerNode::on_unknown_command, this,
+                  std::placeholders::_1, std::placeholders::_2));
 
     // 初始化命令處理器 (建立 Subscriber)
     if (!agent_cmd_handler_->initialize())
@@ -401,6 +505,7 @@ void BasicControllerNode::odometry_cb(
 
     latest_odometry_ = *msg;
     has_odometry_data_ = true;
+    last_odometry_ns_ = steady_now_ns();
 
     if (controller_ != nullptr)
     {
@@ -420,6 +525,7 @@ void BasicControllerNode::gps_cb(
 
     latest_gps_ = *msg;
     has_gps_data_ = true;
+    last_global_position_ns_ = steady_now_ns();
 }
 
 void BasicControllerNode::battery_cb(
@@ -434,6 +540,7 @@ void BasicControllerNode::battery_cb(
 
     latest_battery_ = *msg;
     has_battery_data_ = true;
+    last_battery_ns_ = steady_now_ns();
 }
 
 void BasicControllerNode::control_loop_cb()
@@ -476,6 +583,160 @@ void BasicControllerNode::control_loop_cb()
     // 驅動控制命令發布
     controller_->publish_control_commands();
 
+    update_position_link_events();
+}
+
+void BasicControllerNode::update_position_link_events()
+{
+    const int64_t now_ns = steady_now_ns();
+    const auto report_transition =
+        [this](const controllers::Px4LinkTransition transition,
+               const char* source_name)
+        {
+            if (transition != controllers::Px4LinkTransition::BECAME_STALE &&
+                transition != controllers::Px4LinkTransition::NEVER_RECEIVED)
+            {
+                return;
+            }
+            std::string detail = std::string(source_name) +
+                (transition == controllers::Px4LinkTransition::NEVER_RECEIVED ?
+                     " never received" :
+                     " not received for more than " +
+                         std::to_string(controllers::PX4_POSITION_TIMEOUT_MS) +
+                         " ms");
+            RCLCPP_WARN(this->get_logger(), "%s", detail.c_str());
+            safety::AgentEventRecord event;
+            event.code = safety::AgentEventCode::PX4_POSITION_STALE;
+            event.detail = detail;
+            // 兩個資料來源各自節流，避免其中一個逾時遮住另一個。
+            publish_event(event, source_name);
+        };
+
+    report_transition(
+        odometry_link_monitor_.update(last_odometry_ns_, now_ns), "VehicleOdometry");
+    report_transition(
+        global_position_link_monitor_.update(last_global_position_ns_, now_ns),
+        "VehicleGlobalPosition");
+}
+
+void BasicControllerNode::health_publish_cb()
+{
+    if (controller_ == nullptr || health_pub_ == nullptr)
+    {
+        return;
+    }
+
+    const int64_t now_ns = steady_now_ns();
+    const auto snapshot = controller_->get_px4_health_snapshot();
+
+    taiphoon_agent::msg::AgentHealth msg;
+    msg.stamp = this->now();
+    msg.px4_status_age_s = static_cast<float>(
+        controllers::px4_message_age_s(snapshot.status_received_ns, now_ns));
+    msg.px4_odometry_age_s = static_cast<float>(
+        controllers::px4_message_age_s(last_odometry_ns_, now_ns));
+    msg.px4_global_position_age_s = static_cast<float>(
+        controllers::px4_message_age_s(last_global_position_ns_, now_ns));
+    msg.px4_land_detected_age_s = static_cast<float>(
+        controllers::px4_message_age_s(snapshot.land_detected_received_ns, now_ns));
+    msg.px4_battery_age_s = static_cast<float>(
+        controllers::px4_message_age_s(last_battery_ns_, now_ns));
+    msg.px4_command_ack_age_s = static_cast<float>(
+        controllers::px4_message_age_s(snapshot.command_ack_received_ns, now_ns));
+    msg.px4_pre_flight_checks_pass = snapshot.pre_flight_checks_pass;
+    msg.px4_failsafe = snapshot.failsafe;
+    msg.px4_arming_state = snapshot.arming_state;
+    msg.px4_latest_arming_reason = snapshot.latest_arming_reason;
+    msg.failsafe_flags_valid = controllers::is_px4_message_fresh(
+        snapshot.failsafe_flags_received_ns, now_ns,
+        controllers::PX4_STATE_TIMEOUT_NS);
+    msg.failsafe_flags = msg.failsafe_flags_valid ? snapshot.failsafe_flag_bits : 0U;
+    msg.offboard_session_active = snapshot.offboard_session_active;
+    health_pub_->publish(msg);
+}
+
+void BasicControllerNode::on_controller_event(
+    const safety::AgentEventRecord& event)
+{
+    if (event.code == safety::AgentEventCode::PX4_RESTART_DETECTED)
+    {
+        // PX4 重新啟動後 EKF 原點與 local NED 可能改變；下一筆軌跡重新建立
+        // WGS84 → PX4 local 平移，避免沿用舊原點。
+        has_trajectory_frame_ = false;
+        std::lock_guard<std::mutex> lock(agent_trajectory_mutex_);
+        has_latest_agent_trajectory_ = false;
+    }
+    publish_event(event);
+}
+
+void BasicControllerNode::publish_event(const safety::AgentEventRecord& event)
+{
+    // 節流鍵用命令名稱；沒有命令時同代碼共用一個鍵。
+    publish_event(event, event.command);
+}
+
+void BasicControllerNode::publish_event(const safety::AgentEventRecord& event,
+                                        const std::string& throttle_key)
+{
+    if (events_pub_ == nullptr)
+    {
+        return;
+    }
+    if (!event_gate_.should_publish(event.code, throttle_key, steady_now_ns()))
+    {
+        return;
+    }
+
+    taiphoon_agent::msg::AgentEvent msg;
+    msg.stamp = this->now();
+    msg.sequence = event_gate_.next_sequence();
+    msg.severity = static_cast<uint8_t>(safety::agent_event_severity(event.code));
+    msg.source = taiphoon_agent::msg::AgentEvent::SOURCE_BASIC_CONTROLLER;
+    msg.code = static_cast<uint16_t>(event.code);
+    msg.command = event.command;
+    msg.px4_result = event.px4_result;
+    msg.detail = event.detail;
+    events_pub_->publish(msg);
+
+    RCLCPP_INFO(this->get_logger(), "Event %u %s [%s]: %s",
+                static_cast<unsigned int>(msg.code),
+                safety::agent_event_code_name(event.code),
+                event.command.c_str(), event.detail.c_str());
+}
+
+void BasicControllerNode::publish_event(const safety::AgentEventCode code,
+                                        const std::string& command,
+                                        const std::string& detail)
+{
+    safety::AgentEventRecord event;
+    event.code = code;
+    event.command = command;
+    event.detail = detail;
+    publish_event(event);
+}
+
+void BasicControllerNode::on_unknown_command(
+    const std::string& raw_command, const utils::CommandSource source)
+{
+    std::string shown = raw_command.substr(
+        0U, std::min(raw_command.size(), MAX_UNKNOWN_COMMAND_DETAIL_LENGTH));
+    const std::string detail = std::string("Unknown ") +
+        (source == utils::CommandSource::BROADCAST ? "broadcast " : "") +
+        "command: '" + shown + "'";
+    publish_event(safety::AgentEventCode::COMMAND_UNKNOWN, "", detail);
+}
+
+bool BasicControllerNode::handle_reboot_command(const utils::ParsedCommand& cmd)
+{
+    const bool is_forced = cmd.has_param &&
+        cmd.param_value == utils::REBOOT_FC_FORCE_ENABLED;
+    const auto reboot_result = controller_->reboot_flight_controller(is_forced);
+    if (!reboot_result.is_sent)
+    {
+        publish_event(safety::AgentEventCode::COMMAND_REJECTED, "REBOOT_FC",
+                      reboot_result.detail);
+    }
+    return reboot_result.is_sent;
 }
 
 void BasicControllerNode::state_publish_cb()
@@ -738,7 +999,7 @@ void BasicControllerNode::agent_trajectory_cb(
 }
 
 void BasicControllerNode::on_agent_command(
-    const utils::ParsedCommand& cmd)
+    const utils::ParsedCommand& cmd, const utils::CommandSource source)
 {
     if (controller_ == nullptr)
     {
@@ -747,12 +1008,37 @@ void BasicControllerNode::on_agent_command(
         return;
     }
 
+    const std::string command_name = utils::agent_command_to_string(cmd.command);
+
+    // MISSION_*／REBOOT_FC 只接受單機 topic；全體 topic 的同名命令忽略並回報。
+    if (source == utils::CommandSource::BROADCAST &&
+        utils::is_agent_only_command(cmd.command))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "%s ignored on broadcast topic; send it to /%s/command",
+                    command_name.c_str(), agent_namespace_.c_str());
+        publish_event(safety::AgentEventCode::COMMAND_REJECTED, command_name,
+                      command_name + " is only accepted on the agent command topic");
+        return;
+    }
+
+    // 參數缺少或不合法時不執行（例如 TAKEOFF abc 不再以預設高度起飛）。
+    if (!utils::has_valid_command_params(cmd))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Command '%s' has missing or invalid parameters; ignored",
+                    command_name.c_str());
+        publish_event(safety::AgentEventCode::COMMAND_INVALID_PARAMS, command_name,
+                      "Missing or invalid parameters for " + command_name);
+        return;
+    }
+
     RCLCPP_INFO(this->get_logger(),
                 "Executing command: %s (param=%.2f, has_param=%d)",
-                utils::agent_command_to_string(cmd.command),
-                cmd.param_value, cmd.has_param ? 1 : 0);
+                command_name.c_str(), cmd.param_value, cmd.has_param ? 1 : 0);
 
     bool result = false;
+    bool is_failure_reported = false;
 
     switch (cmd.command)
     {
@@ -769,54 +1055,18 @@ void BasicControllerNode::on_agent_command(
             break;
 
         case utils::AgentCommand::MOVE_FORWARD:
-            if (cmd.has_param)
-            {
-                // MOVE 的唯一 command owner 是 EgoSwarmPlannerNode；此處
-                // 只回報命令已交由 planner，避免 command callback 再產生
-                // 第二份 mission intent。
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_FORWARD delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "MOVE_FORWARD requires a distance parameter");
-            break;
-
         case utils::AgentCommand::MOVE_BACKWARD:
-            if (cmd.has_param)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_BACKWARD delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "MOVE_BACKWARD requires a distance parameter");
-            break;
-
         case utils::AgentCommand::MOVE_LEFT:
-            if (cmd.has_param)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_LEFT delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "MOVE_LEFT requires a distance parameter");
-            break;
-
         case utils::AgentCommand::MOVE_RIGHT:
-            if (cmd.has_param)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_RIGHT delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "MOVE_RIGHT requires a distance parameter");
+        case utils::AgentCommand::MOVE_UP:
+        case utils::AgentCommand::MOVE_DOWN:
+            // MOVE 的唯一 command owner 是 EgoSwarmPlannerNode；此處
+            // 只回報命令已交由 planner，避免 command callback 再產生
+            // 第二份 mission intent。
+            RCLCPP_INFO(this->get_logger(),
+                        "%s delegated to EgoSwarmPlannerNode",
+                        command_name.c_str());
+            result = true;
             break;
 
         case utils::AgentCommand::ARM:
@@ -840,56 +1090,18 @@ void BasicControllerNode::on_agent_command(
             result = controller_->hold_current_position();
             break;
 
-        case utils::AgentCommand::MOVE_UP:
-            if (cmd.has_param)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_UP delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "UP requires a distance parameter");
-            break;
-
-        case utils::AgentCommand::MOVE_DOWN:
-            if (cmd.has_param)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "MOVE_DOWN delegated to EgoSwarmPlannerNode");
-                result = true;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "DOWN requires a distance parameter");
-            break;
-
         case utils::AgentCommand::YAW:
-            if (cmd.has_param)
-            {
-                // YAW 是 BasicController 的相對偏航命令，不是位置規劃
-                // 目標；直接更新 PX4 TrajectorySetpoint 的 yaw。
-                result = controller_->rotate_yaw(cmd.param_value);
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "YAW requires an angle parameter");
+            // YAW 是 BasicController 的相對偏航命令，不是位置規劃
+            // 目標；直接更新 PX4 TrajectorySetpoint 的 yaw。
+            result = controller_->rotate_yaw(cmd.param_value);
             break;
 
         case utils::AgentCommand::MOVE_POINT:
-            if (cmd.has_multi_params)
-            {
-                // MOVE_POINT 的位置交由 Planner 產生軌跡；yaw 是絕對
-                // 航向，直接交由 BasicController 保留並發布給 PX4。
-                const bool yaw_result = controller_->set_absolute_yaw(
-                    cmd.param4);
-                // MOVE_POINT 本身由 command callback 直接送到 planner；
-                // BasicController 只保留 yaw 設定，不轉發第二份 intent。
-                result = yaw_result;
-            }
-            else
-                RCLCPP_WARN(this->get_logger(),
-                           "MOVE_POINT requires x y z yaw parameters");
+            // MOVE_POINT 的位置交由 Planner 產生軌跡；yaw 是絕對
+            // 航向，直接交由 BasicController 保留並發布給 PX4。
+            // MOVE_POINT 本身由 command callback 直接送到 planner；
+            // BasicController 只保留 yaw 設定，不轉發第二份 intent。
+            result = controller_->set_absolute_yaw(cmd.param4);
             break;
 
         case utils::AgentCommand::FORMATION_CIRCLE:
@@ -904,6 +1116,22 @@ void BasicControllerNode::on_agent_command(
             result = true;
             break;
 
+        case utils::AgentCommand::MISSION_START:
+        case utils::AgentCommand::MISSION_STOP:
+            // 航點任務由 EgoSwarmPlannerNode 唯一執行，結果以 mission/status 回報。
+            RCLCPP_INFO(this->get_logger(),
+                        "%s delegated to EgoSwarmPlannerNode (mission_id=%u)",
+                        command_name.c_str(),
+                        static_cast<unsigned int>(cmd.mission_id));
+            result = true;
+            break;
+
+        case utils::AgentCommand::REBOOT_FC:
+            result = handle_reboot_command(cmd);
+            // 拒絕原因已以 COMMAND_REJECTED 回報，不再追加 COMMAND_FAILED。
+            is_failure_reported = !result;
+            break;
+
         default:
             RCLCPP_WARN(this->get_logger(),
                        "Unhandled command type");
@@ -914,13 +1142,18 @@ void BasicControllerNode::on_agent_command(
     {
         RCLCPP_INFO(this->get_logger(),
                     "Command '%s' executed successfully",
-                    utils::agent_command_to_string(cmd.command));
+                    command_name.c_str());
     }
     else
     {
         RCLCPP_WARN(this->get_logger(),
                     "Command '%s' execution failed",
-                    utils::agent_command_to_string(cmd.command));
+                    command_name.c_str());
+        if (!is_failure_reported)
+        {
+            publish_event(safety::AgentEventCode::COMMAND_FAILED, command_name,
+                          "Command '" + command_name + "' execution failed");
+        }
     }
 }
 

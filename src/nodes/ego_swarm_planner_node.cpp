@@ -10,12 +10,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iomanip>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
 
+#include "controllers/FlightState.hpp"
+#include "controllers/FlightStateResolver.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "utils/AgentNaming.hpp"
 #include "utils/CommandTypes.hpp"
@@ -38,6 +41,45 @@ constexpr double FORMATION_EPOCH_HEARTBEAT_PERIOD_S = 1.0;
 // collision_distance 直接煞車會把剩餘動能帶進安全門檻內。此緩衝是
 // 動態煞停距離以外的固定反應裕度，並非放寬碰撞門檻。
 constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
+// 規劃失敗後至少等待 PEER_REPLAN_RETRY_DELAY_S 才重試；超過此間隔沒有
+// 新失敗即視為新的一輪，避免舊的失敗計數讓之後單次失敗立即觸發事件。
+constexpr double PLANNER_FAILURE_STREAK_GAP_S = 2.0;
+
+/// 航點任務與事件節流使用單調時鐘，不受 ROS 時間調整影響。
+int64_t steady_now_ns()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+double steady_now_s()
+{
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+ego_swarm::WaypointMissionDecision make_mission_rejection(
+    const ego_swarm::WaypointMissionReason reason,
+    const std::string& detail)
+{
+    ego_swarm::WaypointMissionDecision decision;
+    decision.is_accepted = false;
+    decision.reason = reason;
+    decision.index = 0U;
+    decision.detail = detail;
+    return decision;
+}
+
+bool is_same_mission_status(
+    const ego_swarm::WaypointMissionStatusSnapshot& first,
+    const ego_swarm::WaypointMissionStatusSnapshot& second)
+{
+    return first.mission_id == second.mission_id &&
+        first.state == second.state && first.reason == second.reason &&
+        first.current_index == second.current_index &&
+        first.waypoint_count == second.waypoint_count &&
+        first.detail == second.detail;
+}
 
 bool normalize_yaw_rad(const double input, double& output)
 {
@@ -245,6 +287,28 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>(
         "peer_deconfliction_max_escape_distance_m",
         DEFAULT_PEER_DECONFLICTION_MAX_ESCAPE_DISTANCE_M);
+    const ego_swarm::WaypointMissionLimits default_mission_limits{};
+    declare_parameter<int>(
+        "mission_max_waypoints",
+        static_cast<int>(default_mission_limits.max_waypoints));
+    declare_parameter<double>("mission_min_altitude_m",
+                              default_mission_limits.min_altitude_m);
+    declare_parameter<double>("mission_max_altitude_m",
+                              default_mission_limits.max_altitude_m);
+    declare_parameter<double>("mission_max_range_m",
+                              default_mission_limits.max_range_m);
+    declare_parameter<double>("mission_max_dwell_s",
+                              default_mission_limits.max_dwell_s);
+    declare_parameter<double>("mission_leg_base_timeout_s",
+                              default_mission_limits.leg_base_timeout_s);
+    declare_parameter<double>("mission_min_expected_speed_mps",
+                              default_mission_limits.min_expected_speed_mps);
+    declare_parameter<double>("mission_load_timeout_s",
+                              default_mission_limits.load_timeout_s);
+    declare_parameter<double>("mission_status_rate_hz",
+                              DEFAULT_MISSION_STATUS_RATE_HZ);
+    declare_parameter<double>("planner_failure_event_s",
+                              DEFAULT_PLANNER_FAILURE_EVENT_S);
 
     agent_namespace_ = get_parameter("agent_namespace").as_string();
     agent_index_ = get_parameter("agent_index").as_int();
@@ -501,6 +565,59 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         return;
     }
 
+    // 航點任務限制：不合法的值回到預設，避免錯誤設定放寬安全限制。
+    const auto positive_parameter =
+        [this](const char* name, const double fallback)
+        {
+            const double value = get_parameter(name).as_double();
+            return std::isfinite(value) && value > 0.0 ? value : fallback;
+        };
+    ego_swarm::WaypointMissionLimits mission_limits{};
+    const int64_t mission_max_waypoints = get_parameter(
+        "mission_max_waypoints").as_int();
+    mission_limits.max_waypoints = mission_max_waypoints > 0 &&
+        mission_max_waypoints <= static_cast<int64_t>(
+            std::numeric_limits<uint16_t>::max())
+        ? static_cast<std::size_t>(mission_max_waypoints)
+        : default_mission_limits.max_waypoints;
+    mission_limits.min_altitude_m = get_parameter(
+        "mission_min_altitude_m").as_double();
+    mission_limits.max_altitude_m = get_parameter(
+        "mission_max_altitude_m").as_double();
+    if (!std::isfinite(mission_limits.min_altitude_m) ||
+        !std::isfinite(mission_limits.max_altitude_m) ||
+        mission_limits.min_altitude_m < 0.0 ||
+        mission_limits.max_altitude_m <= mission_limits.min_altitude_m)
+    {
+        mission_limits.min_altitude_m = default_mission_limits.min_altitude_m;
+        mission_limits.max_altitude_m = default_mission_limits.max_altitude_m;
+    }
+    mission_limits.max_range_m = positive_parameter(
+        "mission_max_range_m", default_mission_limits.max_range_m);
+    mission_limits.max_dwell_s = get_parameter(
+        "mission_max_dwell_s").as_double();
+    if (!std::isfinite(mission_limits.max_dwell_s) ||
+        mission_limits.max_dwell_s < 0.0)
+    {
+        mission_limits.max_dwell_s = default_mission_limits.max_dwell_s;
+    }
+    mission_limits.leg_base_timeout_s = positive_parameter(
+        "mission_leg_base_timeout_s", default_mission_limits.leg_base_timeout_s);
+    mission_limits.min_expected_speed_mps = positive_parameter(
+        "mission_min_expected_speed_mps",
+        default_mission_limits.min_expected_speed_mps);
+    mission_limits.load_timeout_s = positive_parameter(
+        "mission_load_timeout_s", default_mission_limits.load_timeout_s);
+    waypoint_mission_executor_.set_limits(mission_limits);
+    mission_status_rate_hz_ = positive_parameter(
+        "mission_status_rate_hz", DEFAULT_MISSION_STATUS_RATE_HZ);
+    if (mission_status_rate_hz_ > MAX_MISSION_STATUS_RATE_HZ)
+    {
+        mission_status_rate_hz_ = DEFAULT_MISSION_STATUS_RATE_HZ;
+    }
+    planner_failure_event_s_ = positive_parameter(
+        "planner_failure_event_s", DEFAULT_PLANNER_FAILURE_EVENT_S);
+
     if (!initialize_subscribers() || !initialize_publishers())
     {
         RCLCPP_ERROR(get_logger(), "EGO-Swarm Planner initialization failed");
@@ -517,6 +634,14 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         std::chrono::seconds(3),
         std::bind(&EgoSwarmPlannerNode::scan_peers_cb, this));
     scan_peers_cb();
+    const auto mission_status_period = std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::duration<double>(
+            1.0 / mission_status_rate_hz_));
+    mission_status_timer_ = create_wall_timer(
+        std::max(mission_status_period, std::chrono::milliseconds(1)),
+        std::bind(&EgoSwarmPlannerNode::mission_status_timer_cb, this));
+    // 啟動後立即發布 IDLE，不需等待 Home 建立。
+    publish_mission_status_snapshot(waypoint_mission_executor_.snapshot());
 
     RCLCPP_INFO(get_logger(),
                 "EGO-Swarm Planner ready: agent=%d namespace=%s rate=%.1f Hz "
@@ -532,7 +657,9 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 "feature_local_goal=%s feature_generic_reservation=%s "
                 "local_goal_horizon=%.2f m local_goal_detour_margin=%.2f m "
                 "local_goal_replan_ratio=%.2f "
-                "minimum_replan_interval=%.2f s",
+                "minimum_replan_interval=%.2f s mission_max_waypoints=%zu "
+                "mission_altitude=%.1f..%.1f m mission_range=%.1f m "
+                "mission_status_rate=%.1f Hz",
                 agent_index_, agent_namespace_.c_str(), planning_rate_hz_,
                 planner_backend_.c_str(), optimizer_max_iterations_,
                 optimizer_time_budget_ms_, reservation_lead_time_s_,
@@ -553,7 +680,10 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
                 planner_feature_flags_.local_goal_horizon_m,
                 planner_feature_flags_.local_goal_detour_margin_m,
                 planner_feature_flags_.local_goal_replan_ratio,
-                planner_feature_flags_.minimum_replan_interval_s);
+                planner_feature_flags_.minimum_replan_interval_s,
+                mission_limits.max_waypoints, mission_limits.min_altitude_m,
+                mission_limits.max_altitude_m, mission_limits.max_range_m,
+                mission_status_rate_hz_);
 }
 
 bool EgoSwarmPlannerNode::initialize_subscribers()
@@ -601,13 +731,25 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         rclcpp::QoS(10).reliable().transient_local(),
         std::bind(&EgoSwarmPlannerNode::formation_epoch_cb, this,
                   std::placeholders::_1));
+    mission_plan_sub_ = create_subscription<taiphoon_agent::msg::WaypointMission>(
+        "/" + agent_namespace_ + "/mission/plan",
+        rclcpp::QoS(MISSION_PLAN_QOS_DEPTH).reliable().durability_volatile(),
+        std::bind(&EgoSwarmPlannerNode::mission_plan_cb, this,
+                  std::placeholders::_1));
+    // 只取 basic_controller 的 PX4_RESTART_DETECTED，用於清除任務並重建 PX4 local 平移。
+    agent_event_sub_ = create_subscription<taiphoon_agent::msg::AgentEvent>(
+        "/" + agent_namespace_ + "/events",
+        rclcpp::QoS(safety::AGENT_EVENT_QOS_DEPTH).reliable().durability_volatile(),
+        std::bind(&EgoSwarmPlannerNode::agent_event_cb, this,
+                  std::placeholders::_1));
 
     return own_state_sub_ != nullptr && own_attitude_sub_ != nullptr &&
         ned_target_sub_ != nullptr &&
         mission_intent_sub_ != nullptr && agent_command_sub_ != nullptr &&
         all_command_sub_ != nullptr &&
         obstacle_sub_ != nullptr && trajectory_sub_ != nullptr &&
-        formation_epoch_sub_ != nullptr;
+        formation_epoch_sub_ != nullptr && mission_plan_sub_ != nullptr &&
+        agent_event_sub_ != nullptr;
 }
 
 bool EgoSwarmPlannerNode::initialize_publishers()
@@ -624,9 +766,18 @@ bool EgoSwarmPlannerNode::initialize_publishers()
     formation_epoch_pub_ = create_publisher<taiphoon_agent::msg::FormationEpoch>(
         utils::agent_naming::make_all_agent_topic("swarm/formation_epochs"),
         rclcpp::QoS(10).reliable().transient_local());
+    // 晚加入的 GCS 需要看到目前任務狀態，因此使用 transient_local。
+    mission_status_pub_ =
+        create_publisher<taiphoon_agent::msg::WaypointMissionStatus>(
+            "/" + agent_namespace_ + "/mission/status",
+            rclcpp::QoS(MISSION_STATUS_QOS_DEPTH).reliable().transient_local());
+    events_pub_ = create_publisher<taiphoon_agent::msg::AgentEvent>(
+        "/" + agent_namespace_ + "/events",
+        rclcpp::QoS(safety::AGENT_EVENT_QOS_DEPTH).reliable().durability_volatile());
 
     return trajectory_pub_ != nullptr && local_trajectory_pub_ != nullptr &&
-        status_pub_ != nullptr && formation_epoch_pub_ != nullptr;
+        status_pub_ != nullptr && formation_epoch_pub_ != nullptr &&
+        mission_status_pub_ != nullptr && events_pub_ != nullptr;
 }
 
 void EgoSwarmPlannerNode::own_state_cb(
@@ -644,11 +795,47 @@ void EgoSwarmPlannerNode::own_state_cb(
     {
         clear_grounded_mission();
     }
+    // RTL、LAND、failsafe 或遙控器切換時控制權已不在 Agent：中止任務並清除
+    // 目標，但不發布本機停止軌跡，交由 BasicController 與 PX4 既有流程。
+    if (waypoint_mission_executor_.is_running() && msg->px4_state_valid)
+    {
+        const auto flight_mode =
+            static_cast<controllers::FlightState>(msg->flight_mode);
+        const bool is_agent_controlled =
+            (flight_mode == controllers::FlightState::HOVER ||
+             flight_mode == controllers::FlightState::MOVING) &&
+            msg->px4_nav_state ==
+                controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
+        if (!is_agent_controlled)
+        {
+            std::ostringstream detail;
+            detail << "flight_mode=" << static_cast<unsigned int>(msg->flight_mode)
+                   << " px4_nav_state="
+                   << static_cast<unsigned int>(msg->px4_nav_state);
+            (void)waypoint_mission_executor_.stop(
+                ego_swarm::WaypointMissionReason::FLIGHT_STATE, detail.str());
+            RCLCPP_WARN(get_logger(),
+                        "Waypoint mission aborted: Agent no longer controls the "
+                        "vehicle (%s)", detail.str().c_str());
+            has_goal_ = false;
+            has_position_target_ = false;
+            preserve_altitude_ = false;
+            invalidate_active_plan();
+            publish_mission_status();
+        }
+    }
     update_vehicle_motion_state(*msg);
 }
 
 void EgoSwarmPlannerNode::clear_grounded_mission()
 {
+    if (waypoint_mission_executor_.is_active())
+    {
+        // 執行中的任務回報 ABORTED／LANDED；尚未開始的任務直接清除。
+        (void)waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::LANDED, "grounded or disarmed");
+        publish_mission_status();
+    }
     has_goal_ = false;
     has_position_target_ = false;
     has_formation_ = false;
@@ -828,8 +1015,11 @@ void EgoSwarmPlannerNode::ned_target_cb(
         !std::isfinite(msg->z) || std::isinf(msg->yaw))
     {
         RCLCPP_WARN(get_logger(), "Rejecting invalid NED target");
+        publish_planner_event(safety::AgentEventCode::PLANNER_COMMAND_REJECTED,
+                              "NED_TARGET", "Invalid NED target");
         return;
     }
+    abort_mission_for_command("NED_TARGET");
     set_goal_from_command(command_to_text(*msg));
 }
 
@@ -840,6 +1030,10 @@ void EgoSwarmPlannerNode::mission_intent_cb(
     {
         RCLCPP_WARN(get_logger(), "mission_intent_cb received nullptr");
         return;
+    }
+    if (utils::has_valid_command_params(utils::parse_command_string(msg->data)))
+    {
+        abort_mission_for_command("MISSION_INTENT");
     }
     set_goal_from_command(msg->data);
 }
@@ -854,6 +1048,21 @@ void EgoSwarmPlannerNode::agent_command_cb(
     }
 
     const auto parsed = utils::parse_command_string(msg->data);
+    // 未知或參數不合法的命令由 basic_controller 回報事件，也不視為介入。
+    const bool is_valid_command = utils::has_valid_command_params(parsed);
+    if (utils::is_mission_command(parsed.command))
+    {
+        if (is_valid_command)
+        {
+            handle_mission_command(parsed);
+        }
+        return;
+    }
+    if (is_valid_command)
+    {
+        // 先停在目前位置，再照原流程處理該命令。
+        abort_mission_for_command(utils::agent_command_to_string(parsed.command));
+    }
     switch (parsed.command)
     {
         case utils::AgentCommand::MOVE_FORWARD:
@@ -882,11 +1091,18 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         return;
     }
 
+    const auto parsed = utils::parse_command_string(msg->data);
+    // 全體 topic 的 MISSION_*／REBOOT_FC 由 basic_controller 拒絕並回報，不視為介入；
+    // 中止判斷放在 can_plan() 之前，地面或狀態失效時也能結束任務。
+    if (utils::has_valid_command_params(parsed) &&
+        !utils::is_agent_only_command(parsed.command))
+    {
+        abort_mission_for_command(utils::agent_command_to_string(parsed.command));
+    }
     if (!flight_mission_lifecycle_.can_plan())
     {
         return;
     }
-    const auto parsed = utils::parse_command_string(msg->data);
     if (parsed.command == utils::AgentCommand::FORMATION_CANCEL)
     {
         ego_swarm::Vector3 preserved_target{};
@@ -937,6 +1153,7 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
          (!parsed.has_multi_params || !std::isfinite(parsed.param2))))
     {
         RCLCPP_WARN(get_logger(), "Rejecting invalid formation command");
+        report_command_rejection(parsed, "Invalid formation parameters");
         return;
     }
 
@@ -975,6 +1192,7 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
         requested_config.radius_m < 0.0 || requested_config.spacing_m < 0.0)
     {
         RCLCPP_WARN(get_logger(), "Rejecting formation command with invalid geometry");
+        report_command_rejection(parsed, "Invalid formation geometry");
         return;
     }
 
@@ -989,6 +1207,11 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
             get_logger(),
             "Rejecting formation command: %zu stable member(s), at least %zu required",
             members.size(), ego_swarm::FORMATION_MIN_MEMBER_COUNT);
+        report_command_rejection(
+            parsed, std::to_string(members.size()) +
+                " stable member(s), at least " +
+                std::to_string(ego_swarm::FORMATION_MIN_MEMBER_COUNT) +
+                " required");
         return;
     }
     if (!is_formation_geometry_safe(requested_config, members.size()))
@@ -997,6 +1220,11 @@ void EgoSwarmPlannerNode::all_agent_command_cb(
             get_logger(),
             "Rejecting formation command: slot center distance below %.2f m",
             formation_min_distance_m_);
+        std::ostringstream detail;
+        detail << std::fixed << std::setprecision(2)
+               << "Slot center distance below " << formation_min_distance_m_
+               << " m";
+        report_command_rejection(parsed, detail.str());
         return;
     }
 
@@ -1071,6 +1299,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         RCLCPP_WARN(
             get_logger(),
             "Rejecting group MOVE: no active FormationEpoch is available");
+        report_command_rejection(parsed, "No active formation");
         return false;
     }
 
@@ -1083,6 +1312,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         RCLCPP_WARN(
             get_logger(),
             "Rejecting group MOVE: stable formation membership is unavailable");
+        report_command_rejection(parsed, "Stable formation membership is unavailable");
         return false;
     }
 
@@ -1104,6 +1334,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         RCLCPP_WARN(
             get_logger(),
             "Rejecting group MOVE while a FormationEpoch proposal is pending");
+        report_command_rejection(parsed, "Formation proposal is pending");
         return false;
     }
 
@@ -1113,6 +1344,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         RCLCPP_WARN(
             get_logger(),
             "Rejecting group MOVE: Formation center frame is unavailable");
+        report_command_rejection(parsed, "Formation center frame is unavailable");
         return false;
     }
 
@@ -1124,6 +1356,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
             !std::isfinite(parsed.param4))
         {
             RCLCPP_WARN(get_logger(), "Rejecting invalid group MOVE_POINT");
+            report_command_rejection(parsed, "Invalid group MOVE_POINT");
             return false;
         }
         // 保留既有全體 MOVE_POINT 行為：收到命令的 Agent 以自己的
@@ -1140,6 +1373,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         if (!parsed.has_param || !std::isfinite(parsed.param_value))
         {
             RCLCPP_WARN(get_logger(), "Rejecting invalid group MOVE distance");
+            report_command_rejection(parsed, "Invalid group MOVE distance");
             return false;
         }
 
@@ -1174,6 +1408,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
                 direction, static_cast<double>(parsed.param_value), delta))
         {
             RCLCPP_WARN(get_logger(), "Rejecting non-finite group MOVE delta");
+            report_command_rejection(parsed, "Non-finite group MOVE delta");
             return false;
         }
         requested_center = ego_swarm::add_vectors(formation_center_, delta);
@@ -1182,6 +1417,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
     if (!ego_swarm::is_finite_vector(requested_center))
     {
         RCLCPP_WARN(get_logger(), "Rejecting non-finite Formation center target");
+        report_command_rejection(parsed, "Non-finite formation center target");
         return false;
     }
 
@@ -1191,6 +1427,7 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         !ego_swarm::LocalNedFrame::is_valid_geodetic(target_geo))
     {
         RCLCPP_WARN(get_logger(), "Rejecting group MOVE outside valid WGS84 range");
+        report_command_rejection(parsed, "Formation center outside valid WGS84 range");
         return false;
     }
 
@@ -2580,18 +2817,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 ? taiphoon_agent::msg::FormationEpoch::ADOPTED
                 : taiphoon_agent::msg::FormationEpoch::PROPOSAL);
     }
-    std::vector<int> expected_peer_ids;
-    // PeerMatcher 先更新 currently_discovered_peers_，再由下一批 DDS
-    // callback 填入 peers_。若只從 peers_ 建 expected list，這段 race
-    // 期間 all_fresh(empty) 會錯誤放行一條沒有 peer occupancy 的直線。
-    expected_peer_ids.reserve(currently_discovered_peers_.size());
-    for (const int peer_id : currently_discovered_peers_)
-    {
-        if (peer_id > 0 && peer_id != agent_index_ && !is_grounded_peer(peer_id))
-        {
-            expected_peer_ids.push_back(peer_id);
-        }
-    }
+    const std::vector<int> expected_peer_ids = collect_expected_peer_ids();
     const bool peer_data_valid = peer_trajectories_.all_fresh(
         now_s, expected_peer_ids);
     if (!has_own_state_ || !update_planner_frame())
@@ -2601,6 +2827,10 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, false, peer_data_valid, now);
         return;
     }
+
+    // 航點任務在取得 Final Target 前推進：開始或停留結束時設定下一段目標，
+    // 單段逾時則停在目前位置。
+    update_waypoint_mission();
 
     // 命令可能早於第一筆有限 WGS84 AgentState 到達；保留命令並在
     // local Home 建立後重試，避免一次性的全域 topic 發送被悄悄丟失。
@@ -2613,6 +2843,11 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             RCLCPP_WARN(get_logger(),
                         "Dropping pending formation command: fewer than %zu members",
                         ego_swarm::FORMATION_MIN_MEMBER_COUNT);
+            publish_planner_event(
+                safety::AgentEventCode::PLANNER_COMMAND_REJECTED, "FORMATION",
+                "Pending formation dropped: fewer than " +
+                    std::to_string(ego_swarm::FORMATION_MIN_MEMBER_COUNT) +
+                    " members");
             formation_command_pending_ = false;
         }
         else if (make_formation_proposal(pending_members))
@@ -2915,6 +3150,18 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             return;
         }
 
+        // 只在 Final Target 與本段航點相同時算到達；完成後沿用下方 terminal hold。
+        if (!has_formation_ && waypoint_mission_executor_.on_target_reached(
+                final_target, steady_now_s()))
+        {
+            const auto mission_status = waypoint_mission_executor_.snapshot();
+            RCLCPP_INFO(get_logger(),
+                        "Waypoint mission %u reached waypoint %u/%u",
+                        mission_status.mission_id,
+                        static_cast<unsigned int>(mission_status.current_index) + 1U,
+                        static_cast<unsigned int>(mission_status.waypoint_count));
+            publish_mission_status();
+        }
         has_goal_ = false;
         preserve_altitude_ = false;
         invalidate_active_plan();
@@ -2928,7 +3175,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         {
             publish_emergency_brake(
                 planning_state, final_target, "target reached while moving", now,
-                peer_data_valid);
+                peer_data_valid, false);
         }
         else
         {
@@ -3241,6 +3488,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         const std::string failure_reason = optimized_failure_reason(
             result.termination);
         ++consecutive_planner_failures_;
+        track_planner_failure(now_s, failure_reason);
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 1000,
             "Optimized planner failed (%s) termination=%s planning_ms=%.2f "
@@ -3942,7 +4190,8 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     const ego_swarm::Vector3& active_target,
     const std::string& reason,
     const rclcpp::Time& now,
-    const bool peer_data_valid)
+    const bool peer_data_valid,
+    const bool report_event)
 {
     // Emergency brake 代表目前的 terminal hold 已不再描述實際控制
     // 狀態；若保留舊 hold，後續 heartbeat 可能帶著較小 trajectory ID
@@ -4017,6 +4266,11 @@ bool EgoSwarmPlannerNode::publish_emergency_brake(
     publish_status(
         PLANNER_STATE_HOLD, status_reason, nullptr, true,
         peer_data_valid, now);
+    if (report_event)
+    {
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_EMERGENCY_BRAKE, "", status_reason);
+    }
     return true;
 }
 
@@ -4103,6 +4357,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
                 get_logger(),
                 "Rejecting YAW: no fresh attitude is available to initialize "
                 "the target yaw");
+            report_command_rejection(parsed, "No fresh attitude for target yaw");
             return;
         }
         double next_yaw_rad = 0.0;
@@ -4122,6 +4377,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     {
         RCLCPP_WARN(get_logger(),
                     "Mission intent deferred until local WGS84 Home is ready");
+        report_command_rejection(parsed, "Local WGS84 Home is not ready");
         return;
     }
 
@@ -4134,13 +4390,11 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     if (parsed.command == utils::AgentCommand::MOVE_POINT &&
         parsed.has_multi_params)
     {
-        goal_position_ = ego_swarm::Vector3{
-            parsed.param_value, parsed.param2, parsed.param3};
-        has_goal_ = ego_swarm::is_finite_vector(goal_position_);
-        has_position_target_ = has_goal_;
-        has_formation_ = false;
-        formation_initial_plan_pending_ = false;
-        preserve_altitude_ = false;
+        if (!apply_position_goal(ego_swarm::Vector3{
+                parsed.param_value, parsed.param2, parsed.param3}))
+        {
+            return;
+        }
         if (std::isfinite(parsed.param4))
         {
             double absolute_yaw_rad = 0.0;
@@ -4152,7 +4406,6 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
                 has_target_yaw_ = true;
             }
         }
-        invalidate_active_plan();
         return;
     }
 
@@ -4168,6 +4421,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
             RCLCPP_WARN(
                 get_logger(),
                 "Rejecting relative MOVE: current formation target is invalid");
+            report_command_rejection(parsed, "Current formation target is invalid");
             return;
         }
     }
@@ -4219,6 +4473,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
                     get_logger(),
                     "Rejecting horizontal MOVE: target yaw cannot be initialized "
                     "from a fresh attitude");
+                report_command_rejection(parsed, "No fresh attitude for target yaw");
                 return;
             }
             has_target_yaw_ = true;
@@ -4231,6 +4486,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
                 get_logger(),
                 "Rejecting horizontal MOVE: target yaw cannot produce a "
                 "finite body-to-NED transform");
+            report_command_rejection(parsed, "Target yaw cannot produce a finite move");
             return;
         }
         // 位移以保存的 target yaw 計算一次；後續實際 yaw 變化不會
@@ -4243,6 +4499,427 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     formation_initial_plan_pending_ = false;
     preserve_altitude_ = preserve_altitude;
     invalidate_active_plan();
+}
+
+bool EgoSwarmPlannerNode::apply_position_goal(const ego_swarm::Vector3& target)
+{
+    if (!ego_swarm::is_finite_vector(target))
+    {
+        return false;
+    }
+    goal_position_ = target;
+    has_goal_ = true;
+    has_position_target_ = true;
+    has_formation_ = false;
+    formation_initial_plan_pending_ = false;
+    preserve_altitude_ = false;
+    invalidate_active_plan();
+    return true;
+}
+
+std::vector<int> EgoSwarmPlannerNode::collect_expected_peer_ids() const
+{
+    std::vector<int> expected_peer_ids;
+    // PeerMatcher 先更新 currently_discovered_peers_，再由下一批 DDS
+    // callback 填入 peers_。若只從 peers_ 建 expected list，這段 race
+    // 期間 all_fresh(empty) 會錯誤放行一條沒有 peer occupancy 的直線。
+    expected_peer_ids.reserve(currently_discovered_peers_.size());
+    for (const int peer_id : currently_discovered_peers_)
+    {
+        if (peer_id > 0 && peer_id != agent_index_ && !is_grounded_peer(peer_id))
+        {
+            expected_peer_ids.push_back(peer_id);
+        }
+    }
+    return expected_peer_ids;
+}
+
+void EgoSwarmPlannerNode::mission_plan_cb(
+    const taiphoon_agent::msg::WaypointMission::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "mission_plan_cb received nullptr");
+        return;
+    }
+
+    std::vector<ego_swarm::MissionWaypointInput> waypoints;
+    waypoints.reserve(msg->waypoints.size());
+    for (const auto& waypoint : msg->waypoints)
+    {
+        ego_swarm::MissionWaypointInput input;
+        input.latitude_deg = waypoint.latitude_deg;
+        input.longitude_deg = waypoint.longitude_deg;
+        input.altitude_m = static_cast<double>(waypoint.altitude_m);
+        input.dwell_s = static_cast<double>(waypoint.dwell_s);
+        input.yaw_deg = static_cast<double>(waypoint.yaw_deg);
+        waypoints.push_back(input);
+    }
+
+    ego_swarm::WaypointMissionDecision decision =
+        ego_swarm::validate_waypoint_mission_plan(
+            msg->mission_id, msg->altitude_frame, waypoints,
+            waypoint_mission_executor_.limits());
+    std::vector<ego_swarm::WaypointMissionLeg> legs;
+    ego_swarm::Vector3 current{};
+    if (decision.is_accepted &&
+        (!has_own_state_ || !update_planner_frame() ||
+         !has_planner_to_px4_ned_transform_ ||
+         !get_position_in_planner_frame(own_state_, current) ||
+         !ego_swarm::convert_waypoints_to_planner_legs(
+             waypoints, planner_frame_, planner_to_px4_ned_offset_, legs)))
+    {
+        decision = make_mission_rejection(
+            ego_swarm::WaypointMissionReason::NOT_READY,
+            "Agent state, planner Home or PX4 local transform unavailable");
+    }
+    if (decision.is_accepted)
+    {
+        decision = ego_swarm::check_waypoint_mission_range(
+            legs, current, waypoint_mission_executor_.limits().max_range_m);
+    }
+    if (decision.is_accepted)
+    {
+        decision = waypoint_mission_executor_.load(
+            msg->mission_id, std::move(legs), has_formation_, steady_now_s());
+    }
+    if (!decision.is_accepted)
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Rejecting waypoint mission %u: reason=%u index=%u (%s)",
+                    msg->mission_id, static_cast<unsigned int>(decision.reason),
+                    static_cast<unsigned int>(decision.index),
+                    decision.detail.c_str());
+        publish_mission_rejection(msg->mission_id, decision, waypoints.size());
+        return;
+    }
+
+    RCLCPP_INFO(get_logger(), "Waypoint mission %u loaded: %zu waypoint(s)",
+                msg->mission_id, waypoints.size());
+    publish_mission_status();
+}
+
+void EgoSwarmPlannerNode::agent_event_cb(
+    const taiphoon_agent::msg::AgentEvent::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "agent_event_cb received nullptr");
+        return;
+    }
+    if (msg->source != taiphoon_agent::msg::AgentEvent::SOURCE_BASIC_CONTROLLER ||
+        msg->code != static_cast<uint16_t>(
+            safety::AgentEventCode::PX4_RESTART_DETECTED))
+    {
+        return;
+    }
+
+    // PX4 重新啟動後 EKF 原點可能改變：清除任務與編隊，並在下一筆有效
+    // AgentState 重建 planner-local 至 PX4 local 的平移；planner Home 保留。
+    RCLCPP_WARN(get_logger(),
+                "PX4 restart detected; clearing mission and rebuilding the PX4 "
+                "local transform");
+    if (waypoint_mission_executor_.is_active())
+    {
+        (void)waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::LANDED, "PX4 restart detected");
+        publish_mission_status();
+    }
+    clear_grounded_mission();
+    has_planner_to_px4_ned_transform_ = false;
+    planner_to_px4_ned_offset_ = ego_swarm::Vector3{0.0, 0.0, 0.0};
+}
+
+void EgoSwarmPlannerNode::mission_status_timer_cb()
+{
+    if (waypoint_mission_executor_.expire_load_if_due(steady_now_s()))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Loaded waypoint mission expired before MISSION_START");
+    }
+    // 週期重送目前狀態，讓晚加入或漏收的 GCS 回到實際狀態。
+    publish_mission_status_snapshot(waypoint_mission_executor_.snapshot());
+}
+
+ego_swarm::WaypointMissionStartConditions
+EgoSwarmPlannerNode::mission_start_conditions() const
+{
+    ego_swarm::WaypointMissionStartConditions conditions;
+    const bool is_state_valid = has_own_state_ && own_state_.px4_state_valid;
+    conditions.can_plan = flight_mission_lifecycle_.can_plan();
+    conditions.is_hovering = is_state_valid &&
+        own_state_.flight_mode ==
+            static_cast<uint8_t>(controllers::FlightState::HOVER);
+    conditions.is_px4_offboard = is_state_valid &&
+        own_state_.px4_nav_state ==
+            controllers::FlightStateResolver::PX4_NAV_STATE_OFFBOARD;
+    conditions.has_formation = has_formation_;
+    return conditions;
+}
+
+void EgoSwarmPlannerNode::handle_mission_command(
+    const utils::ParsedCommand& parsed)
+{
+    if (parsed.command == utils::AgentCommand::MISSION_STOP)
+    {
+        if (waypoint_mission_executor_.stop(
+                ego_swarm::WaypointMissionReason::OPERATOR_STOP, "MISSION_STOP"))
+        {
+            RCLCPP_INFO(get_logger(), "Waypoint mission stopped by operator");
+            stop_mission_in_place("waypoint mission stopped by operator");
+        }
+        publish_mission_status();
+        return;
+    }
+    if (parsed.command != utils::AgentCommand::MISSION_START)
+    {
+        return;
+    }
+
+    ego_swarm::Vector3 current{};
+    if (!has_own_state_ || !update_planner_frame() ||
+        !get_position_in_planner_frame(own_state_, current))
+    {
+        // 位置無法取得時以非有限值交給 executor，距離檢查會回報 NOT_READY。
+        const double unavailable = std::numeric_limits<double>::quiet_NaN();
+        current = ego_swarm::Vector3{unavailable, unavailable, unavailable};
+    }
+    const auto decision = waypoint_mission_executor_.start(
+        parsed.mission_id, mission_start_conditions(), current, steady_now_s());
+    // start() 可能先清除逾時的已載入任務，先發布實際狀態再回報拒絕。
+    publish_mission_status();
+    if (!decision.is_accepted)
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Rejecting MISSION_START %u: reason=%u (%s)",
+                    parsed.mission_id, static_cast<unsigned int>(decision.reason),
+                    decision.detail.c_str());
+        const auto snapshot = waypoint_mission_executor_.snapshot();
+        publish_mission_rejection(
+            parsed.mission_id, decision,
+            snapshot.mission_id == parsed.mission_id ? snapshot.waypoint_count : 0U);
+        return;
+    }
+    RCLCPP_INFO(get_logger(), "Waypoint mission %u started", parsed.mission_id);
+}
+
+void EgoSwarmPlannerNode::abort_mission_for_command(
+    const std::string& command_name)
+{
+    if (!waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::COMMAND_OVERRIDE, command_name))
+    {
+        // 只有 RUNNING／DWELLING 會被介入命令中止；LOADED 保持不變。
+        return;
+    }
+    RCLCPP_WARN(get_logger(), "Waypoint mission aborted by command %s",
+                command_name.c_str());
+    stop_mission_in_place("waypoint mission aborted by " + command_name);
+    publish_mission_status();
+}
+
+void EgoSwarmPlannerNode::stop_mission_in_place(const std::string& reason)
+{
+    has_goal_ = false;
+    preserve_altitude_ = false;
+    const rclcpp::Time now = this->now();
+    const double now_s = now.seconds();
+    ego_swarm::Vector3 current{};
+    if (!std::isfinite(now_s) || !has_own_state_ || !update_planner_frame() ||
+        !get_position_in_planner_frame(own_state_, current))
+    {
+        // 沒有位置時無法建立煞停軌跡；只清除目標，BasicController 保留最後的 setpoint。
+        has_position_target_ = false;
+        invalidate_active_plan();
+        RCLCPP_WARN(get_logger(),
+                    "Cannot brake for %s: own position unavailable",
+                    reason.c_str());
+        return;
+    }
+
+    // 舊航段軌跡不得再發布；從目前速度重新產生煞停軌跡，不沿用其他煞停。
+    invalidate_active_plan();
+    const ego_swarm::VehiclePlanningState planning_state =
+        make_planning_state(current, now_s);
+    goal_position_ = current;
+    if (publish_emergency_brake(
+            planning_state, current, reason, now,
+            peer_trajectories_.all_fresh(now_s, collect_expected_peer_ids()),
+            false))
+    {
+        // 煞停終點作為之後相對 MOVE_* 的累加基準，不回到收到命令時的位置。
+        const auto endpoint = active_plan_.trajectory.evaluate(
+            active_plan_.trajectory.duration_s());
+        if (endpoint.is_valid && ego_swarm::is_finite_vector(endpoint.position))
+        {
+            goal_position_ = endpoint.position;
+        }
+    }
+    has_position_target_ = ego_swarm::is_finite_vector(goal_position_);
+}
+
+void EgoSwarmPlannerNode::update_waypoint_mission()
+{
+    if (!waypoint_mission_executor_.is_running())
+    {
+        return;
+    }
+    const double now_s = steady_now_s();
+    if (waypoint_mission_executor_.is_leg_timed_out(now_s))
+    {
+        (void)waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::LEG_TIMEOUT, "leg timeout");
+        RCLCPP_WARN(get_logger(),
+                    "Waypoint mission aborted: leg timeout; stopping in place");
+        stop_mission_in_place("waypoint mission leg timeout");
+        publish_mission_status();
+        return;
+    }
+
+    const auto target = waypoint_mission_executor_.due_target(now_s);
+    if (!target.has_value())
+    {
+        return;
+    }
+    // 位置部分與 MOVE_POINT 相同；不改變 target yaw，BasicController 維持目前航向。
+    if (!apply_position_goal(*target))
+    {
+        (void)waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::FLIGHT_STATE,
+            "waypoint target is not finite");
+        stop_mission_in_place("waypoint target is not finite");
+    }
+    else
+    {
+        const auto mission_status = waypoint_mission_executor_.snapshot();
+        RCLCPP_INFO(get_logger(),
+                    "Waypoint mission %u heading to waypoint %u/%u",
+                    mission_status.mission_id,
+                    static_cast<unsigned int>(mission_status.current_index) + 1U,
+                    static_cast<unsigned int>(mission_status.waypoint_count));
+    }
+    publish_mission_status();
+}
+
+void EgoSwarmPlannerNode::publish_mission_status()
+{
+    const auto snapshot = waypoint_mission_executor_.snapshot();
+    if (has_published_mission_status_ &&
+        is_same_mission_status(snapshot, last_mission_status_))
+    {
+        return;
+    }
+    publish_mission_status_snapshot(snapshot);
+}
+
+void EgoSwarmPlannerNode::publish_mission_status_snapshot(
+    const ego_swarm::WaypointMissionStatusSnapshot& snapshot)
+{
+    if (mission_status_pub_ == nullptr)
+    {
+        return;
+    }
+    taiphoon_agent::msg::WaypointMissionStatus msg;
+    msg.stamp = this->now();
+    msg.mission_id = snapshot.mission_id;
+    msg.state = static_cast<uint8_t>(snapshot.state);
+    msg.reason = static_cast<uint8_t>(snapshot.reason);
+    msg.current_index = snapshot.current_index;
+    msg.waypoint_count = snapshot.waypoint_count;
+    msg.detail = snapshot.detail;
+    mission_status_pub_->publish(msg);
+    last_mission_status_ = snapshot;
+    has_published_mission_status_ = true;
+}
+
+void EgoSwarmPlannerNode::publish_mission_rejection(
+    const uint32_t mission_id,
+    const ego_swarm::WaypointMissionDecision& decision,
+    const std::size_t waypoint_count)
+{
+    if (mission_status_pub_ == nullptr)
+    {
+        return;
+    }
+    // REJECTED 是事件：只發布一次，不更新 last_mission_status_，
+    // 下一次週期發布回到 executor 的實際狀態。
+    taiphoon_agent::msg::WaypointMissionStatus msg;
+    msg.stamp = this->now();
+    msg.mission_id = mission_id;
+    msg.state = taiphoon_agent::msg::WaypointMissionStatus::REJECTED;
+    msg.reason = static_cast<uint8_t>(decision.reason);
+    msg.current_index = decision.index;
+    msg.waypoint_count = static_cast<uint16_t>(std::min<std::size_t>(
+        waypoint_count, std::numeric_limits<uint16_t>::max()));
+    msg.detail = decision.detail;
+    mission_status_pub_->publish(msg);
+}
+
+void EgoSwarmPlannerNode::publish_planner_event(
+    const safety::AgentEventCode code,
+    const std::string& command,
+    const std::string& detail)
+{
+    if (events_pub_ == nullptr ||
+        !event_gate_.should_publish(code, command, steady_now_ns()))
+    {
+        return;
+    }
+    taiphoon_agent::msg::AgentEvent msg;
+    msg.stamp = this->now();
+    msg.sequence = event_gate_.next_sequence();
+    msg.severity = static_cast<uint8_t>(safety::agent_event_severity(code));
+    msg.source = taiphoon_agent::msg::AgentEvent::SOURCE_PLANNER;
+    msg.code = static_cast<uint16_t>(code);
+    msg.command = command;
+    msg.px4_result = safety::PX4_RESULT_NONE;
+    msg.detail = detail;
+    events_pub_->publish(msg);
+    RCLCPP_INFO(get_logger(), "Event %u %s [%s]: %s",
+                static_cast<unsigned int>(msg.code),
+                safety::agent_event_code_name(code), command.c_str(),
+                detail.c_str());
+}
+
+void EgoSwarmPlannerNode::report_command_rejection(
+    const utils::ParsedCommand& parsed, const std::string& detail)
+{
+    if (!utils::has_valid_command_params(parsed))
+    {
+        return;
+    }
+    publish_planner_event(safety::AgentEventCode::PLANNER_COMMAND_REJECTED,
+                          utils::agent_command_to_string(parsed.command), detail);
+}
+
+void EgoSwarmPlannerNode::track_planner_failure(
+    const double now_s, const std::string& failure_reason)
+{
+    if (!std::isfinite(now_s))
+    {
+        return;
+    }
+    const bool is_new_streak = consecutive_planner_failures_ <= 1U ||
+        !std::isfinite(planner_failure_last_s_) ||
+        now_s - planner_failure_last_s_ > PLANNER_FAILURE_STREAK_GAP_S;
+    if (is_new_streak)
+    {
+        planner_failure_since_s_ = now_s;
+        planner_failure_event_sent_ = false;
+    }
+    planner_failure_last_s_ = now_s;
+    const double failing_s = now_s - planner_failure_since_s_;
+    if (planner_failure_event_sent_ || failing_s < planner_failure_event_s_)
+    {
+        return;
+    }
+    planner_failure_event_sent_ = true;
+    std::ostringstream detail;
+    detail << std::fixed << std::setprecision(1) << "Planner failing for "
+           << failing_s << " s (" << consecutive_planner_failures_
+           << " consecutive failures, last: " << failure_reason << ")";
+    publish_planner_event(safety::AgentEventCode::PLANNER_FAILURE_PERSISTENT,
+                          "", detail.str());
 }
 
 bool EgoSwarmPlannerNode::attitude_is_fresh() const
