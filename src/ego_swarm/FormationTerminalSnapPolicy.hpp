@@ -213,6 +213,32 @@ inline bool append_formation_snap_peer_path(
 }
 
 /**
+ * @brief 把同儕「即時位置 → 本 epoch 指派槽位」直線加入清單
+ *
+ * 同一 FormationEpoch 由各成員幾乎同時採用；同儕剛採用時已發布的軌跡
+ * 可能仍是舊槽位 hold，只看已發布軌跡會讓雙方各自依對方的舊意圖判定
+ * 淨空，接著同時直接到位。槽位指派是 deterministic，各成員算出相同結果，
+ * 因此以同儕的新槽位補上它即將直飛的直線，兩者都淨空才可直接到位。
+ *
+ * @param live_position 同儕即時位置（planner-local NED）
+ * @param slot_position 同儕在 accepted epoch 的槽位（planner-local NED）
+ * @param segments 輸出清單；成功時附加一段路徑
+ * @return 任一輸入非有限值時回傳 false，呼叫端須視為不可直接到位
+ */
+inline bool append_formation_snap_peer_slot_path(
+    const Vector3& live_position,
+    const Vector3& slot_position,
+    std::vector<FormationSnapPeerSegment>& segments)
+{
+    if (!is_finite_vector(live_position) || !is_finite_vector(slot_position))
+    {
+        return false;
+    }
+    segments.push_back(FormationSnapPeerSegment{live_position, slot_position});
+    return true;
+}
+
+/**
  * @brief 判斷「目前位置 → 槽位」直線是否可直接交給 PX4 位置控制飛完
  *
  * 直線段與每段同儕路徑的最短距離都必須不小於淨空距離。沒有同儕時

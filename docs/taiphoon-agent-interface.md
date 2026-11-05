@@ -141,13 +141,15 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `planning_rate_hz` | `double` | `10.0` | 規劃迴圈頻率 |
 | `enable_local_goal_planning` | `bool` | `true` | Local Goal segmented planning；水平 FIXED_Z 受阻時使用 bounded 時空 A*，FREE_3D／LINEAR_Z 沿用既有 planner |
 | `enable_generic_trajectory_reservation` | `bool` | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
-| `peer_planning_margin_m` | `m` | `1.0` | planner 產生路徑時額外保留的機間距離；最終 safety validator 仍以 peer collision distance 驗證 |
+| `peer_planning_margin_m` | `m` | `1.0` | planner 產生路徑時額外保留的機間距離（optimizer soft barrier）；最終 safety validator 仍以 peer collision distance 驗證。起點或目標本身離某同儕較近時，對該同儕的 soft barrier 以兩端點的較近距離為上限（不低於 peer collision distance），避免小場域中合法目標因障壁而停滯 |
 | `local_goal_horizon_m` | `double` | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
 | `local_goal_detour_margin_m` | `double` | `3.0` | Local Goal 側向繞行相對於 peer collision distance 額外保留的追蹤裕度（公尺） |
 | `local_goal_replan_ratio` | `double` | `0.70` | Local Goal segment progress 達此比例後，允許嘗試下一段規劃 |
 | `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
 | `formation_min_distance_m` | `double` | `2.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `2.0` | 同儕軌跡的機體中心到中心最小距離 |
+| `geofence_polygon` | `string` | `""` | planner 水平地理圍籬，WGS84 頂點 `lat,lon;lat,lon;...`（3～64 點、依序相連、不可自交、距 Home 5 km 內）；空字串停用。格式錯誤或無法建立時 fail closed，拒絕所有移動目標（起飛、降落、hold 不受影響）。Docker 環境變數 `EGO_SWARM_GEOFENCE_POLYGON` |
+| `geofence_margin_m` | `double` | `0.5` | 機體中心與圍籬邊界的最小水平距離；Docker 環境變數 `EGO_SWARM_GEOFENCE_MARGIN_M` |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
 | `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
 | `max_velocity_m_s` | `double` | `2.5` | duration 計算使用的最大速度 |
@@ -481,7 +483,7 @@ Agent 事件（錯誤、警告、資訊）。`basic_controller_node` 與 `ego_sw
 | 303 | `PX4_PREFLIGHT_FAILED` | WARNING | basic_controller | `pre_flight_checks_pass` 由 true 轉 false，或收到 ARM 時為 false；不去抖動，PX4 降落自動上鎖的瞬間可能短暫回報 false 而出現一筆，GCS 以 `health.px4_pre_flight_checks_pass` 確認是否持續 |
 | 304 | `PX4_FAILSAFE` | WARNING | basic_controller | `failsafe` 由 false 轉 true |
 | 305 | `PX4_RESTART_DETECTED` | INFO | basic_controller | 偵測到 PX4 重新連線或重新啟動（上鎖狀態下 VehicleStatus 逾時後恢復，或 `REBOOT_FC` 被接受後中斷再恢復） |
-| 400 | `PLANNER_COMMAND_REJECTED` | WARNING | planner | 編隊成員不足、幾何不安全、沒有新鮮姿態、Home 未建立、未在編隊中下達全體 MOVE 等 |
+| 400 | `PLANNER_COMMAND_REJECTED` | WARNING | planner | 編隊成員不足、幾何不安全、沒有新鮮姿態、Home 未建立、未在編隊中下達全體 MOVE、目標或編隊槽位在地理圍籬外等 |
 | 401 | `PLANNER_EMERGENCY_BRAKE` | WARNING | planner | planner 啟動緊急煞停（同儕距離、規劃失敗等）；任務停止與到達時仍在移動的預期煞停不發布 |
 | 402 | `PLANNER_FAILURE_PERSISTENT` | ERROR | planner | 連續規劃失敗超過 `planner_failure_event_s`（每輪只發布一次） |
 | 500 | `SAFETY_POSITION_DEVIATION` | ERROR | — | 保留；PositionSafetyMonitor 介入目前停用，暫不發布 |
@@ -685,7 +687,9 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
   建立 terminal hold；PX4 會以位置控制直線飛完剩下的距離，不經 optimizer 與 validator。
   因此只有「目前位置 → 槽位」直線與每台編隊同儕的路徑都保持
   `max(formation_min_distance_m, peer_collision_min_distance_m)` 時才直接到位；同儕路徑為
-  即時位置接上 fresh 軌跡未來 4 s 的取樣（terminal hold 同儕即為「即時位置 → hold 槽位」）。
+  即時位置接上 fresh 軌跡未來 4 s 的取樣（terminal hold 同儕即為「即時位置 → hold 槽位」），
+  另加上「即時位置 → 同儕在 accepted epoch 的指派槽位」直線，避免多台同時採用新 epoch 時
+  各自依對方尚未更新的舊槽位軌跡判定淨空而同時直飛；取不到同儕槽位時不直接到位。
   不通過或同儕資料無效時繼續一般規劃，直到 PX4 local 誤差 ≤ `local_arrival_tolerance_m`
   才建立 terminal hold；已建立的同槽位 hold 不重新檢查。
 - 編隊至少需要 2 台穩定成員：少於 2 台的 `FORMATION_*` 直接拒絕、不排隊；編隊中成員
@@ -701,6 +705,14 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - 飛行中重新啟動的 Agent 不會自動採用既有編隊，需重新下達 `FORMATION_*`；
   存活成員不會因等待它而停止。
 - 同儕避碰的距離定義為機體中心到機體中心的三維直線距離，不加計機體半徑。
+- **地理圍籬**（`geofence_polygon` 非空時）：只限制水平 North／East，planner Home 凍結後一次換算成
+  planner-local NED，PX4 重啟不重建。命令階段拒絕圍籬（含 `geofence_margin_m`）外的目標：單機
+  `MOVE_*`／`MOVE_POINT`／NED target 回報 `PLANNER_COMMAND_REJECTED`（detail `Goal outside geofence` 或
+  `Goal invalid or outside geofence`）；全體 MOVE 或編隊提案任一槽位在外時回報 `Formation slot outside geofence`；
+  遠端 epoch 指派給本機的槽位在外時本機不前往。規劃階段 Local Goal 候選、時空 A* 格點、optimizer
+  取樣點與 `ContinuousSafetyValidator`（reason `geofence_violation`）都以圍籬為硬限制，直接到位也以直線段
+  檢查；圍籬內暫無可行路徑時低速原地等待重試，不為避讓而出界。起點已在 margin 帶或圍籬外時只允許
+  往內修正。緊急煞停不經圍籬驗證，`geofence_margin_m` 應大於預期煞停距離。
 - 最小距離不得在文件或實作中硬編碼為 3 公尺；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
   1.5 m、2 m 或 3 m 等值。
@@ -737,7 +749,9 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 **上傳驗證**（不符即發布一次 `REJECTED`，目前狀態不變）：任務執行中或編隊中（BUSY）；
 `mission_id == 0`、`altitude_frame` 不是 `ALTITUDE_PX4_LOCAL`、航點數為 0 或超過上限、經緯度不合法、
 高度不在 `mission_min_altitude_m`～`mission_max_altitude_m`、`dwell_s` 不合法、`yaw_deg` 不是 NaN（INVALID_PLAN）；
-沒有有效 AgentState、planner Home 或 PX4 local 換算（NOT_READY）；任一航點水平距離超過上限（OUT_OF_RANGE）。
+沒有有效 AgentState、planner Home 或 PX4 local 換算（NOT_READY）；任一航點水平距離超過上限（OUT_OF_RANGE）；
+設定地理圍籬時任一航點在圍籬（含 margin）外（同樣回報 OUT_OF_RANGE，`detail` 為 `waypoint outside geofence`，
+`current_index` 指向第一個越界航點）。
 上傳本身不需在懸停；新上傳會取代已載入、已完成或已中止的任務。
 
 **座標換算**：水平以 planner Home 由 WGS84 換算；垂直以 PX4 local 換算

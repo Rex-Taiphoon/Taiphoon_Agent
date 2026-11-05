@@ -88,6 +88,8 @@ struct LocalGoalEnvironment
     double peer_collision_min_distance_m{2.0};
     double obstacle_clearance_m{1.0};
     double maximum_velocity_mps{2.5};
+    /// 水平地理圍籬；nullptr 表示未啟用。
+    const Geofence* geofence{nullptr};
 };
 
 /**
@@ -246,6 +248,11 @@ inline bool local_goal_endpoint_safe(
     double& minimum_peer_distance_m,
     double& minimum_obstacle_distance_m)
 {
+    if (environment.geofence != nullptr &&
+        !environment.geofence->contains_with_margin(position))
+    {
+        return false;
+    }
     if (environment.obstacle_map == nullptr ||
         !environment.obstacle_map->is_valid() ||
         !environment.obstacle_map->is_fresh(environment.now_s) ||
@@ -426,18 +433,35 @@ inline LocalGoalResult compute_safe_local_goal(
     const double detour_offset = std::max(
         config.detour_offset_m,
         environment.peer_collision_min_distance_m + 1.5);
+    // 小場域圍籬內常容不下完整繞行偏移；另提供較小偏移讓 Local Goal
+    // 仍可選在圍籬內的一側，而不是直接判定無候選。
+    std::vector<double> detour_offsets{detour_offset};
+    if (environment.geofence != nullptr)
+    {
+        detour_offsets.push_back(std::max(
+            environment.peer_collision_min_distance_m,
+            0.5 * detour_offset));
+    }
+    const auto append_lateral_candidates =
+        [&candidates, &direction, &detour_offsets](const Vector3& base)
+        {
+            for (const double offset : detour_offsets)
+            {
+                detail::append_local_goal_candidate(
+                    candidates, add_vectors(
+                        base, detail::local_goal_lateral_offset(
+                            direction, offset, 1.0)));
+                detail::append_local_goal_candidate(
+                    candidates, add_vectors(
+                        base, detail::local_goal_lateral_offset(
+                            direction, offset, -1.0)));
+            }
+        };
     if (path_constraint != PathConstraint::FREE_3D ||
         std::sqrt(direction.at(0) * direction.at(0) +
                   direction.at(1) * direction.at(1)) > EGO_SWARM_EPSILON_M)
     {
-        const Vector3 lateral_offset = detail::local_goal_lateral_offset(
-            direction, detour_offset, 1.0);
-        detail::append_local_goal_candidate(
-            candidates, add_vectors(nominal, lateral_offset));
-        detail::append_local_goal_candidate(
-            candidates, add_vectors(nominal,
-                                    detail::local_goal_lateral_offset(
-                                        direction, detour_offset, -1.0)));
+        append_lateral_candidates(nominal);
     }
 
     const double minimum_distance = std::min(
@@ -457,14 +481,7 @@ inline LocalGoalResult compute_safe_local_goal(
                        direction.at(1) * direction.at(1)) >
                  EGO_SWARM_EPSILON_M))
         {
-            detail::append_local_goal_candidate(
-                candidates, add_vectors(
-                    shortened, detail::local_goal_lateral_offset(
-                        direction, detour_offset, 1.0)));
-            detail::append_local_goal_candidate(
-                candidates, add_vectors(
-                    shortened, detail::local_goal_lateral_offset(
-                        direction, detour_offset, -1.0)));
+            append_lateral_candidates(shortened);
         }
     }
 

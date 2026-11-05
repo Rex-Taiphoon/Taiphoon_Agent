@@ -659,6 +659,63 @@ TEST(OptimizedPlannerTest, HorizontalMoveNearPeerUsesEarlySideClearance)
     }
 }
 
+TEST(OptimizedPlannerTest, LegalGoalInsidePeerSoftMarginIsReachedWithoutStall)
+{
+    // 8×8 m 場域 SITL 快照：uav_2 退回起點，起點距懸停的 uav_3 約 2.95 m，
+    // 大於硬性 2.0 m、小於 optimizer 軟性障壁 4.0 m。目前位置也在障壁內，
+    // 若障壁不考慮目標本身的距離，軌跡開頭會先遠離 uav_3，滾動重規劃時停滯。
+    RawPointObstacleMap map = make_empty_map();
+    PlanningSnapshot snapshot = make_snapshot(map);
+    snapshot.self_agent_id = 2;
+    snapshot.self_state.position = Vector3{0.80, 0.90, -2.0};
+    snapshot.local_goal = Vector3{0.0, 0.25, -2.0};
+    snapshot.path_constraint = PathConstraint::FIXED_Z;
+    snapshot.fixed_z_m = -2.0;
+    snapshot.peers.push_back(
+        make_terminal_hold_peer(1, Vector3{2.48, -1.87, -2.0}));
+    snapshot.peers.push_back(
+        make_terminal_hold_peer(3, Vector3{-2.48, 1.87, -2.0}));
+
+    PlannerConfig config;
+    config.optimizer_time_budget_ms = DETERMINISTIC_TIME_BUDGET_MS;
+    config.optimizer_max_iterations = 40;
+    config.peer_collision_min_distance_m = 2.0;
+    config.peer_planning_margin_m = 1.0;
+    config.optimizer_peer_soft_margin_m = 1.0;
+    OptimizedEgoPlanner planner(config);
+
+    const auto result = planner.plan(snapshot);
+    ASSERT_TRUE(result.is_valid)
+        << taiphoon::ego_swarm::planner_termination_reason_string(
+            result.termination);
+    EXPECT_GE(result.minimum_peer_distance_m,
+              config.peer_collision_min_distance_m);
+    const double initial_distance = taiphoon::ego_swarm::distance_between_centers(
+        snapshot.self_state.position, snapshot.local_goal);
+    const double duration_s = result.trajectory.duration_s();
+    ASSERT_GT(duration_s, 0.0);
+    // 軌跡前段（1 s 內）每個取樣都不可比起點更遠離目標，且 1 s 時需明顯前進。
+    for (double time_s = 0.1; time_s <= std::min(1.0, duration_s); time_s += 0.1)
+    {
+        const auto sample = result.trajectory.evaluate(time_s);
+        ASSERT_TRUE(sample.is_valid);
+        EXPECT_LE(taiphoon::ego_swarm::distance_between_centers(
+                      sample.position, snapshot.local_goal),
+                  initial_distance + 1.0e-6)
+            << "time_s=" << time_s;
+    }
+    const auto early = result.trajectory.evaluate(std::min(1.0, duration_s));
+    ASSERT_TRUE(early.is_valid);
+    EXPECT_LT(taiphoon::ego_swarm::distance_between_centers(
+                  early.position, snapshot.local_goal),
+              0.9 * initial_distance);
+    const auto endpoint = result.trajectory.evaluate(duration_s);
+    ASSERT_TRUE(endpoint.is_valid);
+    EXPECT_NEAR(taiphoon::ego_swarm::distance_between_centers(
+                    endpoint.position, snapshot.local_goal),
+                0.0, 1.0e-6);
+}
+
 TEST(OptimizedPlannerTest, LongHorizontalMoveAroundEastLineStaysFeasible)
 {
     RawPointObstacleMap map = make_empty_map();

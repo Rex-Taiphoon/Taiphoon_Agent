@@ -41,6 +41,7 @@
 #include "ego_swarm/FormationAssignment.hpp"
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/FormationTerminalSnapPolicy.hpp"
+#include "ego_swarm/Geofence.hpp"
 #include "ego_swarm/ITrajectoryPlanner.hpp"
 #include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
@@ -71,6 +72,8 @@ namespace nodes
 constexpr double DEFAULT_EGO_PLANNER_RATE_HZ = 10.0;
 constexpr double DEFAULT_FORMATION_MIN_DISTANCE_M = 2.0;
 constexpr double DEFAULT_PEER_COLLISION_MIN_DISTANCE_M = 2.0;
+/// 圍籬硬性 margin 預設值（m）：機體中心與場域邊界的最小水平距離。
+constexpr double DEFAULT_GEOFENCE_MARGIN_M = 0.5;
 constexpr double DEFAULT_OBSTACLE_CLEARANCE_M = 1.0;
 constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
@@ -292,6 +295,19 @@ private:
     bool is_formation_target_hold_active(
         const ego_swarm::Vector3& final_target) const;
     /**
+     * @brief 判斷既有軌跡是否仍在執行、終點為 Final Target 且通過最新 safety validation
+     * @param final_target planner-local NED Final Target
+     * @param planning_state 本機目前規劃狀態
+     * @param now ROS 目前時間
+     * @param now_s 目前時間（秒）
+     * @return true 表示可繼續沿既有軌跡減速到目標點
+     */
+    bool is_active_plan_finishing_at(
+        const ego_swarm::Vector3& final_target,
+        const ego_swarm::VehiclePlanningState& planning_state,
+        const rclcpp::Time& now,
+        double now_s) const;
+    /**
      * @brief 判斷「目前位置 → 槽位」直線是否避開所有編隊同儕
      * @param current 本機 planner-local NED 位置
      * @param final_target planner-local NED 槽位
@@ -325,6 +341,27 @@ private:
         const rclcpp::Time& now,
         bool peer_data_valid);
     bool update_planner_frame();
+    /** @brief planner Home 凍結後把 WGS84 圍籬頂點轉成 planner NED。 */
+    void build_geofence();
+    /**
+     * @brief 取得規劃各階段使用的圍籬
+     * @return 未設定圍籬時為 nullptr；設定但無效時回傳無效圍籬（fail closed）
+     */
+    const ego_swarm::Geofence* active_geofence() const;
+    /**
+     * @brief 檢查目標位置是否在圍籬內且滿足 margin
+     * @param position planner-local NED 位置
+     * @return true 表示未設定圍籬或位置通過
+     */
+    bool is_inside_geofence(const ego_swarm::Vector3& position) const;
+    /**
+     * @brief 檢查以 center 為中心的所有編隊槽位是否都在圍籬內
+     * @param center planner-local NED 編隊中心
+     * @param member_count 成員數
+     * @return true 表示未設定圍籬或全部槽位通過
+     */
+    bool are_formation_slots_inside_geofence(
+        const ego_swarm::Vector3& center, std::size_t member_count) const;
     bool update_planner_to_px4_ned_transform();
     bool get_position_in_planner_frame(
         const taiphoon_agent::msg::AgentState& state,
@@ -452,6 +489,12 @@ private:
     /// planner-local NED 至 PX4 local NED 的固定平移是否已建立。
     bool has_planner_to_px4_ned_transform_{false};
     ego_swarm::Vector3 planner_to_px4_ned_offset_{0.0, 0.0, 0.0};
+    /// 是否設定了圍籬參數（含格式錯誤）；設定後一律 fail closed。
+    bool is_geofence_configured_{false};
+    double geofence_margin_m_{0.5};
+    std::vector<ego_swarm::GeoCoordinate> geofence_vertices_{};
+    /// planner NED 圍籬；planner Home 凍結前或設定無效時為無效狀態。
+    ego_swarm::Geofence geofence_{};
 
     bool has_own_state_{false};
     ego_swarm::FlightMissionLifecycle flight_mission_lifecycle_{};

@@ -31,6 +31,9 @@ README 只保留使用者需要知道的行為；以下為完整規則與驗證�
   紀錄見 `AutoTest/Log/px4-restart-20261030.md`）。
 - PX4 訊息版本（指引 D6 第 0 步）：2026-10-30 人類開發者決定維持目前版本，`PX4_MSGS_REF=main` 與現行
   topic 名稱（`vehicle_status_v4`、`vehicle_command_ack_v1`）不變，不鎖定版本也不加訊息轉換節點。
+  2026-11-05 曾試升 PX4 v1.18.0-rc1：Agent 可建置、介面相容，但 rc1 SIH 起飛後 EKF2 航向誤差累積約 14°，
+  懸停漂移約 0.8～1.9 m（現行版本約 0.1 m），小場域無法驗收，人類開發者決定退回現行版本；
+  紀錄見 `AutoTest/Log/px4-v1.18.0-rc1-20261105/`。
   飛控韌體若使用不同版本的訊息後綴（例如 PX4 v1.17.0 為 `vehicle_status_v1`、`vehicle_command_ack`），
   Agent 收不到這兩個 topic，`health` 的 `px4_status_age_s`／`px4_command_ack_age_s` 會維持 -1，並發布事件 300。
   `fmu/out/failsafe_flags` 缺少時只讓 `health.failsafe_flags_valid=false`。
@@ -55,6 +58,24 @@ Windows 開發環境可用 PowerShell 執行小場域驗證（需 Docker Desktop
 測試使用三機、2 m 起飛高度、2 m 圓半徑與嚴格 2 m 中心距離驗收。編隊情境只執行前五步；兩機重編隊須持續收斂 15 秒，不下達 RTL。交叉情境讓兩端飛機互換位置，中間飛機保持原位。
 
 記錄輸出於 `AutoTest/Log/small-field-日期/`；即時 monitor 成功後，仍須在 Docker 中以 `analyze_small_field_px4_logs.py`（需要 `pyulog`）檢查包含失效機的三台 PX4 ULog。離線查核使用共同 UTC 時鐘與 20 Hz 取樣，不等同實體碰撞模擬或實機零碰撞保證。
+
+### 8×8 m 場域與地理圍籬
+
+實際場域（中心 24.881051576424703, 121.0696306771756，長軸方位 143°，起飛航向 53°）以下列參數重現；
+圍籬頂點為場域四角，margin 0.5 m。設計與失效處理見 [codex/agent-geofence-design.md](codex/agent-geofence-design.md)，
+QGCS 端適配見 [qgcs-adaptation-geofence.md](qgcs-adaptation-geofence.md)。
+
+```powershell
+./AutoTest/scripts/small_field_three_agent_validation.ps1 -FailedAgent 2 `
+  -CenterLat 24.881051576424703 -CenterLon 121.0696306771756 -LayoutBearingDeg 143 -InitialSpacingM 3.1 `
+  -GeofencePolygon '24.881044504,121.069686147;24.881001255,121.069622881;24.881058649,121.069575207;24.881101898,121.069638473' `
+  -GeofenceMarginM 0.5 `
+  -MonitorArgs '--field-half-long-m 4 --field-half-short-m 4 --field-bearing-deg 143 --heading-deg 53 --single-move-m 1.5 --circle-radius-m 1.8 --min-separation-m 2.0'
+```
+
+1.5 m 間距加上 `-AgentEnv 'EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M=1.5;EGO_SWARM_FORMATION_MIN_DISTANCE_M=1.5'`，
+並把 monitor 的 `--min-separation-m` 改為 1.5。開發 compose 可直接設定 `EGO_SWARM_GEOFENCE_POLYGON`、
+`EGO_SWARM_GEOFENCE_MARGIN_M`；實機啟動工具（`settings.ini`）尚未提供圍籬欄位。
 
 其他 SITL 自動驗收腳本見 [AutoTest/scripts/](../AutoTest/scripts/)。
 

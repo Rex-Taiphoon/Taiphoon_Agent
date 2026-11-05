@@ -452,6 +452,19 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 水平地理圍籬解析、幾何與各規劃階段整合測試
+  ament_add_gtest(test_geofence
+    test/geofence_test.cpp
+    src/ego_swarm/OptimizedEgoPlanner.cpp
+    src/ego_swarm/ProjectedGradientSolver.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_geofence PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # FIXED_Z 時空 route initializer 純邏輯測試
   ament_add_gtest(test_spatiotemporal_route_initializer
     test/spatiotemporal_route_initializer_test.cpp

@@ -8,6 +8,7 @@
 #include "ego_swarm/OptimizedEgoPlanner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -32,6 +33,12 @@ constexpr double LEGACY_TIMING_CONTROL_POINT_DENOMINATOR = 5.0;
 // 時空 A* 可使用的 planner 預算比例（無單位）；其餘至少 40% 保留給 solver。
 constexpr double ROUTE_SEARCH_BUDGET_RATIO = 0.6;
 
+// solver 繞行超出動力學上限時，依序嘗試的時間拉長倍率（無單位）。
+// 上限 2 倍：8 m 場域內的繞行仍能在數秒內完成，不會讓軌跡長到
+// 失去 replanning 意義。
+constexpr std::array<double, 4U> TIME_STRETCH_FACTORS{
+    1.25, 1.5, 1.75, 2.0};
+
 class TrajectoryObjective final : public IOptimizationObjective
 {
 public:
@@ -45,8 +52,16 @@ public:
           evaluation_sample_interval_s_(evaluation_sample_interval_s >
                     EGO_SWARM_EPSILON_M
                 ? evaluation_sample_interval_s
-                : std::max(config.sample_interval_s, 0.75))
+                : std::max(config.sample_interval_s, 0.75)),
+          geofence_required_clearance_m_(
+              snapshot_geofence_required_clearance_m(snapshot))
     {
+        peer_soft_clearance_m_.reserve(snapshot_.peers.size());
+        for (const PeerTrajectory& peer : snapshot_.peers)
+        {
+            peer_soft_clearance_m_.push_back(
+                endpoint_capped_peer_soft_clearance_m(peer));
+        }
     }
 
     OptimizationEvaluation evaluate(
@@ -113,6 +128,12 @@ public:
 
             if (!evaluate_obstacle(
                     sample.position, minimum_obstacle_distance,
+                    result.obstacle_cost))
+            {
+                return OptimizationEvaluation{};
+            }
+            if (!evaluate_geofence(
+                    sample.position, result.maximum_geofence_violation_m,
                     result.obstacle_cost))
             {
                 return OptimizationEvaluation{};
@@ -231,6 +252,39 @@ private:
         return is_finite(cost);
     }
 
+    /**
+     * 圍籬成本併入 obstacle cost：兩者都是靜態空間邊界，沿用同一權重，
+     * 避免新增 optimizer 調參項目。硬性門檻依起點放寬，允許往內修正。
+     */
+    bool evaluate_geofence(
+        const Vector3& position,
+        double& maximum_violation_m,
+        double& cost) const
+    {
+        if (snapshot_.geofence == nullptr)
+        {
+            return true;
+        }
+        const double clearance = snapshot_.geofence->clearance_m(position);
+        if (!is_finite(clearance))
+        {
+            return false;
+        }
+        const double hard_error = geofence_required_clearance_m_ - clearance;
+        const double soft_error = hard_error +
+            GEOFENCE_OPTIMIZER_SOFT_MARGIN_M;
+        if (hard_error > 0.0)
+        {
+            maximum_violation_m = std::max(maximum_violation_m, hard_error);
+            cost += 10000.0 * hard_error * hard_error + 1000.0 * hard_error;
+        }
+        else if (soft_error > 0.0)
+        {
+            cost += 100.0 * soft_error * soft_error + 10.0 * soft_error;
+        }
+        return is_finite(cost);
+    }
+
     bool evaluate_peers(
         const Vector3& position,
         const double relative_time_s,
@@ -244,8 +298,10 @@ private:
         {
             return false;
         }
-        for (const PeerTrajectory& peer : snapshot_.peers)
+        for (std::size_t peer_index = 0U; peer_index < snapshot_.peers.size();
+             ++peer_index)
         {
+            const PeerTrajectory& peer = snapshot_.peers.at(peer_index);
             if (peer.agent_id == snapshot_.self_agent_id ||
                 (!peer.terminal_hold &&
                  absolute_time_s > peer.end_time_s + EGO_SWARM_EPSILON_M))
@@ -278,8 +334,7 @@ private:
             const double hard_separation_error =
                 config_.peer_collision_min_distance_m - distance;
             const double soft_separation_error =
-                peer_planning_soft_clearance_m(config_) +
-                config_.optimizer_peer_soft_margin_m - distance;
+                peer_soft_clearance_m_.at(peer_index) - distance;
             if (hard_separation_error > 0.0)
             {
                 cost += 10000.0 * hard_separation_error *
@@ -316,10 +371,52 @@ private:
         return cost;
     }
 
+    /**
+     * @brief 計算單一同儕的 soft barrier 距離，上限為起點與目標到該同儕的較近距離
+     *
+     * 起點或目標與同儕已保持硬性碰撞距離、但落在 soft margin 內時（小場域常見），
+     * 完整 soft barrier 會讓軌跡開頭先遠離同儕；滾動重規劃只執行開頭，
+     * 飛機會停在障壁與目標的平衡點而永遠到不了。因此 soft barrier 不大於
+     * 兩端點到同儕的較近距離（路徑不比兩端更靠近同儕），但不低於硬性碰撞
+     * 距離；hard barrier 與 ContinuousSafetyValidator 不受影響。
+     *
+     * @param peer 同儕未來軌跡
+     * @return soft barrier 距離（公尺）
+     */
+    double endpoint_capped_peer_soft_clearance_m(const PeerTrajectory& peer) const
+    {
+        const double full_clearance_m = peer_planning_soft_clearance_m(config_) +
+            config_.optimizer_peer_soft_margin_m;
+        const TrajectoryState start_state = peer.trajectory.evaluate_state(
+            std::max(0.0, snapshot_.trajectory_start_time_s - peer.start_time_s));
+        const TrajectoryState final_state = peer.trajectory.evaluate_state(
+            peer.trajectory.duration_s());
+        if (!start_state.is_valid || !final_state.is_valid)
+        {
+            return full_clearance_m;
+        }
+        const double start_distance_m = distance_between_centers(
+            snapshot_.self_state.position, start_state.position);
+        const double goal_distance_m = distance_between_centers(
+            snapshot_.local_goal, final_state.position);
+        if (!is_finite(start_distance_m) || !is_finite(goal_distance_m) ||
+            !is_finite(full_clearance_m))
+        {
+            return full_clearance_m;
+        }
+        return std::max(
+            config_.peer_collision_min_distance_m,
+            std::min(full_clearance_m, std::min(start_distance_m, goal_distance_m)));
+    }
+
     const PlanningSnapshot& snapshot_;
     const PlannerConfig& config_;
     double knot_interval_s_{0.0};
     double evaluation_sample_interval_s_{0.75};
+    /// 與 snapshot_.peers 同序的 soft barrier 距離（公尺）。
+    std::vector<double> peer_soft_clearance_m_{};
+    /// 本次規劃的圍籬硬性 clearance（公尺）；依起點放寬。
+    double geofence_required_clearance_m_{0.0};
 };
 
 PlannerTerminationReason convert_solver_reason(
@@ -626,8 +723,10 @@ PlannerResult OptimizedEgoPlanner::plan(
     // 因為稀疏 sampling 漏掉狹窄的 peer crossing。直線 seed 若有 peer，
     // 再用 safety sampling interval 做一次 hard peer pre-check，真正需要
     // 繞行時才交給 solver。
+    // 圍籬同樣是 hard gate；啟用時也以 safety sampling 密度檢查 seed。
     const OptimizationEvaluation seed_peer_safety_evaluation =
-        planning_snapshot.peers.empty()
+        planning_snapshot.peers.empty() &&
+            planning_snapshot.geofence == nullptr
         ? seed_evaluation
         : TrajectoryObjective(
               planning_snapshot, config_, knot_interval_s,
@@ -639,7 +738,9 @@ PlannerResult OptimizedEgoPlanner::plan(
              EGO_SWARM_EPSILON_M >= config_.obstacle_clearance_m) &&
         (seed_peer_safety_evaluation.minimum_peer_distance_m <= 0.0 ||
          seed_peer_safety_evaluation.minimum_peer_distance_m +
-             EGO_SWARM_EPSILON_M >= config_.peer_collision_min_distance_m);
+             EGO_SWARM_EPSILON_M >= config_.peer_collision_min_distance_m) &&
+        seed_peer_safety_evaluation.maximum_geofence_violation_m <=
+            EGO_SWARM_EPSILON_M;
     // 直線 seed 已經通過密集 safety sampling，且沒有障礙物／同儕
     // soft penalty 時，不需要為了 open-space 長距離任務重複執行昂貴
     // 的 central finite-difference。obstacle map 可以包含遠方或保留
@@ -703,6 +804,39 @@ PlannerResult OptimizedEgoPlanner::plan(
         config_.obstacle_clearance_m};
     const ProjectedGradientSolverResult solver_result = solver.solve(
         seed, objective, solver_config, projection);
+    // seed 只因 soft cost（例如終點落在圍籬軟性緩衝帶、或同儕 soft barrier）
+    // 而未走 fast path 時，本身已通過全部 hard gate。solver 若無法產生合格解，
+    // 退回 seed，而不是讓 Agent 停在原地反覆規劃失敗；Node 仍會以
+    // ContinuousSafetyValidator 重新驗證。
+    // 同儕距離只達 hard 下限的 seed（例如 A* 貼著 2 m 的繞行）不退回：
+    // 少了 planning margin 時，PX4 追蹤誤差與同儕煞停漂移會讓實際距離低於
+    // 下限。只放行至少保有 peer planning clearance 的 seed。
+    const bool seed_is_hard_fallback = seed_trajectory.is_valid() &&
+        seed_peer_safety_evaluation.is_valid && seed_has_hard_clearance &&
+        (seed_peer_safety_evaluation.minimum_peer_distance_m <= 0.0 ||
+         seed_peer_safety_evaluation.minimum_peer_distance_m +
+                 EGO_SWARM_EPSILON_M >= std::max(
+                     optimizer_peer_acceptance_distance,
+                     peer_planning_soft_clearance_m(config_))) &&
+        is_hard_dynamically_feasible(seed_trajectory, config_);
+    const auto accept_seed_fallback = [&]()
+    {
+        result.is_valid = true;
+        result.is_hold = false;
+        result.trajectory = seed_trajectory;
+        result.cost = seed_peer_safety_evaluation.total_cost;
+        result.goal_cost = seed_peer_safety_evaluation.goal_cost;
+        result.smoothness_cost = seed_peer_safety_evaluation.smoothness_cost;
+        result.dynamic_cost = seed_peer_safety_evaluation.dynamic_cost;
+        result.obstacle_cost = seed_peer_safety_evaluation.obstacle_cost;
+        result.peer_cost = seed_peer_safety_evaluation.peer_cost;
+        result.minimum_obstacle_distance_m =
+            seed_peer_safety_evaluation.minimum_obstacle_distance_m;
+        result.minimum_peer_distance_m =
+            seed_peer_safety_evaluation.minimum_peer_distance_m;
+        result.termination = PlannerTerminationReason::SUCCESS;
+        return finish(result);
+    };
     result.iteration_count = solver_result.iterations;
     result.termination = convert_solver_reason(solver_result.termination);
     result.cost = solver_result.evaluation.total_cost;
@@ -721,7 +855,9 @@ PlannerResult OptimizedEgoPlanner::plan(
              EGO_SWARM_EPSILON_M >= config_.obstacle_clearance_m) &&
         (solver_result.evaluation.minimum_peer_distance_m <= 0.0 ||
          solver_result.evaluation.minimum_peer_distance_m +
-             EGO_SWARM_EPSILON_M >= optimizer_peer_acceptance_distance);
+             EGO_SWARM_EPSILON_M >= optimizer_peer_acceptance_distance) &&
+        solver_result.evaluation.maximum_geofence_violation_m <=
+            EGO_SWARM_EPSILON_M;
     // A route seed can already be hard-safe while the bounded numerical
     // solver is unable to reduce the remaining soft smoothness/clearance
     // cost.  Do not discard that geometrically safe candidate solely because
@@ -731,6 +867,10 @@ PlannerResult OptimizedEgoPlanner::plan(
         (solver_result.termination != SolverTerminationReason::CONVERGED &&
          !solver_has_hard_clearance))
     {
+        if (seed_is_hard_fallback)
+        {
+            return accept_seed_fallback();
+        }
         return finish(result);
     }
 
@@ -776,6 +916,8 @@ PlannerResult OptimizedEgoPlanner::plan(
                  candidate_evaluation.minimum_peer_distance_m +
                      EGO_SWARM_EPSILON_M <
                      optimizer_peer_acceptance_distance) ||
+                candidate_evaluation.maximum_geofence_violation_m >
+                    EGO_SWARM_EPSILON_M ||
                 !is_hard_dynamically_feasible(
                     candidate_trajectory, config_))
             {
@@ -787,8 +929,57 @@ PlannerResult OptimizedEgoPlanner::plan(
             recovered_dynamics = true;
             break;
         }
+        // 窄通道繞行（例如同儕與圍籬之間）會讓幾何路徑明顯變長，
+        // 沿用 seed 的總時間就超出速度／加速度上限；往 seed 收縮又會
+        // 回到同儕附近。保留 solver 的幾何形狀、只均勻拉長 knot
+        // interval：速度依倍率、加速度依倍率平方下降。時間軸改變後
+        // 移動中同儕的相對位置也會改變，因此每個倍率都以 safety
+        // sampling 重新評估全部 hard gate。
+        for (const double stretch : TIME_STRETCH_FACTORS)
+        {
+            if (recovered_dynamics)
+            {
+                break;
+            }
+            const double stretched_knot_interval_s =
+                knot_interval_s * stretch;
+            const BsplineTrajectory candidate_trajectory(
+                solver_result.control_points, stretched_knot_interval_s);
+            if (!candidate_trajectory.is_valid() ||
+                !is_hard_dynamically_feasible(candidate_trajectory, config_))
+            {
+                continue;
+            }
+            const OptimizationEvaluation candidate_evaluation =
+                TrajectoryObjective(
+                    planning_snapshot, config_, stretched_knot_interval_s,
+                    config_.sample_interval_s)
+                    .evaluate(solver_result.control_points);
+            if (!candidate_evaluation.is_valid ||
+                (snapshot.obstacle_map->point_count() > 0U &&
+                 candidate_evaluation.minimum_obstacle_distance_m +
+                         EGO_SWARM_EPSILON_M <
+                     config_.obstacle_clearance_m) ||
+                (candidate_evaluation.minimum_peer_distance_m > 0.0 &&
+                 candidate_evaluation.minimum_peer_distance_m +
+                         EGO_SWARM_EPSILON_M <
+                     optimizer_peer_acceptance_distance) ||
+                candidate_evaluation.maximum_geofence_violation_m >
+                    EGO_SWARM_EPSILON_M)
+            {
+                continue;
+            }
+            final_control_points = solver_result.control_points;
+            final_evaluation = candidate_evaluation;
+            trajectory = candidate_trajectory;
+            recovered_dynamics = true;
+        }
         if (!recovered_dynamics)
         {
+            if (seed_is_hard_fallback)
+            {
+                return accept_seed_fallback();
+            }
             result.termination = PlannerTerminationReason::INFEASIBLE;
             return finish(result);
         }
@@ -799,8 +990,13 @@ PlannerResult OptimizedEgoPlanner::plan(
              config_.obstacle_clearance_m) ||
         (final_evaluation.minimum_peer_distance_m > 0.0 &&
          final_evaluation.minimum_peer_distance_m + EGO_SWARM_EPSILON_M <
-             optimizer_peer_acceptance_distance))
+             optimizer_peer_acceptance_distance) ||
+        final_evaluation.maximum_geofence_violation_m > EGO_SWARM_EPSILON_M)
     {
+        if (seed_is_hard_fallback)
+        {
+            return accept_seed_fallback();
+        }
         result.termination = PlannerTerminationReason::INFEASIBLE;
         return finish(result);
     }

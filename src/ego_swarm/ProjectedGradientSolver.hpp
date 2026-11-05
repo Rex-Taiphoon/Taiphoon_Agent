@@ -33,6 +33,8 @@ struct OptimizationEvaluation
     double peer_cost{0.0};
     double minimum_obstacle_distance_m{0.0};
     double minimum_peer_distance_m{0.0};
+    /// 取樣點低於圍籬硬性 clearance 的最大量（m）；未啟用圍籬時為 0。
+    double maximum_geofence_violation_m{0.0};
 };
 
 /**

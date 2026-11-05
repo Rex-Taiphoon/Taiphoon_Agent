@@ -60,6 +60,8 @@ struct PeerDeconflictionInput
     double now_s{0.0};
     bool peers_are_fresh{false};
     const perception::IObstacleMap* obstacle_map{nullptr};
+    /// 水平地理圍籬；nullptr 表示未啟用。逃離軌跡同樣不得越界。
+    const Geofence* geofence{nullptr};
     PlannerConfig planner_config{};
     std::vector<PeerDeconflictionPeer> peers{};
 };
@@ -258,6 +260,11 @@ public:
             start_relative_time_s, trajectory.duration_s());
         const std::size_t count = sample_count(
             trajectory.duration_s() - start_time);
+        // 起點已在 margin 帶內時只要求不再更外側，與主 validator 一致。
+        const double required_geofence_clearance_m = input.geofence == nullptr
+            ? 0.0
+            : input.geofence->required_clearance_from_start(
+                  input.geofence->clearance_m(input.self_position));
         std::vector<double> initial_distances(input.peers.size(), 0.0);
         for (std::size_t peer_index = 0U;
              peer_index < input.peers.size(); ++peer_index)
@@ -293,6 +300,13 @@ public:
             }
             result.minimum_obstacle_distance_m = std::min(
                 result.minimum_obstacle_distance_m, obstacle_distance);
+            if (input.geofence != nullptr &&
+                !input.geofence->contains(
+                    sample.position, required_geofence_clearance_m))
+            {
+                result.reason = "recovery trajectory violates geofence";
+                return result;
+            }
 
             for (std::size_t peer_index = 0U;
                  peer_index < input.peers.size(); ++peer_index)
