@@ -266,7 +266,8 @@ class MultiAgentRegression(Node):
                     max_vertical_drift, abs(self.position(i)[2] - start[i][2]))
         yaw_change = max(abs(wrap_degrees(self.yaw_deg[i] - initial_yaw[i]))
                          for i in self.agent_ids)
-        passed = max_horizontal_drift <= 0.5 and max_vertical_drift <= 0.3
+        passed = (max_horizontal_drift <= self.args.max_hover_drift_m and
+                  max_vertical_drift <= self.args.max_vertical_drift_m)
         return self.record(
             "takeoff_hover", passed,
             f"altitudes_m={self.altitudes()} hover_s={self.args.hover_s} "
@@ -284,7 +285,8 @@ class MultiAgentRegression(Node):
             45.0, hold_s=2.0)
         others = [round(self.horizontal_drift(start, i), 2)
                   for i in self.agent_ids if i != mover]
-        passed = passed and all(value <= 1.0 for value in others)
+        passed = passed and all(value <= self.args.max_peer_drift_m
+                                for value in others)
         return self.record(
             "single_move", passed,
             f"mover=uav_{mover} "
@@ -371,7 +373,8 @@ class MultiAgentRegression(Node):
         self.send_all(command)
         passed = self.wait_formation_converged(120.0)
         distance = self.minimum_pairwise_distance()
-        passed = passed and abs(distance - self.args.formation_spacing_m) <= 1.0
+        passed = passed and (abs(distance - self.args.formation_spacing_m) <=
+                             self.args.formation_spacing_tolerance_m)
         return self.record(
             name, passed,
             f"min_pairwise_distance_m={distance:.2f} "
@@ -383,7 +386,8 @@ class MultiAgentRegression(Node):
         self.send_all(f"MOVE_FORWARD {self.args.move_m}")
         passed = self.wait_until(
             lambda: all(self.position(i)[0] - start[i][0] >=
-                        self.args.move_m - 1.0 for i in self.agent_ids),
+                        self.args.move_m - self.args.move_tolerance_m
+                        for i in self.agent_ids),
             90.0, hold_s=1.0)
         converged = self.wait_formation_converged(60.0)
         north = [round(self.position(i)[0] - start[i][0], 2)
@@ -404,7 +408,8 @@ class MultiAgentRegression(Node):
                              for reason in self.seen_reasons[mover])
         return self.record(
             "move_blocked_without_obstacle_map",
-            drift <= 0.5 and blocked_by_map and self.flying(),
+            drift <= self.args.max_hover_drift_m and blocked_by_map and
+            self.flying(),
             f"mover=uav_{mover} max_drift_m={drift:.3f} "
             f"blocked_by_missing_map={blocked_by_map} "
             f"reasons={sorted(self.seen_reasons[mover])}")
@@ -422,7 +427,9 @@ class MultiAgentRegression(Node):
                         for i in self.agent_ids)
         return self.record(
             "formation_rejected_single",
-            drift <= 0.5 and vertical <= 0.3 and not converged and self.flying(),
+            drift <= self.args.max_hover_drift_m and
+            vertical <= self.args.max_vertical_drift_m and not converged and
+            self.flying(),
             f"max_drift_m={drift:.3f} max_vertical_m={vertical:.3f} "
             f"reasons={[self.reasons.get(i, '') for i in self.agent_ids]}")
 
@@ -433,7 +440,7 @@ class MultiAgentRegression(Node):
         self.spin_for(5.0)
         drift = max(self.horizontal_drift(start, i) for i in self.agent_ids)
         return self.record("formation_cancel_hold",
-                           drift <= 0.5 and self.flying(),
+                           drift <= self.args.max_hover_drift_m and self.flying(),
                            f"max_drift_m={drift:.3f}")
 
     def publish_fake_trajectory(self) -> None:
@@ -470,7 +477,7 @@ class MultiAgentRegression(Node):
         drift = max(self.horizontal_drift(start, i) for i in self.agent_ids)
         # WARN log 由外層腳本自容器 log 檢查；此處確認受測機不受影響。
         return self.record("skew_injection_isolated",
-                           drift <= 0.5 and self.flying(),
+                           drift <= self.args.max_hover_drift_m and self.flying(),
                            f"fake_agent={FAKE_AGENT_ID} "
                            f"stamp_offset_s={FAKE_STAMP_OFFSET_S} "
                            f"max_drift_m={drift:.3f}")
@@ -545,6 +552,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agents", type=int, default=2, choices=(2, 3, 4))
     parser.add_argument("--takeoff-altitude-m", type=float, default=8.0)
     parser.add_argument("--hover-s", type=float, default=10.0)
+    # 以下誤差上限的預設值為驗收標準；放寬僅供在模擬器精度不足時診斷功能。
+    # 懸停／取消編隊／偏差注入等維持原位步驟的水平漂移上限。
+    parser.add_argument("--max-hover-drift-m", type=float, default=0.5)
+    # 單機 MOVE 期間其他機的水平漂移上限。
+    parser.add_argument("--max-peer-drift-m", type=float, default=1.0)
+    # 懸停與單機編隊被拒時的高度漂移上限。
+    parser.add_argument("--max-vertical-drift-m", type=float, default=0.3)
+    # 編隊最近機間距離與 --formation-spacing-m 的容許差。
+    parser.add_argument("--formation-spacing-tolerance-m", type=float,
+                        default=1.0)
+    # 全體 MOVE 的前進距離容許差。
+    parser.add_argument("--move-tolerance-m", type=float, default=1.0)
     parser.add_argument("--move-m", type=float, default=5.0)
     parser.add_argument("--yaw-deg", type=float, default=90.0)
     # 需與 Agent 的 yaw_rate_limit_deg_s 參數一致（預設 30 deg/s）。

@@ -10,20 +10,22 @@
 |------|------|
 | `scripts/quick_takeoff.sh` | 一鍵起飛：OFFBOARD → ARM → TAKEOFF 8m |
 | `scripts/setpoint_stability_monitor.py` | 觀察單機 Takeoff／MOVE 後 PX4 Setpoint 穩定性 |
-| `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器 |
+| `scripts/px4-sitl-launcher/launch_all.sh` | 一次啟動 N 台 PX4 SITL 容器；`--layout-bearing-deg`（預設 90，北=0 順時針）設定一字排列方位，搭配 `--home-lat`／`--home-lon`／`--initial-spacing-m` 擺放小場域起飛位置 |
 | `scripts/px4-sitl-launcher/start_single_instance.sh` | 啟動單一 PX4 SITL 實例 |
 | `scripts/px4-sitl-launcher/stop_all.sh` | 停止所有 PX4 SITL 容器 |
-| `scripts/dual_agent_regression_sitl_validation.sh` | 多機（`--count` 為 2、3 或 4，預設 2，展示以 3 機驗收）回歸：起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、燕行隊形切換、取消編隊、時鐘偏差注入與降落。`--agent-ids 2,3` 指定機號（驗證缺少 uav_1）；`--deploy-runtime` 改用實機 runtime 進入點；`--obstacle-source` 為 `explicit_empty`（預設）、`none`（驗證 MOVE 被擋下）或 `manual`（rc.8 手動空地圖做法） |
+| `scripts/dual_agent_regression_sitl_validation.sh` | 多機（`--count` 為 2、3 或 4，預設 2，展示以 3 機驗收）回歸：起飛懸停、單機 MOVE、YAW、一字編隊、全體 MOVE、燕行隊形切換、取消編隊、時鐘偏差注入與降落。`--agent-ids 2,3` 指定機號（驗證缺少 uav_1）；`--deploy-runtime` 改用實機 runtime 進入點；`--compose-file FILE` 疊加額外 compose 檔（Windows 用 `compose.no-ssh-agent.yml`）；`--obstacle-source` 為 `explicit_empty`（預設）、`none`（驗證 MOVE 被擋下）或 `manual`（rc.8 手動空地圖做法） |
 | `scripts/compose.deploy-runtime.yml` | 搭配 `docker-compose.yml` 的覆寫檔：Agent 改用 `runtime-entrypoint.sh` 與實機預設規劃參數（需先完成 workspace build） |
 | `scripts/dual_agent_regression_monitor.py` | 上述回歸在 Agent 容器內執行的步驟與判定；YAW 步驟量測轉向時間（需 ≥ 理論限速時間 × 0.8）、峰值角速率（需 ≤ `--yaw-rate-limit-deg-s` × 2，容許 PX4 起步落後後的追趕）與高度偏差（需 ≤ `--max-yaw-altitude-deviation-m`），並輸出 `TRACE_YAW` 軌跡 |
 | `scripts/time_sync_container_validation.sh` | 以一次性容器驗證 chrony 主機／客戶端設定與 `taiphoon_agent timesync` |
 | `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |
+| `scripts/small_field_three_agent_validation.ps1` | Windows 三機小場域驗證（`-Scenario formation`／`crossing`、`-FailedAgent 1～3`）。`-CenterLat`／`-CenterLon`／`-LayoutBearingDeg`／`-InitialSpacingM` 指定場域中心與起飛排列；`-AgentEnv 'KEY=VAL;KEY=VAL'` 附加 Agent 環境變數（例如 1.5 m 間距）；`-GeofencePolygon 'lat,lon;...'`、`-GeofenceMarginM` 設定 Agent 地理圍籬；`-MonitorArgs` 原樣傳給 monitor |
+| `scripts/small_field_three_agent_monitor.py` | 上述驗證在容器內的步驟與判定：場域以 `--field-half-long-m`／`--field-half-short-m`／`--field-bearing-deg` 描述（長軸方位），`--heading-deg` 為起飛航向，`--circle-radius-m`、`--takeoff-alt-m`、`--group-move-m`、`--single-move-m` 為動作幅度，`--min-separation-m` 為機間距離門檻；規劃軌跡出界記為 `trajectory_boundary_violation` |
 | `scripts/compose.no-ssh-agent.yml` | 搭配 `docker-compose.yml` 的覆寫檔：移除 Windows 無法使用的 SSH agent 掛載，只掛載專案目錄 |
 | `Log/` | 測試紀錄（依根目錄 `AGENTS.md` 的 Verification 規範建立） |
 
 ## 標準測試流程
 
-前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull；共用映像 `taiphoon-agent:dev` 需已建立。
+前置：Docker 網路 `Taiphoon_Net` 需存在；PX4 映像 `px4io/px4-sitl:latest` 需已 pull（可用環境變數 `PX4_SITL_IMAGE` 暫時改用其他映像）；共用映像 `taiphoon-agent:dev` 需已建立。
 
 測試所需 Docker image 不存在或需要更新時，AI Agent 可自行執行 `docker build --target taiphoon-dev -t taiphoon-agent:dev .` 建置後再測試，並在測試紀錄中記錄建置指令與結果。
 

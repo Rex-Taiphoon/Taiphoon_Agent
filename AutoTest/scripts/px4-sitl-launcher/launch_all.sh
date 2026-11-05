@@ -15,6 +15,7 @@
 #   --rmw RMW      RMW 實作（fastrtps 或 cyclonedds，預設 fastrtps）
 #   --agent NAME   Agent 容器名稱（預設 uav_1_agent）
 #   --initial-spacing-m M  PX4 起始水平間距（預設 8.0，必須大於 3.0）
+#   --layout-bearing-deg B  後續各台相對第一台的排列方位（度，北=0、順時針；預設 90＝向東）
 #   --home-lat LAT          第一台 PX4 的起始緯度，需與 --home-lon 一起使用
 #   --home-lon LON          第一台 PX4 的起始經度，需與 --home-lat 一起使用
 #   --gcs-host IPV4         QGC 目的 IPv4；省略時沿用 host.docker.internal
@@ -30,6 +31,7 @@ NETWORK="Taiphoon_Net"
 RMW="fastrtps"
 AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
+LAYOUT_BEARING_DEG="90"
 HOME_LAT=""
 HOME_LON=""
 GCS_HOST=""
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             INITIAL_SPACING_M="$2"
             shift 2
             ;;
+        --layout-bearing-deg)
+            LAYOUT_BEARING_DEG="$2"
+            shift 2
+            ;;
         --home-lat)
             HOME_LAT="$2"
             shift 2
@@ -72,7 +78,7 @@ while [[ $# -gt 0 ]]; do
         *)
             echo "未知參數：$1"
             echo "使用方式：$0 --count 4 --net Taiphoon_Net [--rmw fastrtps|cyclonedds]"
-            echo "          [--initial-spacing-m 8.0] [--home-lat LAT --home-lon LON]"
+            echo "          [--initial-spacing-m 8.0] [--layout-bearing-deg 90] [--home-lat LAT --home-lon LON]"
             echo "          [--gcs-host IPV4]"
             exit 1
             ;;
@@ -149,6 +155,7 @@ for ((i=0; i<COUNT; i++)); do
         --rmw "$RMW" \
         --agent "uav_$((i+1))_agent" \
         --initial-spacing-m "$INITIAL_SPACING_M" \
+        --layout-bearing-deg "$LAYOUT_BEARING_DEG" \
         "${GCS_ARGS[@]}" \
         "${POSITION_ARGS[@]}"
     sleep 2

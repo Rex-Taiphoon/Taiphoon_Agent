@@ -10,7 +10,20 @@ param(
     [int]$FailedAgent = 2,
     [ValidateSet('formation', 'crossing')]
     [string]$Scenario = 'formation',
-    [string]$LogRoot
+    [string]$LogRoot,
+    # 原樣附加給 small_field_three_agent_monitor.py 的參數（例如 '--tolerance-scale 4'）；僅供診斷。
+    [string]$MonitorArgs = '',
+    # 場域中心（WGS84）；提供時三機以中間機對準中心、沿 LayoutBearingDeg 排成一列。
+    [double]$CenterLat = [double]::NaN,
+    [double]$CenterLon = [double]::NaN,
+    # 三機排列方位（度，北=0、順時針）；預設 90 為原本的向東排列。
+    [double]$LayoutBearingDeg = 90.0,
+    [double]$InitialSpacingM = 3.2,
+    # 額外 Agent 環境變數（例如 'EGO_SWARM_PEER_PLANNING_MARGIN_M=0.5;EGO_SWARM_CANDIDATE_OFFSET_M=2.0'）。
+    [string]$AgentEnv = '',
+    # Agent 地理圍籬 WGS84 頂點 'lat,lon;lat,lon;...'（含分號，故不放在 AgentEnv）；空字串不設定。
+    [string]$GeofencePolygon = '',
+    [double]$GeofenceMarginM = 0.5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +40,9 @@ $bashPath = Join-Path (Split-Path (Split-Path $gitPath -Parent) -Parent) 'bin/ba
 if (-not (Test-Path -LiteralPath $bashPath)) {
     throw '找不到 Windows Git Bash；本腳本不會改用 WSL。'
 }
+# Windows PowerShell 5.1 在 Stop 模式下會把原生程式的任何 stderr（含 colcon 警告）視為例外，
+# 且 *> 輸出檔留空；以下原生指令改以 $LASTEXITCODE 判斷成敗。
+$ErrorActionPreference = 'Continue'
 $observerName = 'taiphoon-small-field-observer-' + $FailedAgent + '-' + (Get-Date -Format 'HHmmss')
 $buildName = $observerName + '-build'
 $overridePath = Join-Path $caseRoot 'compose.windows.yaml'
@@ -42,6 +58,23 @@ foreach ($agentId in 1..3) {
             '        volume:', '          nocopy: true')
     }
     $lines += @('    environment:', '      CMAKE_BUILD_PARALLEL_LEVEL: 2', '      MAKEFLAGS: -j2')
+    foreach ($entry in ($AgentEnv -split ';')) {
+        if ($entry.Trim()) {
+            $pair = $entry.Trim() -split '=', 2
+            if ($pair.Count -ne 2 -or $pair[0] -notmatch '^[A-Z0-9_]+$') {
+                throw "AgentEnv 格式錯誤：$entry"
+            }
+            $lines += ('      ' + $pair[0] + ': "' + $pair[1] + '"')
+        }
+    }
+    if ($GeofencePolygon.Trim()) {
+        if ($GeofencePolygon -notmatch '^[0-9.,;\s-]+$') {
+            throw "GeofencePolygon 格式錯誤：$GeofencePolygon"
+        }
+        $lines += ('      EGO_SWARM_GEOFENCE_POLYGON: "' + $GeofencePolygon.Trim() + '"')
+        $lines += ('      EGO_SWARM_GEOFENCE_MARGIN_M: "' +
+            $GeofenceMarginM.ToString([System.Globalization.CultureInfo]::InvariantCulture) + '"')
+    }
 }
 $lines += @('volumes:', '  validation_build_clean:', '  validation_install_clean:', '  validation_log_clean:')
 [System.IO.File]::WriteAllText($overridePath, ($lines -join "`n") + "`n")
@@ -63,9 +96,18 @@ docker() {
     if [ "$1" = compose ]; then shift; "$COMPOSE_NATIVE" "$@";
     else "$DOCKER_NATIVE" "$@"; fi
 }
-python3() { "$DOCKER_NATIVE" exec uav_1_agent python3 "$@"; }
-export -f docker python3
+export -f docker
+# 主機有 python3 時直接使用；沒有才轉到 Agent 容器。
+if ! python3 -c 'import sys' >/dev/null 2>&1; then
+    python3() { "$DOCKER_NATIVE" exec uav_1_agent python3 "$@"; }
+    export -f python3
+fi
 '@
+# Windows PowerShell 5.1 傳參數給原生程式時會吃掉內嵌雙引號（"$@" 會變成 $@ 而被拆字），
+# 因此包裝函式寫成 LF 檔案，由 bash 以 source 載入。
+$nativeShellPath = Join-Path $caseRoot 'native-shell.sh'
+[System.IO.File]::WriteAllText($nativeShellPath, $nativeShell.Replace("`r`n", "`n") + "`n")
+$nativeShellSource = ". '" + $nativeShellPath.Replace('\', '/') + "'"
 
 Push-Location $projectRoot
 $observerCode = 1
@@ -89,12 +131,24 @@ try {
         }
     }
     Start-Sleep -Seconds 25
-    & $bashPath -lc ($nativeShell + "`nbash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 3 --rmw cyclonedds --initial-spacing-m 3.2") `
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $layoutArgs = ' --initial-spacing-m ' + $InitialSpacingM.ToString($inv) +
+        ' --layout-bearing-deg ' + $LayoutBearingDeg.ToString($inv)
+    if (-not [double]::IsNaN($CenterLat)) {
+        # 第一台位於中心沿排列方位反向一個間距處，使中間機（uav_2）對準場域中心。
+        $bearing = $LayoutBearingDeg * [Math]::PI / 180.0
+        $firstLat = $CenterLat - $InitialSpacingM * [Math]::Cos($bearing) / 111320.0
+        $firstLon = $CenterLon - $InitialSpacingM * [Math]::Sin($bearing) /
+            (111320.0 * [Math]::Cos($CenterLat * [Math]::PI / 180.0))
+        $layoutArgs += ' --home-lat ' + $firstLat.ToString('F10', $inv) +
+            ' --home-lon ' + $firstLon.ToString('F10', $inv)
+    }
+    & $bashPath -lc ($nativeShellSource + "`nbash AutoTest/scripts/px4-sitl-launcher/launch_all.sh --count 3 --rmw cyclonedds" + $layoutArgs) `
         *> (Join-Path $caseRoot 'launch.log')
     if ($LASTEXITCODE -ne 0) { throw 'PX4 SITL 啟動失敗。' }
     Start-Sleep -Seconds 10
     & $composePath @composeArgs run -d --name $observerName --no-deps --entrypoint bash uav_1_agent -lc `
-        "python3 -u AutoTest/scripts/small_field_three_agent_monitor.py --failed-agent $FailedAgent --scenario $Scenario"
+        "python3 -u AutoTest/scripts/small_field_three_agent_monitor.py --failed-agent $FailedAgent --scenario $Scenario $MonitorArgs"
     if ($LASTEXITCODE -ne 0) { throw 'ROS2 驗證容器啟動失敗。' }
     $observerCodeText = & $dockerPath wait $observerName
     $observerCode = [int]($observerCodeText | Select-Object -Last 1)
@@ -119,7 +173,7 @@ finally {
     foreach ($agentId in 1..3) {
         & $dockerPath unpause "drone${agentId}" 2>$null | Out-Null
     }
-    & $bashPath -lc ($nativeShell + "`nbash AutoTest/scripts/px4-sitl-launcher/stop_all.sh") `
+    & $bashPath -lc ($nativeShellSource + "`nbash AutoTest/scripts/px4-sitl-launcher/stop_all.sh") `
         *> (Join-Path $caseRoot 'cleanup.log')
     & $composePath @composeArgs stop uav_1_agent uav_2_agent uav_3_agent `
         *>> (Join-Path $caseRoot 'cleanup.log')
