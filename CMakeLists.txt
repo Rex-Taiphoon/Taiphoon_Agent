@@ -465,6 +465,19 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  # 依進度重新規劃的停滯偵測（候選路徑進度與最佳距離監測）
+  ament_add_gtest(test_progress_stall_monitor
+    test/progress_stall_monitor_test.cpp
+    src/ego_swarm/OptimizedEgoPlanner.cpp
+    src/ego_swarm/ProjectedGradientSolver.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_progress_stall_monitor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   # FIXED_Z 時空 route initializer 純邏輯測試
   ament_add_gtest(test_spatiotemporal_route_initializer
     test/spatiotemporal_route_initializer_test.cpp

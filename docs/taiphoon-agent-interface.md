@@ -378,6 +378,12 @@ EGO-Swarm Planner 狀態與安全指標。
 > `peer clock skew agent=<N> offset=<±秒> s exceeds <門檻> s; check time sync`；
 > 其餘情況維持 `peer trajectory stale or invalid` 或 `Formation sync waiting for peer trajectory`。
 > 控制行為（等待／煞停）不因此改變。主機對時方式見 [多機時間同步](time-sync.md)。
+>
+> 飛往最終目標時若依進度重新規劃造成停滯，`state` 維持 RUNNING，`reason` 為
+> `Progress stalled; following active trajectory to completion`：planner 暫停依進度
+> 重新規劃，讓目前仍安全的軌跡飛完（每個週期仍做安全重驗證）。觸發條件為新候選軌跡在
+> 重新規劃時間點沿路徑走不到 20%，或 3 秒內離目標的最佳距離沒有再縮短 0.2 m；
+> hold、等待重試與緊急煞停時不適用。
 
 ### 3.8 RelativeAgentObservation (`taiphoon_agent/msg/RelativeAgentObservation`)
 

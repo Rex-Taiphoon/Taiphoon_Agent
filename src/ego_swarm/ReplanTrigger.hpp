@@ -31,7 +31,9 @@ enum class ReplanTriggerReason
     ACTIVE_TRAJECTORY_UNSAFE,
     SEGMENT_ENDED,
     SEGMENT_PROGRESS,
-    INVALID_TIMING
+    INVALID_TIMING,
+    /// 已到 progress 重規劃時機，但 Node 判定進度停滯；保留目前軌跡飛完。
+    PROGRESS_STALLED
 };
 
 /**
@@ -51,6 +53,8 @@ struct ReplanTriggerInput
     double replan_ratio{DEFAULT_REPLAN_TRIGGER_RATIO};
     double minimum_replan_interval_s{
         DEFAULT_REPLAN_TRIGGER_INTERVAL_S};
+    /// Node 的停滯偵測結果；為 true 時不做 progress-based replan。
+    bool progress_stalled{false};
 };
 
 /**
@@ -68,6 +72,7 @@ struct ReplanTriggerDecision
  * Final Target 改變、active trajectory 不安全與 segment 結束不受
  * minimum interval 限制。只有正常的 progress-based replan
  * 受該限制；只有 Local Goal 功能開啟時才會由 progress 觸發。
+ * Node 判定進度停滯時，progress-based replan 改回傳 PROGRESS_STALLED。
  *
  * @param input 單一 planner tick 的判斷輸入
  * @return 是否需要重規劃及其原因
@@ -132,6 +137,14 @@ inline ReplanTriggerDecision evaluate_replan_trigger(
     {
         return ReplanTriggerDecision{
             false, ReplanTriggerReason::KEEP_ACTIVE};
+    }
+
+    if (input.progress_stalled)
+    {
+        // 安全性、Final Target 與 segment 結束的觸發都在前面判斷，
+        // 停滯只取消正常的 progress-based replan。
+        return ReplanTriggerDecision{
+            false, ReplanTriggerReason::PROGRESS_STALLED};
     }
 
     return ReplanTriggerDecision{

@@ -44,6 +44,11 @@ constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
 // 規劃失敗後至少等待 PEER_REPLAN_RETRY_DELAY_S 才重試；超過此間隔沒有
 // 新失敗即視為新的一輪，避免舊的失敗計數讓之後單次失敗立即觸發事件。
 constexpr double PLANNER_FAILURE_STREAK_GAP_S = 2.0;
+// 判斷 active plan／候選是否飛往最終目標時，兩點距離的容許值（公尺）。
+constexpr double PROGRESS_STALL_TARGET_TOLERANCE_M = 1.0e-3;
+// 停滯偵測生效時的 PlannerStatus reason。
+constexpr const char* PROGRESS_STALLED_STATUS_REASON =
+    "Progress stalled; following active trajectory to completion";
 
 /// 航點任務與事件節流使用單調時鐘，不受 ROS 時間調整影響。
 int64_t steady_now_ns()
@@ -3559,6 +3564,15 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         std::isfinite(active_elapsed_s) && active_elapsed_s <=
             active_plan_.trajectory.duration_s();
     bool preserve_active_plan_on_candidate_failure = false;
+    // 停滯偵測只追蹤飛往最終目標的一般軌跡；適用條件與清除時機見
+    // ProgressStallMonitor。
+    const ego_swarm::ProgressStallContext progress_stall_context =
+        make_progress_stall_context(active_plan_running, final_target);
+    const bool progress_stall_eligible =
+        ego_swarm::progress_stall_applies(progress_stall_context);
+    const bool progress_stalled = progress_stall_monitor_.track(
+        progress_stall_context, planner_frame_revision_, now_s,
+        ego_swarm::distance_between_centers(current, final_target));
     if (active_plan_running)
     {
         const auto safety_result = validate_plan(
@@ -3602,7 +3616,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 has_last_replan_time_,
                 last_replan_time_s_,
                 planner_feature_flags_.local_goal_replan_ratio,
-                planner_feature_flags_.minimum_replan_interval_s};
+                planner_feature_flags_.minimum_replan_interval_s,
+                progress_stalled};
             const auto replan_decision =
                 ego_swarm::evaluate_replan_trigger(replan_input);
             if (!replan_decision.should_replan)
@@ -3614,12 +3629,19 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 publish_plan(
                     active_plan_, current, now, active_plan_start_time_,
                     active_plan_trajectory_id_);
+                // 停滯期間到下一次重新規劃前不送回 "ok"，避免 reason
+                // 每個重新規劃間隔來回切換。
+                const bool report_stalled = progress_stalled ||
+                    (progress_stalled_trajectory_id_ != 0U &&
+                     progress_stalled_trajectory_id_ ==
+                         active_plan_trajectory_id_);
+                const char* const keep_reason = active_plan_.is_hold
+                    ? "Holding until replanning is safe"
+                    : (report_stalled ? PROGRESS_STALLED_STATUS_REASON : "ok");
                 publish_status(
                     active_plan_.is_hold
                         ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-                    active_plan_.is_hold
-                        ? "Holding until replanning is safe" : "ok",
-                    &active_plan_, true, peer_data_valid, now);
+                    keep_reason, &active_plan_, true, peer_data_valid, now);
                 (void)peer_trajectories_.prune(now_s);
                 return;
             }
@@ -3647,7 +3669,9 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // duration 內且通過最新 safety validation 的舊 trajectory；
     // Final Target 改變、unsafe
     // 或 segment 結束則不適用此 fallback。
-    const auto retain_active_plan_if_safe = [&]() -> bool
+    const auto retain_active_plan_if_safe = [&](
+        const char* const status_reason =
+            "Candidate replan failed; retaining safe active trajectory") -> bool
         {
             if (!preserve_active_plan_on_candidate_failure ||
                 !has_active_plan_ || emergency_brake_active_ ||
@@ -3675,8 +3699,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             publish_status(
                 active_plan_.is_hold
                     ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-                "Candidate replan failed; retaining safe active trajectory",
-                &active_plan_, true, peer_data_valid, now);
+                status_reason, &active_plan_, true, peer_data_valid, now);
             (void)peer_trajectories_.prune(now_s);
             return true;
         };
@@ -3829,6 +3852,22 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 safety_result.reason),
             now, peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    // 依進度重新規劃的候選若在下一次重新規劃時間點前幾乎沒有沿路徑前進，
+    // 替換後每次又從頭開始，飛機會停在原地；目前軌跡仍安全且同樣飛往
+    // 最終目標時保留它。最短間隔內不再重試，避免每個 tick 重算。
+    if (preserve_active_plan_on_candidate_failure && progress_stall_eligible &&
+        ego_swarm::distance_between_centers(planning_target, final_target) <=
+            PROGRESS_STALL_TARGET_TOLERANCE_M &&
+        ego_swarm::candidate_lacks_path_progress(
+            result.trajectory, planner_feature_flags_.local_goal_replan_ratio) &&
+        retain_active_plan_if_safe(PROGRESS_STALLED_STATUS_REASON))
+    {
+        progress_stalled_trajectory_id_ = active_plan_trajectory_id_;
+        has_last_replan_time_ = true;
+        last_replan_time_s_ = now_s;
         return;
     }
 
@@ -4217,8 +4256,26 @@ ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
         local_arrival_tolerance_m_, planner_arrival_tolerance_m_);
 }
 
+ego_swarm::ProgressStallContext EgoSwarmPlannerNode::make_progress_stall_context(
+    const bool active_plan_running,
+    const ego_swarm::Vector3& final_target) const
+{
+    ego_swarm::ProgressStallContext context;
+    context.has_active_plan = has_active_plan_;
+    context.active_plan_running = active_plan_running;
+    context.active_plan_is_hold = active_plan_.is_hold;
+    context.emergency_brake_active = emergency_brake_active_;
+    context.waiting_for_replan = waiting_for_replan_;
+    context.active_target_is_final = ego_swarm::distance_between_centers(
+        active_plan_target_, final_target) <=
+        PROGRESS_STALL_TARGET_TOLERANCE_M;
+    return context;
+}
+
 void EgoSwarmPlannerNode::invalidate_active_plan()
 {
+    progress_stall_monitor_.reset();
+    progress_stalled_trajectory_id_ = 0U;
     has_active_plan_ = false;
     emergency_brake_active_ = false;
     waiting_for_replan_ = false;

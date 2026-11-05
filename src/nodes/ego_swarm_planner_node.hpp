@@ -54,6 +54,7 @@
 #include "ego_swarm/PlanningTargetSelector.hpp"
 #include "ego_swarm/PlannerTargetSemantics.hpp"
 #include "ego_swarm/PositionArrival.hpp"
+#include "ego_swarm/ProgressStallMonitor.hpp"
 #include "ego_swarm/ReplanTrigger.hpp"
 #include "ego_swarm/LocalNedFrame.hpp"
 #include "ego_swarm/TrajectoryFactory.hpp"
@@ -374,6 +375,15 @@ private:
     ego_swarm::PositionArrivalResult evaluate_target_arrival(
         const ego_swarm::Vector3& current_planner_ned,
         const ego_swarm::Vector3& final_target) const;
+    /**
+     * @brief 以目前 active plan 狀態建立停滯偵測輸入
+     *
+     * @param active_plan_running active plan 是否仍在 duration 內且 Final Target 未改變
+     * @param final_target 目前的最終目標（planner-local NED）
+     */
+    ego_swarm::ProgressStallContext make_progress_stall_context(
+        bool active_plan_running,
+        const ego_swarm::Vector3& final_target) const;
     void invalidate_active_plan();
     /** @brief 取得目前任務真正的 Final Target。 */
     bool get_current_final_target(ego_swarm::Vector3& final_target) const;
@@ -480,6 +490,10 @@ private:
     ego_swarm::PeerTrajectoryTable peer_trajectories_{};
     /// 只供診斷：估計同儕主機時鐘差，不參與規劃或控制決策。
     ego_swarm::PeerClockSkewMonitor peer_clock_skew_monitor_{};
+    /// 依進度重新規劃的停滯偵測（最佳距離監測）。
+    ego_swarm::ProgressStallMonitor progress_stall_monitor_{};
+    /// 因候選缺乏路徑進度而保留的軌跡 ID；換成其他軌跡（ID 改變）即失效，0 表示無。
+    uint32_t progress_stalled_trajectory_id_{0U};
     std::map<int, double> peer_clock_skew_last_report_s_{};
     ego_swarm::LocalNedFrame planner_frame_{};
     ego_swarm::GeoCoordinate planner_frame_origin_{};

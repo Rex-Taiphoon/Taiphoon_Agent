@@ -47,6 +47,7 @@
 | `WaypointMissionStatus` `REJECTED` | 任一航點在圍籬外 | `reason = REASON_OUT_OF_RANGE`、`detail = "waypoint outside geofence"`、`current_index` = 第一個越界航點 | 第 N 個航點超出場域圍籬 |
 | `AgentEvent` `PLANNER_EMERGENCY_BRAKE` | 執行中軌跡重新驗證失敗且無法改走 | `detail` 含 `geofence_violation` | 軌跡將超出場域圍籬，緊急煞停 |
 | `PlannerStatus.reason` | 圍籬內暫時沒有可行路徑（例如同儕擋住唯一通道），原地等待重試 | `local_goal_selection_failed` 或 `optimized_no_feasible_horizontal_path` | 等待可行路徑（場域受限） |
+| `PlannerStatus.reason`（`state` 為 RUNNING） | 依進度重新規劃停滯，改為飛完目前安全軌跡（小場域、目標靠近圍籬時較常見） | `Progress stalled; following active trajectory to completion` | 進度停滯，沿目前路線飛往目標 |
 
 - 航點越界沿用 `REASON_OUT_OF_RANGE`，沒有新增 msg 常數；QGCS 若要區分「距離過遠」與「超出圍籬」，請判斷 `detail`。
 - 拒絕發生在命令階段，Agent 目標不變（維持原本的懸停或任務）。
@@ -71,8 +72,9 @@
 
 目前狀態（尚未套用，Agent 預設仍為 2.0 m）：
 
-- 設圍籬的 8×8 m 場域：編隊全部通過；交叉多數通過，實測最小機間距離約 1.9 m，
-  但仍偶發「繞過後停在目標前」的逾時（無碰撞、無出界），Agent 端正在新增停滯偵測處理。
+- 設圍籬的 8×8 m 場域：編隊全部通過。Agent 已新增停滯偵測，交叉測試不再逾時；
+  但 5 次交叉中仍有 1 次實測最小機間距離 1.496 m，略低於 1.5 m（2.0 m 設定也有 1 次實測 1.91 m）。
+  都發生在交叉機繞過中央懸停機時，原因是 PX4 追蹤誤差，Agent 端尚未處理。
 - planner 只保證計畫軌跡不低於設定值，不另外預留 PX4 追蹤誤差；不設圍籬的情境下，
   1.5 m 的實際距離可能低於 1.5 m。因此 QGCS 暫時不要把 1.5 m 當成一般預設值，
   `V_SHAPE_SPACING` 下限維持 2 m，待本節更新後再調整。
