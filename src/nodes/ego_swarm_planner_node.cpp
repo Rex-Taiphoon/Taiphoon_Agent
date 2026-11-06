@@ -44,6 +44,11 @@ constexpr double LIVE_PEER_REACTION_BUFFER_M = 3.0;
 // 規劃失敗後至少等待 PEER_REPLAN_RETRY_DELAY_S 才重試；超過此間隔沒有
 // 新失敗即視為新的一輪，避免舊的失敗計數讓之後單次失敗立即觸發事件。
 constexpr double PLANNER_FAILURE_STREAK_GAP_S = 2.0;
+// 判斷 active plan／候選是否飛往最終目標時，兩點距離的容許值（公尺）。
+constexpr double PROGRESS_STALL_TARGET_TOLERANCE_M = 1.0e-3;
+// 停滯偵測生效時的 PlannerStatus reason。
+constexpr const char* PROGRESS_STALLED_STATUS_REASON =
+    "Progress stalled; following active trajectory to completion";
 
 /// 航點任務與事件節流使用單調時鐘，不受 ROS 時間調整影響。
 int64_t steady_now_ns()
@@ -743,13 +748,20 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         std::bind(&EgoSwarmPlannerNode::agent_event_cb, this,
                   std::placeholders::_1));
 
+    // 地面站最後發布的圍籬以 transient_local 保留，Agent 重啟後也能取得。
+    geofence_sub_ = create_subscription<taiphoon_agent::msg::Geofence>(
+        utils::agent_naming::make_all_agent_topic("geofence"),
+        rclcpp::QoS(GEOFENCE_QOS_DEPTH).reliable().transient_local(),
+        std::bind(&EgoSwarmPlannerNode::geofence_cb, this,
+                  std::placeholders::_1));
+
     return own_state_sub_ != nullptr && own_attitude_sub_ != nullptr &&
         ned_target_sub_ != nullptr &&
         mission_intent_sub_ != nullptr && agent_command_sub_ != nullptr &&
         all_command_sub_ != nullptr &&
         obstacle_sub_ != nullptr && trajectory_sub_ != nullptr &&
         formation_epoch_sub_ != nullptr && mission_plan_sub_ != nullptr &&
-        agent_event_sub_ != nullptr;
+        agent_event_sub_ != nullptr && geofence_sub_ != nullptr;
 }
 
 bool EgoSwarmPlannerNode::initialize_publishers()
@@ -775,9 +787,17 @@ bool EgoSwarmPlannerNode::initialize_publishers()
         "/" + agent_namespace_ + "/events",
         rclcpp::QoS(safety::AGENT_EVENT_QOS_DEPTH).reliable().durability_volatile());
 
+    // 晚加入或重啟的 GCS 需要看到目前圍籬，因此使用 transient_local。
+    geofence_status_pub_ =
+        create_publisher<taiphoon_agent::msg::GeofenceStatus>(
+            "/" + agent_namespace_ + "/geofence/status",
+            rclcpp::QoS(GEOFENCE_QOS_DEPTH).reliable().transient_local());
+    publish_geofence_status();
+
     return trajectory_pub_ != nullptr && local_trajectory_pub_ != nullptr &&
         status_pub_ != nullptr && formation_epoch_pub_ != nullptr &&
-        mission_status_pub_ != nullptr && events_pub_ != nullptr;
+        mission_status_pub_ != nullptr && events_pub_ != nullptr &&
+        geofence_status_pub_ != nullptr;
 }
 
 void EgoSwarmPlannerNode::own_state_cb(
@@ -1430,6 +1450,13 @@ bool EgoSwarmPlannerNode::handle_group_move_command(
         report_command_rejection(parsed, "Formation center outside valid WGS84 range");
         return false;
     }
+    if (!are_formation_slots_inside_geofence(requested_center, members.size()))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Rejecting group MOVE: a formation slot is outside the geofence");
+        report_command_rejection(parsed, "Formation slot outside geofence");
+        return false;
+    }
 
     formation_command_pending_ = true;
     formation_membership_change_pending_ = ego_swarm::is_membership_departure(
@@ -1582,11 +1609,55 @@ bool EgoSwarmPlannerNode::is_formation_target_hold_active(
         planner_arrival_tolerance_m_;
 }
 
+bool EgoSwarmPlannerNode::is_active_plan_finishing_at(
+    const ego_swarm::Vector3& final_target,
+    const ego_swarm::VehiclePlanningState& planning_state,
+    const rclcpp::Time& now,
+    const double now_s) const
+{
+    /// 既有軌跡終點與 Final Target 視為相同的距離上限（公尺）。
+    constexpr double ACTIVE_PLAN_ENDPOINT_MATCH_M = 0.05;
+    if (!has_active_plan_ || active_plan_.is_hold || emergency_brake_active_ ||
+        waiting_for_replan_ || !active_plan_.trajectory.is_valid() ||
+        !ego_swarm::active_plan_matches_final_target(
+            has_active_plan_, active_plan_final_target_, final_target))
+    {
+        return false;
+    }
+    const double elapsed_s = (now - active_plan_start_time_).seconds();
+    if (!std::isfinite(elapsed_s) || elapsed_s < 0.0 ||
+        elapsed_s > active_plan_.trajectory.duration_s())
+    {
+        return false;
+    }
+    const auto endpoint = active_plan_.trajectory.evaluate(
+        active_plan_.trajectory.duration_s());
+    if (!endpoint.is_valid ||
+        ego_swarm::distance_between_centers(endpoint.position, final_target) >
+            ACTIVE_PLAN_ENDPOINT_MATCH_M)
+    {
+        return false;
+    }
+    return validate_plan(
+        active_plan_.trajectory, planning_state, now_s,
+        active_plan_start_time_.seconds()).is_safe;
+}
+
 bool EgoSwarmPlannerNode::is_formation_terminal_snap_clear(
     const ego_swarm::Vector3& current,
     const ego_swarm::Vector3& final_target,
     const double now_s) const
 {
+    // 直接到位不經 optimizer 與 validator，因此圍籬也要在此以直線段檢查。
+    const ego_swarm::Geofence* const fence = active_geofence();
+    if (fence != nullptr &&
+        !fence->segment_inside(
+            current, final_target,
+            fence->required_clearance_from_start(
+                fence->clearance_m(current))))
+    {
+        return false;
+    }
     // 同儕集合與 live peer 碰撞判定一致，讓兩者對「誰需要避開」有相同答案。
     std::vector<int> peer_ids;
     if (has_formation_ && has_accepted_formation_epoch_)
@@ -1630,6 +1701,18 @@ bool EgoSwarmPlannerNode::is_formation_terminal_snap_clear(
         {
             return false;
         }
+        // 同儕可能與本機同時採用新 epoch，已發布軌跡仍是舊槽位；補上它依
+        // deterministic assignment 即將直飛的新槽位直線。無法取得槽位時 fail-closed。
+        if (has_formation_ && has_accepted_formation_epoch_)
+        {
+            ego_swarm::Vector3 peer_slot{};
+            if (!get_formation_target_for_agent(peer_id, peer_slot) ||
+                !ego_swarm::append_formation_snap_peer_slot_path(
+                    peer_position, peer_slot, peer_segments))
+            {
+                return false;
+            }
+        }
     }
     const double clearance_m = std::max(
         formation_min_distance_m_, planner_config_.peer_collision_min_distance_m);
@@ -1651,6 +1734,7 @@ EgoSwarmPlannerNode::make_peer_deconfliction_input(
     input.now_s = now_s;
     input.peers_are_fresh = peer_data_valid;
     input.obstacle_map = &obstacle_map_;
+    input.geofence = active_geofence();
     input.planner_config = planner_config_;
 
     std::vector<int> peer_ids;
@@ -2247,6 +2331,22 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
             // 中心；之後的 CIRCLE/HORI/VERT 均沿用保存的目標中心。
             proposal.center_altitude_m = planner_frame_.origin().altitude_m;
         }
+    }
+    ego_swarm::Vector3 proposal_center_ned{};
+    if (active_geofence() != nullptr &&
+        (!planner_frame_.to_local_ned(
+             ego_swarm::GeoCoordinate{
+                 proposal.center_latitude_deg, proposal.center_longitude_deg,
+                 proposal.center_altitude_m},
+             proposal_center_ned) ||
+         !are_formation_slots_inside_geofence(
+             proposal_center_ned, members.size())))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Rejecting formation proposal: a slot is outside the geofence");
+        publish_planner_event(safety::AgentEventCode::PLANNER_COMMAND_REJECTED,
+                              "FORMATION", "Formation slot outside geofence");
+        return false;
     }
     proposal.snapshot_hash = formation_epoch_hash(proposal);
 
@@ -3048,6 +3148,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, false, peer_data_valid, now);
         return;
     }
+    update_geofence_position_status(&current);
 
     ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
@@ -3229,6 +3330,23 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             return;
         }
 
+        // 一般 MOVE 進入容許誤差時通常仍在減速；若既有軌跡終點就是 Final Target
+        // 且通過最新 safety validation，繼續沿軌跡減速到目標點，不在目標前
+        // （最多 local_arrival_tolerance_m）提前煞停。軌跡結束或不安全時沿用下方處理。
+        if (!has_formation_ && arrival.reached && std::isfinite(speed_mps) &&
+            speed_mps > 0.05 && is_active_plan_finishing_at(
+                final_target, planning_state, now, now_s))
+        {
+            publish_plan(
+                active_plan_, current, now, active_plan_start_time_,
+                active_plan_trajectory_id_);
+            publish_status(
+                PLANNER_STATE_RUNNING, "Arriving; following trajectory to target",
+                &active_plan_, true, peer_data_valid, now);
+            (void)peer_trajectories_.prune(now_s);
+            return;
+        }
+
         // 只在 Final Target 與本段航點相同時算到達；完成後沿用下方 terminal hold。
         if (!has_formation_ && waypoint_mission_executor_.on_target_reached(
                 final_target, steady_now_s()))
@@ -3360,6 +3478,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     local_goal_environment.peers_are_fresh = peer_data_valid;
     local_goal_environment.peers = active_peers;
     local_goal_environment.obstacle_map = &obstacle_map_;
+    local_goal_environment.geofence = active_geofence();
     local_goal_environment.peer_collision_min_distance_m =
         planner_config_.peer_collision_min_distance_m;
     local_goal_environment.obstacle_clearance_m =
@@ -3437,6 +3556,15 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         std::isfinite(active_elapsed_s) && active_elapsed_s <=
             active_plan_.trajectory.duration_s();
     bool preserve_active_plan_on_candidate_failure = false;
+    // 停滯偵測只追蹤飛往最終目標的一般軌跡；適用條件與清除時機見
+    // ProgressStallMonitor。
+    const ego_swarm::ProgressStallContext progress_stall_context =
+        make_progress_stall_context(active_plan_running, final_target);
+    const bool progress_stall_eligible =
+        ego_swarm::progress_stall_applies(progress_stall_context);
+    const bool progress_stalled = progress_stall_monitor_.track(
+        progress_stall_context, planner_frame_revision_, now_s,
+        ego_swarm::distance_between_centers(current, final_target));
     if (active_plan_running)
     {
         const auto safety_result = validate_plan(
@@ -3447,9 +3575,11 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             if (safety_result.reason ==
                     ego_swarm::SafetyFailureReason::PEER_COLLISION ||
                 safety_result.reason ==
-                    ego_swarm::SafetyFailureReason::OBSTACLE_COLLISION)
+                    ego_swarm::SafetyFailureReason::OBSTACLE_COLLISION ||
+                safety_result.reason ==
+                    ego_swarm::SafetyFailureReason::GEOFENCE_VIOLATION)
             {
-                // 已選路線遇到新的同儕路線或障礙物時，先撤回本機規劃
+                // 已選路線遇到新的同儕路線、障礙物或圍籬時，先撤回本機規劃
                 // 並重新走水平候選；只有重新規劃也失敗，才進入煞停。
                 invalidate_active_plan();
             }
@@ -3478,7 +3608,8 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 has_last_replan_time_,
                 last_replan_time_s_,
                 planner_feature_flags_.local_goal_replan_ratio,
-                planner_feature_flags_.minimum_replan_interval_s};
+                planner_feature_flags_.minimum_replan_interval_s,
+                progress_stalled};
             const auto replan_decision =
                 ego_swarm::evaluate_replan_trigger(replan_input);
             if (!replan_decision.should_replan)
@@ -3490,12 +3621,19 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 publish_plan(
                     active_plan_, current, now, active_plan_start_time_,
                     active_plan_trajectory_id_);
+                // 停滯期間到下一次重新規劃前不送回 "ok"，避免 reason
+                // 每個重新規劃間隔來回切換。
+                const bool report_stalled = progress_stalled ||
+                    (progress_stalled_trajectory_id_ != 0U &&
+                     progress_stalled_trajectory_id_ ==
+                         active_plan_trajectory_id_);
+                const char* const keep_reason = active_plan_.is_hold
+                    ? "Holding until replanning is safe"
+                    : (report_stalled ? PROGRESS_STALLED_STATUS_REASON : "ok");
                 publish_status(
                     active_plan_.is_hold
                         ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-                    active_plan_.is_hold
-                        ? "Holding until replanning is safe" : "ok",
-                    &active_plan_, true, peer_data_valid, now);
+                    keep_reason, &active_plan_, true, peer_data_valid, now);
                 (void)peer_trajectories_.prune(now_s);
                 return;
             }
@@ -3515,6 +3653,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     snapshot.path_constraint = path_constraint;
     snapshot.fixed_z_m = final_target.at(2);
     snapshot.obstacle_map = &obstacle_map_;
+    snapshot.geofence = active_geofence();
     snapshot.peers_are_fresh = peer_data_valid;
     snapshot.peers = active_peers;
 
@@ -3522,7 +3661,9 @@ void EgoSwarmPlannerNode::planner_loop_cb()
     // duration 內且通過最新 safety validation 的舊 trajectory；
     // Final Target 改變、unsafe
     // 或 segment 結束則不適用此 fallback。
-    const auto retain_active_plan_if_safe = [&]() -> bool
+    const auto retain_active_plan_if_safe = [&](
+        const char* const status_reason =
+            "Candidate replan failed; retaining safe active trajectory") -> bool
         {
             if (!preserve_active_plan_on_candidate_failure ||
                 !has_active_plan_ || emergency_brake_active_ ||
@@ -3550,8 +3691,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
             publish_status(
                 active_plan_.is_hold
                     ? PLANNER_STATE_HOLD : PLANNER_STATE_RUNNING,
-                "Candidate replan failed; retaining safe active trajectory",
-                &active_plan_, true, peer_data_valid, now);
+                status_reason, &active_plan_, true, peer_data_valid, now);
             (void)peer_trajectories_.prune(now_s);
             return true;
         };
@@ -3680,11 +3820,16 @@ void EgoSwarmPlannerNode::planner_loop_cb()
         }
         const double speed_mps = std::sqrt(
             ego_swarm::squared_norm(planning_state.velocity));
-        if (safety_result.reason ==
-                ego_swarm::SafetyFailureReason::PEER_COLLISION &&
-            has_formation_ &&
-            (formation_initial_plan_pending_ ||
-             (std::isfinite(speed_mps) && speed_mps <= 0.2)))
+        const bool is_slow_or_pending = formation_initial_plan_pending_ ||
+            (std::isfinite(speed_mps) && speed_mps <= 0.2);
+        // 圍籬內暫無可行路徑時與編隊同儕阻擋相同：低速下原地等待重試，
+        // 不為了避讓而出界，也不必煞停。
+        if (is_slow_or_pending &&
+            ((safety_result.reason ==
+                  ego_swarm::SafetyFailureReason::PEER_COLLISION &&
+              has_formation_) ||
+             safety_result.reason ==
+                 ego_swarm::SafetyFailureReason::GEOFENCE_VIOLATION))
         {
             (void)publish_waiting_hold(
                 current, final_target,
@@ -3699,6 +3844,22 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                 safety_result.reason),
             now, peer_data_valid);
         (void)peer_trajectories_.prune(now_s);
+        return;
+    }
+
+    // 依進度重新規劃的候選若在下一次重新規劃時間點前幾乎沒有沿路徑前進，
+    // 替換後每次又從頭開始，飛機會停在原地；目前軌跡仍安全且同樣飛往
+    // 最終目標時保留它。最短間隔內不再重試，避免每個 tick 重算。
+    if (preserve_active_plan_on_candidate_failure && progress_stall_eligible &&
+        ego_swarm::distance_between_centers(planning_target, final_target) <=
+            PROGRESS_STALL_TARGET_TOLERANCE_M &&
+        ego_swarm::candidate_lacks_path_progress(
+            result.trajectory, planner_feature_flags_.local_goal_replan_ratio) &&
+        retain_active_plan_if_safe(PROGRESS_STALLED_STATUS_REASON))
+    {
+        progress_stalled_trajectory_id_ = active_plan_trajectory_id_;
+        has_last_replan_time_ = true;
+        last_replan_time_s_ = now_s;
         return;
     }
 
@@ -3964,7 +4125,207 @@ bool EgoSwarmPlannerNode::update_planner_frame()
         get_logger(),
         "Selected and froze local Home for Agent %d, local revision=%u",
         planner_frame_origin_agent_index_, planner_frame_revision_);
+    build_geofence();
     return planner_frame_.has_origin() && update_planner_to_px4_ned_transform();
+}
+
+void EgoSwarmPlannerNode::build_geofence()
+{
+    const ego_swarm::GeofenceUpdateOutcome outcome =
+        geofence_policy_.on_home_ready(planner_frame_);
+    if (!outcome.is_status_changed)
+    {
+        return;
+    }
+    if (outcome.result == ego_swarm::GeofenceUpdateResult::ACCEPTED)
+    {
+        RCLCPP_INFO(get_logger(),
+                    "Pending geofence %u active after Home freeze",
+                    geofence_policy_.definition().fence_id);
+    }
+    else
+    {
+        RCLCPP_ERROR(get_logger(),
+                     "Pending geofence rejected after Home freeze: %s",
+                     outcome.detail.c_str());
+    }
+    if (outcome.is_fence_changed)
+    {
+        apply_geofence_update_effects();
+    }
+    publish_geofence_status();
+}
+
+void EgoSwarmPlannerNode::geofence_cb(
+    const taiphoon_agent::msg::Geofence::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "geofence_cb received nullptr");
+        return;
+    }
+    ego_swarm::GeofenceRequest request;
+    request.fence_id = msg->fence_id;
+    request.action = msg->action;
+    request.margin_m = static_cast<double>(msg->margin_m);
+    request.vertices.reserve(msg->vertices.size());
+    for (const auto& vertex : msg->vertices)
+    {
+        request.vertices.push_back(ego_swarm::GeoCoordinate{
+            vertex.latitude_deg, vertex.longitude_deg, 0.0});
+    }
+
+    // Home 可凍結時先凍結，讓圍籬直接生效而不是停在 PENDING。
+    (void)update_planner_frame();
+    const ego_swarm::GeofenceUpdateOutcome outcome =
+        geofence_policy_.handle_request(
+            request, planner_frame_.has_origin() ? &planner_frame_ : nullptr);
+    if (outcome.result == ego_swarm::GeofenceUpdateResult::ACCEPTED)
+    {
+        if (outcome.is_status_changed)
+        {
+            RCLCPP_INFO(get_logger(),
+                        "Geofence request %u accepted: %s (vertices=%zu, margin=%.2f m)",
+                        msg->fence_id, outcome.detail.c_str(),
+                        geofence_policy_.definition().vertices.size(),
+                        geofence_policy_.definition().margin_m);
+        }
+    }
+    else
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Geofence request %u rejected: %s; keeping previous geofence",
+                    msg->fence_id, outcome.detail.c_str());
+    }
+    if (outcome.is_fence_changed)
+    {
+        apply_geofence_update_effects();
+    }
+    if (outcome.is_status_changed || outcome.is_fence_changed)
+    {
+        publish_geofence_status();
+    }
+}
+
+void EgoSwarmPlannerNode::apply_geofence_update_effects()
+{
+    const ego_swarm::Geofence* const fence = active_geofence();
+    ego_swarm::Vector3 current{};
+    const bool has_current = has_own_state_ && planner_frame_.has_origin() &&
+        get_position_in_planner_frame(own_state_, current);
+    // 先更新位置狀態：之後發布的 GeofenceStatus 與事件使用同一份判斷。
+    geofence_position_inside_ = fence == nullptr || !has_current ||
+        fence->contains_with_margin(current);
+    if (fence == nullptr)
+    {
+        // 清除圍籬只放寬限制，目前工作照常執行。
+        return;
+    }
+
+    // 全體收到同一份圍籬並以同一套槽位計算，因此各機對編隊的判斷一致。
+    if (has_formation_ && has_accepted_formation_epoch_ &&
+        !are_formation_slots_inside_geofence(
+            formation_center_,
+            accepted_formation_epoch_.member_agent_ids.size()))
+    {
+        dissolve_formation_to_hold("formation slot outside updated geofence");
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "FORMATION", "Formation slot outside updated geofence; holding");
+        return;
+    }
+
+    const auto outside_waypoint = ego_swarm::first_target_outside_geofence(
+        fence, waypoint_mission_executor_.pending_targets());
+    if (outside_waypoint.has_value())
+    {
+        const std::string detail = "waypoint " +
+            std::to_string(*outside_waypoint + 1U) +
+            " outside updated geofence";
+        const bool was_running = waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::GEOFENCE_UPDATE, detail);
+        RCLCPP_WARN(get_logger(), "Waypoint mission cancelled: %s",
+                    detail.c_str());
+        if (was_running)
+        {
+            stop_mission_in_place("waypoint mission " + detail);
+        }
+        publish_mission_status();
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "MISSION", "Waypoint mission " + detail +
+                (was_running ? "; holding" : "; loaded mission cleared"));
+        return;
+    }
+
+    if (!has_formation_ && has_goal_ &&
+        ego_swarm::is_target_outside_geofence(fence, goal_position_))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Goal outside updated geofence; stopping in place");
+        stop_mission_in_place("goal outside updated geofence");
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "MOVE", "Goal outside updated geofence; holding");
+    }
+}
+
+void EgoSwarmPlannerNode::update_geofence_position_status(
+    const ego_swarm::Vector3* const current)
+{
+    const ego_swarm::Geofence* const fence = active_geofence();
+    const bool is_inside = fence == nullptr || current == nullptr ||
+        fence->contains_with_margin(*current);
+    if (is_inside == geofence_position_inside_)
+    {
+        return;
+    }
+    geofence_position_inside_ = is_inside;
+    if (!is_inside)
+    {
+        RCLCPP_WARN(get_logger(), "Own position is outside the geofence margin");
+    }
+    publish_geofence_status();
+}
+
+void EgoSwarmPlannerNode::publish_geofence_status()
+{
+    if (geofence_status_pub_ == nullptr)
+    {
+        return;
+    }
+    taiphoon_agent::msg::GeofenceStatus msg;
+    msg.stamp = this->now();
+    msg.state = static_cast<uint8_t>(geofence_policy_.state());
+    const ego_swarm::GeofenceDefinition& definition =
+        geofence_policy_.definition();
+    msg.fence_id = definition.fence_id;
+    msg.margin_m = static_cast<float>(definition.margin_m);
+    msg.vertices.reserve(definition.vertices.size());
+    for (const ego_swarm::GeoCoordinate& vertex : definition.vertices)
+    {
+        taiphoon_agent::msg::GeofenceVertex vertex_msg;
+        vertex_msg.latitude_deg = vertex.latitude_deg;
+        vertex_msg.longitude_deg = vertex.longitude_deg;
+        msg.vertices.push_back(vertex_msg);
+    }
+    msg.last_request_id = geofence_policy_.last_request_id();
+    msg.last_result = static_cast<uint8_t>(geofence_policy_.last_result());
+    msg.position_inside = geofence_position_inside_;
+    msg.detail = geofence_policy_.last_detail();
+    geofence_status_pub_->publish(msg);
+}
+
+const ego_swarm::Geofence* EgoSwarmPlannerNode::active_geofence() const
+{
+    return geofence_policy_.active_fence();
+}
+
+bool EgoSwarmPlannerNode::is_inside_geofence(
+    const ego_swarm::Vector3& position) const
+{
+    const ego_swarm::Geofence* const fence = active_geofence();
+    return fence == nullptr || fence->contains_with_margin(position);
 }
 
 bool EgoSwarmPlannerNode::update_planner_to_px4_ned_transform()
@@ -4046,8 +4407,26 @@ ego_swarm::PositionArrivalResult EgoSwarmPlannerNode::evaluate_target_arrival(
         local_arrival_tolerance_m_, planner_arrival_tolerance_m_);
 }
 
+ego_swarm::ProgressStallContext EgoSwarmPlannerNode::make_progress_stall_context(
+    const bool active_plan_running,
+    const ego_swarm::Vector3& final_target) const
+{
+    ego_swarm::ProgressStallContext context;
+    context.has_active_plan = has_active_plan_;
+    context.active_plan_running = active_plan_running;
+    context.active_plan_is_hold = active_plan_.is_hold;
+    context.emergency_brake_active = emergency_brake_active_;
+    context.waiting_for_replan = waiting_for_replan_;
+    context.active_target_is_final = ego_swarm::distance_between_centers(
+        active_plan_target_, final_target) <=
+        PROGRESS_STALL_TARGET_TOLERANCE_M;
+    return context;
+}
+
 void EgoSwarmPlannerNode::invalidate_active_plan()
 {
+    progress_stall_monitor_.reset();
+    progress_stalled_trajectory_id_ = 0U;
     has_active_plan_ = false;
     emergency_brake_active_ = false;
     waiting_for_replan_ = false;
@@ -4110,7 +4489,37 @@ bool EgoSwarmPlannerNode::get_formation_target_for_agent(
     }
     target = ego_swarm::add_vectors(
         formation_center_, offsets.at(assignment->second));
+    // 遠端提案者的圍籬設定可能與本機不同；本機只以自己的圍籬決定是否前往。
+    if (agent_id == agent_index_ && !is_inside_geofence(target))
+    {
+        return false;
+    }
     return ego_swarm::is_finite_vector(target);
+}
+
+bool EgoSwarmPlannerNode::are_formation_slots_inside_geofence(
+    const ego_swarm::Vector3& center,
+    const std::size_t member_count) const
+{
+    if (active_geofence() == nullptr)
+    {
+        return true;
+    }
+    std::vector<ego_swarm::Vector3> offsets;
+    if (!ego_swarm::is_finite_vector(center) ||
+        !ego_swarm::FormationSlotPlanner::compute_slot_offsets(
+            member_count, formation_config_, offsets))
+    {
+        return false;
+    }
+    for (const ego_swarm::Vector3& offset : offsets)
+    {
+        if (!is_inside_geofence(ego_swarm::add_vectors(center, offset)))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 ego_swarm::FormationConvergenceResult
@@ -4261,6 +4670,7 @@ ego_swarm::SafetyValidationResult EgoSwarmPlannerNode::validate_plan(
         context.peer_table = &peer_trajectories_;
     }
     context.obstacle_map = &obstacle_map_;
+    context.geofence = active_geofence();
     return safety_validator_.validate(trajectory, context);
 }
 
@@ -4472,6 +4882,10 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         if (!apply_position_goal(ego_swarm::Vector3{
                 parsed.param_value, parsed.param2, parsed.param3}))
         {
+            RCLCPP_WARN(get_logger(),
+                        "Rejecting MOVE_POINT: target is invalid or outside "
+                        "the geofence");
+            report_command_rejection(parsed, "Goal invalid or outside geofence");
             return;
         }
         if (std::isfinite(parsed.param4))
@@ -4509,6 +4923,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
     {
         command_base = goal_position_;
     }
+    const ego_swarm::Vector3 previous_goal_position = goal_position_;
     goal_position_ = command_base;
     bool preserve_altitude = false;
     double forward_m = 0.0;
@@ -4572,6 +4987,13 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
         // 旋轉既有目標，也不會改變下一個相對命令的累積基準。
         goal_position_ = ego_swarm::add_vectors(goal_position_, body_offset);
     }
+    if (!is_inside_geofence(goal_position_))
+    {
+        goal_position_ = previous_goal_position;
+        RCLCPP_WARN(get_logger(), "Rejecting MOVE: goal is outside the geofence");
+        report_command_rejection(parsed, "Goal outside geofence");
+        return;
+    }
     has_goal_ = ego_swarm::is_finite_vector(goal_position_);
     has_position_target_ = has_goal_;
     has_formation_ = false;
@@ -4582,7 +5004,7 @@ void EgoSwarmPlannerNode::set_goal_from_command(const std::string& command)
 
 bool EgoSwarmPlannerNode::apply_position_goal(const ego_swarm::Vector3& target)
 {
-    if (!ego_swarm::is_finite_vector(target))
+    if (!ego_swarm::is_finite_vector(target) || !is_inside_geofence(target))
     {
         return false;
     }
@@ -4656,6 +5078,18 @@ void EgoSwarmPlannerNode::mission_plan_cb(
     {
         decision = ego_swarm::check_waypoint_mission_range(
             legs, current, waypoint_mission_executor_.limits().max_range_m);
+    }
+    // 圍籬越界沿用 OUT_OF_RANGE（不新增 msg 常數），以 detail 區分原因。
+    for (std::size_t index = 0U; decision.is_accepted && index < legs.size();
+         ++index)
+    {
+        if (!is_inside_geofence(legs.at(index).target_planner_ned))
+        {
+            decision = make_mission_rejection(
+                ego_swarm::WaypointMissionReason::OUT_OF_RANGE,
+                "waypoint outside geofence");
+            decision.index = static_cast<uint16_t>(index);
+        }
     }
     if (decision.is_accepted)
     {
@@ -4865,8 +5299,8 @@ void EgoSwarmPlannerNode::update_waypoint_mission()
     {
         (void)waypoint_mission_executor_.stop(
             ego_swarm::WaypointMissionReason::FLIGHT_STATE,
-            "waypoint target is not finite");
-        stop_mission_in_place("waypoint target is not finite");
+            "waypoint target is not finite or outside geofence");
+        stop_mission_in_place("waypoint target is not finite or outside geofence");
     }
     else
     {

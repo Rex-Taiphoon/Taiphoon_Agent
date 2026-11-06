@@ -26,6 +26,7 @@ using taiphoon::ego_swarm::FORMATION_TERMINAL_SNAP_PEER_SAMPLE_STEP_S;
 using taiphoon::ego_swarm::PeerTrajectory;
 using taiphoon::ego_swarm::Vector3;
 using taiphoon::ego_swarm::append_formation_snap_peer_path;
+using taiphoon::ego_swarm::append_formation_snap_peer_slot_path;
 using taiphoon::ego_swarm::distance_between_segments;
 using taiphoon::ego_swarm::distance_to_segment;
 using taiphoon::ego_swarm::is_formation_terminal_snap_clear;
@@ -393,6 +394,51 @@ TEST(FormationTerminalSnapPeerPathTest, InvalidInputFailsClosedWithoutPartialOut
     EXPECT_FALSE(append_formation_snap_peer_path(
         live, true, hold, TEST_NOW_S, too_long_lookahead_s,
         FORMATION_TERMINAL_SNAP_PEER_SAMPLE_STEP_S, segments));
+    EXPECT_TRUE(segments.empty());
+}
+
+TEST(FormationTerminalSnapPeerSlotPathTest, StaleHoldPlusNewSlotBlocksSimultaneousSnap)
+{
+    // 同儕剛與本機同時採用新 epoch，已發布軌跡仍是舊槽位 hold（靜止在即時位置附近），
+    // 只看已發布軌跡會判定淨空；補上同儕新槽位直線後，交叉路徑必須阻擋直接到位。
+    const Vector3 current{-1.5, 0.0, -10.0};
+    const Vector3 slot{1.5, 0.0, -10.0};
+    const Vector3 peer_live{0.0, -2.5, -10.0};
+    const Vector3 peer_new_slot{0.0, 2.5, -10.0};
+    std::vector<FormationSnapPeerSegment> segments;
+
+    ASSERT_TRUE(append_default_path(
+        peer_live, true, make_hold_trajectory(peer_live, TEST_NOW_S - 1.0), segments));
+    EXPECT_TRUE(is_formation_terminal_snap_clear(current, slot, segments, TEST_CLEARANCE_M));
+    ASSERT_TRUE(append_formation_snap_peer_slot_path(peer_live, peer_new_slot, segments));
+    EXPECT_EQ(segments.back().start, peer_live);
+    EXPECT_EQ(segments.back().end, peer_new_slot);
+    EXPECT_FALSE(is_formation_terminal_snap_clear(current, slot, segments, TEST_CLEARANCE_M));
+}
+
+TEST(FormationTerminalSnapPeerSlotPathTest, ParallelGroupMoveRemainsClear)
+{
+    // 全體 MOVE 時各機平移相同向量，新槽位直線彼此平行且保持隊形間距，仍可直接到位。
+    const Vector3 current{0.0, 0.0, -2.0};
+    const Vector3 slot{1.0, 0.0, -2.0};
+    const Vector3 peer_live{0.0, 2.6, -2.0};
+    const Vector3 peer_new_slot{1.0, 2.6, -2.0};
+    std::vector<FormationSnapPeerSegment> segments;
+
+    ASSERT_TRUE(append_formation_snap_peer_slot_path(peer_live, peer_new_slot, segments));
+    EXPECT_TRUE(is_formation_terminal_snap_clear(current, slot, segments, TEST_CLEARANCE_M));
+}
+
+TEST(FormationTerminalSnapPeerSlotPathTest, NonFiniteInputFailsClosed)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    std::vector<FormationSnapPeerSegment> segments;
+
+    EXPECT_FALSE(append_formation_snap_peer_slot_path(
+        Vector3{nan, 0.0, 0.0}, Vector3{0.0, 0.0, 0.0}, segments));
+    EXPECT_FALSE(append_formation_snap_peer_slot_path(
+        Vector3{0.0, 0.0, 0.0}, Vector3{0.0, inf, 0.0}, segments));
     EXPECT_TRUE(segments.empty());
 }
 

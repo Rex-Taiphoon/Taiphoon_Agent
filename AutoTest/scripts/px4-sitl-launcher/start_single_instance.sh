@@ -15,11 +15,15 @@ RMW="fastrtps"
 FOREGROUND=false
 AGENT_CONTAINER="uav_1_agent"
 INITIAL_SPACING_M="8.0"
+# 各實例相對第一台的排列方位（度，北=0、順時針）；預設 90 為向東排列。
+LAYOUT_BEARING_DEG="90"
 HOME_LAT="25.03996592258936"
 HOME_LON="121.51195163336611"
 HAS_HOME_LAT=false
 HAS_HOME_LON=false
 GCS_HOST=""
+# PX4 SITL 映像；可用環境變數 PX4_SITL_IMAGE 暫時覆寫（例如測試其他 PX4 版本）。
+PX4_SITL_IMAGE="${PX4_SITL_IMAGE:-px4io/px4-sitl:latest}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --fg) FOREGROUND=true; shift ;;
         --agent) AGENT_CONTAINER="$2"; shift 2 ;;
         --initial-spacing-m) INITIAL_SPACING_M="$2"; shift 2 ;;
+        --layout-bearing-deg) LAYOUT_BEARING_DEG="$2"; shift 2 ;;
         --home-lat) HOME_LAT="$2"; HAS_HOME_LAT=true; shift 2 ;;
         --home-lon) HOME_LON="$2"; HAS_HOME_LON=true; shift 2 ;;
         --gcs-host) GCS_HOST="$2"; shift 2 ;;
@@ -62,6 +67,10 @@ if ! [[ "$INITIAL_SPACING_M" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
     echo "錯誤：--initial-spacing-m 必須大於 3.0 公尺"
     exit 1
 fi
+if ! [[ "$LAYOUT_BEARING_DEG" =~ $NUMBER_PATTERN ]]; then
+    echo "錯誤：--layout-bearing-deg 必須是數值（度）"
+    exit 1
+fi
 
 case "$RMW" in
     fastrtps) RMW_ENV="rmw_fastrtps_cpp" ;;
@@ -81,11 +90,15 @@ base_lat = float(sys.argv[3])
 base_lon = float(sys.argv[4])
 instance = int(sys.argv[1])
 spacing_m = float(sys.argv[2])
+bearing = math.radians(float(sys.argv[5]))
 lon_per_m = 1.0 / (111320.0 * math.cos(math.radians(base_lat)))
-offset = instance * spacing_m * lon_per_m
-longitude = (base_lon + offset + 180.0) % 360.0 - 180.0
-print(f'{base_lat} {longitude}')
-" "$INSTANCE" "$INITIAL_SPACING_M" "$HOME_LAT" "$HOME_LON")
+distance_m = instance * spacing_m
+latitude = base_lat + distance_m * math.cos(bearing) / 111320.0
+longitude = base_lon + distance_m * math.sin(bearing) * lon_per_m
+longitude = (longitude + 180.0) % 360.0 - 180.0
+print(f'{latitude:.10f} {longitude:.10f}')
+" "$INSTANCE" "$INITIAL_SPACING_M" "$HOME_LAT" "$HOME_LON" "$LAYOUT_BEARING_DEG" | tr -d '\r')
+# Windows 的 python3 以 CRLF 輸出；殘留的 \r 會讓 Git Bash 呼叫 docker.exe 時參數引號錯亂。
 
 DRONE_NAME="drone${NS_INDEX}"
 
@@ -102,6 +115,7 @@ fi
 # ---- 啟動 PX4 SITL ----
 echo "  [${DRONE_NAME}] 啟動 PX4 SITL（instance=${INSTANCE}, sys_id=${SYS_ID}, ns=${NAMESPACE}, port=${PORT}）"
 echo "  [${DRONE_NAME}] uXRCE-DDS client → ${AGENT_CONTAINER}:${PORT}"
+echo "  [${DRONE_NAME}] PX4 映像：${PX4_SITL_IMAGE}"
 
 PX4_DOCKER_OPTS=(
     --net="$NETWORK"
@@ -148,13 +162,13 @@ if $FOREGROUND; then
     docker run --rm -it \
         "${PX4_DOCKER_OPTS[@]}" \
         --entrypoint /bin/sh \
-        px4io/px4-sitl:latest \
+        "$PX4_SITL_IMAGE" \
         -c "$PX4_ENTRYPOINT_CMD"
 else
     docker run -d --rm \
         "${PX4_DOCKER_OPTS[@]}" \
         --entrypoint /bin/sh \
-        px4io/px4-sitl:latest \
+        "$PX4_SITL_IMAGE" \
         -c "$PX4_ENTRYPOINT_CMD"
 fi
 

@@ -342,7 +342,8 @@ bool is_position_safe_at_time(
 {
     if (snapshot.obstacle_map == nullptr ||
         !snapshot.obstacle_map->is_position_safe(
-            position, config.obstacle_clearance_m))
+            position, config.obstacle_clearance_m) ||
+        !is_snapshot_geofence_safe(snapshot, position))
     {
         return false;
     }
@@ -582,6 +583,18 @@ SpatiotemporalRouteResult SpatiotemporalRouteInitializer::initialize(
         };
     }();
 
+    // 圍籬檢查不放進障礙物 cell cache：cache 以障礙物 clearance 判定
+    // 整格安全，與圍籬邊界無關。門檻依起點只算一次。
+    const double required_geofence_clearance_m =
+        snapshot_geofence_required_clearance_m(snapshot);
+    const auto is_geofence_position_safe =
+        [&snapshot, required_geofence_clearance_m](const Vector3& position)
+        {
+            return snapshot.geofence == nullptr ||
+                snapshot.geofence->contains(
+                    position, required_geofence_clearance_m);
+        };
+
     const auto is_peer_position_safe_cached = [&]()
     {
         return [&snapshot, &config, &peer_state_cache](
@@ -665,6 +678,7 @@ SpatiotemporalRouteResult SpatiotemporalRouteInitializer::initialize(
         const double candidate_start_time_s =
             snapshot.trajectory_start_time_s + actual_delay_s;
         if (!is_obstacle_position_safe(start) ||
+            !is_geofence_position_safe(start) ||
             !is_peer_position_safe_cached(
                 start, candidate_start_time_s, candidate_start_time_s))
         {
@@ -766,6 +780,7 @@ SpatiotemporalRouteResult SpatiotemporalRouteInitializer::initialize(
                 const double candidate_start_time_s =
                     snapshot.trajectory_start_time_s + current.start_delay_s;
                 if (!is_obstacle_position_safe(sample_position) ||
+                    !is_geofence_position_safe(sample_position) ||
                     !is_peer_position_safe_cached(
                         sample_position,
                         candidate_start_time_s + relative_time_s,

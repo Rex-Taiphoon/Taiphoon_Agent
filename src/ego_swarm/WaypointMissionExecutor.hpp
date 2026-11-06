@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ego_swarm/EgoSwarmTypes.hpp"
@@ -61,7 +62,8 @@ enum class WaypointMissionReason : uint8_t
     COMMAND_OVERRIDE = 11U,
     FLIGHT_STATE = 12U,
     LANDED = 13U,
-    LEG_TIMEOUT = 14U
+    LEG_TIMEOUT = 14U,
+    GEOFENCE_UPDATE = 15U
 };
 
 /**
@@ -294,6 +296,16 @@ public:
 
     /** @brief 取得目前狀態快照 */
     WaypointMissionStatusSnapshot snapshot() const;
+
+    /**
+     * @brief 取得尚未完成的航段目標
+     *
+     * LOADED 回傳全部；RUNNING 從目前航段開始；DWELLING 從下一段開始
+     * （目前航點已到達）；其他狀態回傳空集合。
+     *
+     * @return （航點索引, planner-local 目標）依序排列
+     */
+    std::vector<std::pair<std::size_t, Vector3>> pending_targets() const;
 
 private:
     /**

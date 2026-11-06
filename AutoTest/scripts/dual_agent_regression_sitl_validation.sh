@@ -12,6 +12,10 @@
 #   檔名沿用雙機版本；預設 uav_1～uav_2，最終展示以 --count 3 驗收。
 #   --agent-ids：只啟動指定機號（例如缺少 uav_1 的 2,3 或單機 2）。
 #   --deploy-runtime：改用樹莓派實機相同的 runtime-entrypoint.sh 與規劃參數。
+#   --compose-file：額外疊加的 compose 檔（可重複），例如 Windows 用
+#     AutoTest/scripts/compose.no-ssh-agent.yml 移除 SSH agent 掛載。
+#   --monitor-args：原樣附加給 dual_agent_regression_monitor.py 的參數，
+#     例如 "--max-hover-drift-m 2.5"（僅供診斷，驗收仍以預設值為準）。
 #   --obstacle-source：障礙物地圖來源，與實機 settings.ini 的 obstacle_source 對應：
 #     explicit_empty（預設）：啟動模擬器發布空地圖，執行完整回歸。
 #     none：不提供地圖（實機預設），驗證起飛／YAW／降落正常且 MOVE 被擋下。
@@ -34,6 +38,7 @@ COUNT=2
 AGENT_ID_LIST=""
 OBSTACLE_SOURCE="explicit_empty"
 COMPOSE_FILES=(-f docker-compose.yml)
+MONITOR_PASSTHROUGH_ARGS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,6 +48,12 @@ while [[ $# -gt 0 ]]; do
         --deploy-runtime)
             COMPOSE_FILES+=(-f AutoTest/scripts/compose.deploy-runtime.yml)
             shift ;;
+        --compose-file)
+            COMPOSE_FILES+=(-f "$2")
+            shift 2 ;;
+        --monitor-args)
+            MONITOR_PASSTHROUGH_ARGS="$2"
+            shift 2 ;;
         *) echo "錯誤：不支援的參數：$1" >&2; exit 2 ;;
     esac
 done
@@ -183,7 +194,7 @@ docker exec -i "${FIRST_AGENT}" bash -lc \
      source /home/taiphoon/px4_ros_uxrce_dds_ws/install/setup.bash && \
      source /home/taiphoon/Taiphoon_Agent/install/setup.bash && \
      python3 /home/taiphoon/Taiphoon_Agent/AutoTest/scripts/dual_agent_regression_monitor.py \
-     --agent-ids ${AGENT_ID_LIST} ${MONITOR_EXTRA_ARGS}" \
+     --agent-ids ${AGENT_ID_LIST} ${MONITOR_EXTRA_ARGS} ${MONITOR_PASSTHROUGH_ARGS}" \
     | tee "${RUN_DIR}/monitor.log"
 monitor_status=${PIPESTATUS[0]}
 set -e

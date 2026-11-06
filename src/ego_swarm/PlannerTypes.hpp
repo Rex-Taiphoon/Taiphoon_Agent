@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "ego_swarm/Geofence.hpp"
 #include "ego_swarm/PeerTrajectoryTable.hpp"
 #include "perception/IObstacleMap.hpp"
 
@@ -146,6 +147,8 @@ struct PlanningSnapshot
     double fixed_z_m{0.0};
     std::vector<PeerTrajectory> peers{};
     const perception::IObstacleMap* obstacle_map{nullptr};
+    /// 水平地理圍籬；nullptr 表示未啟用。
+    const Geofence* geofence{nullptr};
     bool peers_are_fresh{false};
 
     /**
@@ -167,6 +170,37 @@ struct PlanningSnapshot
                peers_are_fresh;
     }
 };
+
+/**
+ * @brief 依 snapshot 起點計算本次規劃需要的圍籬 clearance
+ * @param snapshot planner cycle snapshot
+ * @return 需要的最小 clearance；未啟用圍籬時回傳 0
+ */
+inline double snapshot_geofence_required_clearance_m(
+    const PlanningSnapshot& snapshot)
+{
+    if (snapshot.geofence == nullptr)
+    {
+        return 0.0;
+    }
+    return snapshot.geofence->required_clearance_from_start(
+        snapshot.geofence->clearance_m(snapshot.self_state.position));
+}
+
+/**
+ * @brief 檢查位置是否滿足本次規劃的圍籬 clearance
+ * @param snapshot planner cycle snapshot
+ * @param position 待檢查 planner NED 位置
+ * @return true 表示未啟用圍籬或位置通過
+ */
+inline bool is_snapshot_geofence_safe(
+    const PlanningSnapshot& snapshot,
+    const Vector3& position)
+{
+    return snapshot.geofence == nullptr ||
+        snapshot.geofence->contains(
+            position, snapshot_geofence_required_clearance_m(snapshot));
+}
 
 /// planner backend 的輸出與診斷資訊。
 struct PlannerResult

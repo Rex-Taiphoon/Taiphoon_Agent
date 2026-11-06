@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ego_swarm/EgoSwarmPlanner.hpp"
+#include "ego_swarm/Geofence.hpp"
 #include "ego_swarm/TrajectoryPriority.hpp"
 
 namespace taiphoon
@@ -39,7 +40,8 @@ enum class SafetyFailureReason
     NONFINITE_TRAJECTORY,
     DYNAMIC_INFEASIBLE,
     PEER_COLLISION,
-    OBSTACLE_COLLISION
+    OBSTACLE_COLLISION,
+    GEOFENCE_VIOLATION
 };
 
 /**
@@ -57,6 +59,8 @@ struct SafetyValidationContext
     int self_agent_id{0};
     const PeerTrajectoryTable* peer_table{nullptr};
     const perception::IObstacleMap* obstacle_map{nullptr};
+    /// 水平地理圍籬；nullptr 表示未啟用。
+    const Geofence* geofence{nullptr};
 };
 
 /**
@@ -71,6 +75,8 @@ struct SafetyValidationResult
     double maximum_velocity_mps{0.0};
     double maximum_acceleration_mps2{0.0};
     double maximum_jerk_mps3{0.0};
+    /// 取樣點最小圍籬 clearance；未啟用圍籬時為 0。
+    double minimum_geofence_clearance_m{0.0};
 
     /**
      * @brief 檢查驗證結果指標是否可供發布
@@ -82,7 +88,8 @@ struct SafetyValidationResult
                std::isfinite(minimum_obstacle_distance_m) &&
                std::isfinite(maximum_velocity_mps) &&
                std::isfinite(maximum_acceleration_mps2) &&
-               std::isfinite(maximum_jerk_mps3);
+               std::isfinite(maximum_jerk_mps3) &&
+               std::isfinite(minimum_geofence_clearance_m);
     }
 };
 
@@ -161,6 +168,11 @@ public:
             result.reason = SafetyFailureReason::STALE_MAP;
             return result;
         }
+        if (context.geofence != nullptr && !context.geofence->is_valid())
+        {
+            result.reason = SafetyFailureReason::GEOFENCE_VIOLATION;
+            return result;
+        }
         if (!context.peer_table->all_fresh(context.now_s))
         {
             result.reason = SafetyFailureReason::STALE_PEER;
@@ -220,6 +232,8 @@ public:
                 return "peer_collision";
             case SafetyFailureReason::OBSTACLE_COLLISION:
                 return "obstacle_collision";
+            case SafetyFailureReason::GEOFENCE_VIOLATION:
+                return "geofence_violation";
         }
         return "unknown";
     }
@@ -313,6 +327,13 @@ private:
             context.obstacle_map->point_count() == 0U
             ? 0.0 : std::numeric_limits<double>::max();
         const std::size_t count = sample_count(trajectory.duration_s());
+        const double required_geofence_clearance_m =
+            required_geofence_clearance(trajectory, context);
+        if (context.geofence != nullptr)
+        {
+            result.minimum_geofence_clearance_m =
+                std::numeric_limits<double>::max();
+        }
         for (std::size_t index = 0U; index <= count; ++index)
         {
             const double relative_time = std::min(
@@ -333,6 +354,13 @@ private:
             if (!validate_obstacle(sample.position, context, result))
             {
                 result.reason = SafetyFailureReason::OBSTACLE_COLLISION;
+                return result;
+            }
+            if (!validate_geofence(
+                    sample.position, context,
+                    required_geofence_clearance_m, result))
+            {
+                result.reason = SafetyFailureReason::GEOFENCE_VIOLATION;
                 return result;
             }
             if (!validate_peers(
@@ -393,6 +421,52 @@ private:
             result.minimum_obstacle_distance_m, distance);
         return context.obstacle_map->is_position_safe(
             position, config_.obstacle_clearance_m);
+    }
+
+    /**
+     * 起點已在 margin 帶內時只要求「不比起點更外側」，讓 planner 能把
+     * 機體帶回圍籬內；active plan 重驗證時軌跡起點可能早於目前位置，
+     * 因此取兩者較外側者作為基準。
+     */
+    static double required_geofence_clearance(
+        const BsplineTrajectory& trajectory,
+        const SafetyValidationContext& context)
+    {
+        if (context.geofence == nullptr)
+        {
+            return 0.0;
+        }
+        const TrajectoryState start = trajectory.evaluate_state(0.0);
+        double start_clearance = context.geofence->clearance_m(
+            context.self_state.position);
+        if (start.is_valid)
+        {
+            start_clearance = std::min(
+                start_clearance,
+                context.geofence->clearance_m(start.position));
+        }
+        return context.geofence->required_clearance_from_start(
+            start_clearance);
+    }
+
+    static bool validate_geofence(
+        const Vector3& position,
+        const SafetyValidationContext& context,
+        const double required_clearance_m,
+        SafetyValidationResult& result)
+    {
+        if (context.geofence == nullptr)
+        {
+            return true;
+        }
+        const double clearance = context.geofence->clearance_m(position);
+        if (!std::isfinite(clearance))
+        {
+            return false;
+        }
+        result.minimum_geofence_clearance_m = std::min(
+            result.minimum_geofence_clearance_m, clearance);
+        return clearance + EGO_SWARM_EPSILON_M >= required_clearance_m;
     }
 
     bool validate_peers(

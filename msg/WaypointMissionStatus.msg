@@ -21,6 +21,7 @@ uint8 REASON_COMMAND_OVERRIDE=11   # 收到其他命令（操作人員介入）
 uint8 REASON_FLIGHT_STATE=12       # 飛行狀態離開懸停／移動（RTL、LAND、ERROR 等）
 uint8 REASON_LANDED=13             # 已落地或上鎖
 uint8 REASON_LEG_TIMEOUT=14        # 單段逾時未到達
+uint8 REASON_GEOFENCE_UPDATE=15     # 地理圍籬更新後，尚未完成的航點落在圍籬外
 
 builtin_interfaces/Time stamp
 uint32 mission_id          # 狀態所屬任務；IDLE 時為 0

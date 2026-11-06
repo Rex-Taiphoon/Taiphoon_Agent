@@ -36,6 +36,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WaypointMissionStatus.msg"
   "msg/AgentEvent.msg"
   "msg/AgentHealth.msg"
+  "msg/GeofenceVertex.msg"
+  "msg/Geofence.msg"
+  "msg/GeofenceStatus.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 
@@ -449,6 +452,40 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_optimized_planner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 水平地理圍籬解析、幾何與各規劃階段整合測試
+  ament_add_gtest(test_geofence
+    test/geofence_test.cpp
+    src/ego_swarm/OptimizedEgoPlanner.cpp
+    src/ego_swarm/ProjectedGradientSolver.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_geofence PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 地面站執行期設定地理圍籬的更新規則
+  ament_add_gtest(test_geofence_update
+    test/geofence_update_test.cpp
+  )
+  target_include_directories(test_geofence_update PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 依進度重新規劃的停滯偵測（候選路徑進度與最佳距離監測）
+  ament_add_gtest(test_progress_stall_monitor
+    test/progress_stall_monitor_test.cpp
+    src/ego_swarm/OptimizedEgoPlanner.cpp
+    src/ego_swarm/ProjectedGradientSolver.cpp
+    src/ego_swarm/SpatiotemporalRouteInitializer.cpp
+    src/perception/RawPointObstacleMap.cpp
+  )
+
+  target_include_directories(test_progress_stall_monitor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

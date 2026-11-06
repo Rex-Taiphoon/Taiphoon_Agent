@@ -396,6 +396,32 @@ WaypointMissionStatusSnapshot WaypointMissionExecutor::snapshot() const
     return status;
 }
 
+std::vector<std::pair<std::size_t, Vector3>>
+WaypointMissionExecutor::pending_targets() const
+{
+    std::size_t first_index = 0U;
+    switch (state_)
+    {
+        case WaypointMissionState::LOADED:
+            first_index = 0U;
+            break;
+        case WaypointMissionState::RUNNING:
+            first_index = current_index_;
+            break;
+        case WaypointMissionState::DWELLING:
+            first_index = current_index_ + 1U;
+            break;
+        default:
+            return {};
+    }
+    std::vector<std::pair<std::size_t, Vector3>> targets;
+    for (std::size_t index = first_index; index < legs_.size(); ++index)
+    {
+        targets.emplace_back(index, legs_.at(index).target_planner_ned);
+    }
+    return targets;
+}
+
 void WaypointMissionExecutor::begin_leg(const std::size_t index,
                                         const Vector3& leg_origin,
                                         const double now_s)

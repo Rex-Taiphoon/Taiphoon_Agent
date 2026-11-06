@@ -45,6 +45,7 @@ enum class AgentEventCode : uint16_t
     PLANNER_COMMAND_REJECTED = 400U,    ///< planner 拒絕命令
     PLANNER_EMERGENCY_BRAKE = 401U,     ///< planner 啟動緊急煞停
     PLANNER_FAILURE_PERSISTENT = 402U,  ///< 連續規劃失敗超過門檻
+    PLANNER_GEOFENCE_TARGET_CANCELLED = 403U,  ///< 圍籬更新使目標落在圍籬外，已停止懸停
     SAFETY_POSITION_DEVIATION = 500U    ///< 位置偏差安全介入（保留，暫不發布）
 };
 
@@ -119,6 +120,7 @@ inline AgentEventSeverity agent_event_severity(const AgentEventCode code)
         case AgentEventCode::PX4_FAILSAFE:
         case AgentEventCode::PLANNER_COMMAND_REJECTED:
         case AgentEventCode::PLANNER_EMERGENCY_BRAKE:
+        case AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED:
         default:
             return AgentEventSeverity::WARNING;
     }
@@ -152,6 +154,8 @@ inline const char* agent_event_code_name(const AgentEventCode code)
         case AgentEventCode::PLANNER_COMMAND_REJECTED:   return "PLANNER_COMMAND_REJECTED";
         case AgentEventCode::PLANNER_EMERGENCY_BRAKE:    return "PLANNER_EMERGENCY_BRAKE";
         case AgentEventCode::PLANNER_FAILURE_PERSISTENT: return "PLANNER_FAILURE_PERSISTENT";
+        case AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED:
+            return "PLANNER_GEOFENCE_TARGET_CANCELLED";
         case AgentEventCode::SAFETY_POSITION_DEVIATION:  return "SAFETY_POSITION_DEVIATION";
         default:                                          return "UNKNOWN";
     }

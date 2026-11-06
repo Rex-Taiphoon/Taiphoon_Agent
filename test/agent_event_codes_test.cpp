@@ -68,6 +68,8 @@ TEST(AgentEventCodesTest, CodeValuesMatchInterfaceContract)
     EXPECT_EQ(static_cast<uint16_t>(AgentEventCode::PLANNER_COMMAND_REJECTED), 400U);
     EXPECT_EQ(static_cast<uint16_t>(AgentEventCode::PLANNER_EMERGENCY_BRAKE), 401U);
     EXPECT_EQ(static_cast<uint16_t>(AgentEventCode::PLANNER_FAILURE_PERSISTENT), 402U);
+    EXPECT_EQ(static_cast<uint16_t>(
+                  AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED), 403U);
     EXPECT_EQ(static_cast<uint16_t>(AgentEventCode::SAFETY_POSITION_DEVIATION), 500U);
 }
 
@@ -96,6 +98,9 @@ TEST(AgentEventCodesTest, SeverityFollowsCodeTable)
     EXPECT_EQ(agent_event_severity(AgentEventCode::PX4_POSITION_STALE),
               AgentEventSeverity::WARNING);
     EXPECT_EQ(agent_event_severity(AgentEventCode::PLANNER_EMERGENCY_BRAKE),
+              AgentEventSeverity::WARNING);
+    EXPECT_EQ(agent_event_severity(
+                  AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED),
               AgentEventSeverity::WARNING);
     // 嚴重度數值與 AgentEvent.SEVERITY_* 一致
     EXPECT_EQ(static_cast<uint8_t>(AgentEventSeverity::INFO), 0U);
