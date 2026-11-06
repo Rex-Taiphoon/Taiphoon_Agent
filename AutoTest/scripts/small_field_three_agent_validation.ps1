@@ -21,7 +21,7 @@ param(
     [double]$InitialSpacingM = 3.2,
     # 額外 Agent 環境變數（例如 'EGO_SWARM_PEER_PLANNING_MARGIN_M=0.5;EGO_SWARM_CANDIDATE_OFFSET_M=2.0'）。
     [string]$AgentEnv = '',
-    # Agent 地理圍籬 WGS84 頂點 'lat,lon;lat,lon;...'（含分號，故不放在 AgentEnv）；空字串不設定。
+    # 地面站圍籬 WGS84 頂點 'lat,lon;lat,lon;...'；由 monitor 起飛前發布到 /uav_all_agent/geofence，空字串不設定。
     [string]$GeofencePolygon = '',
     [double]$GeofenceMarginM = 0.5
 )
@@ -67,16 +67,16 @@ foreach ($agentId in 1..3) {
             $lines += ('      ' + $pair[0] + ': "' + $pair[1] + '"')
         }
     }
-    if ($GeofencePolygon.Trim()) {
-        if ($GeofencePolygon -notmatch '^[0-9.,;\s-]+$') {
-            throw "GeofencePolygon 格式錯誤：$GeofencePolygon"
-        }
-        $lines += ('      EGO_SWARM_GEOFENCE_POLYGON: "' + $GeofencePolygon.Trim() + '"')
-        $lines += ('      EGO_SWARM_GEOFENCE_MARGIN_M: "' +
-            $GeofenceMarginM.ToString([System.Globalization.CultureInfo]::InvariantCulture) + '"')
-    }
 }
 $lines += @('volumes:', '  validation_build_clean:', '  validation_install_clean:', '  validation_log_clean:')
+$geofenceArgs = ''
+if ($GeofencePolygon.Trim()) {
+    if ($GeofencePolygon -notmatch '^[0-9.,;\s-]+$') {
+        throw "GeofencePolygon 格式錯誤：$GeofencePolygon"
+    }
+    $geofenceArgs = " --geofence-polygon '" + ($GeofencePolygon -replace '\s', '') + "' --geofence-margin-m " +
+        $GeofenceMarginM.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}
 [System.IO.File]::WriteAllText($overridePath, ($lines -join "`n") + "`n")
 $baseCompose = Join-Path $projectRoot 'docker-compose.yml'
 $composeArgs = @('-f', $baseCompose, '-f', $overridePath)
@@ -148,7 +148,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'PX4 SITL 啟動失敗。' }
     Start-Sleep -Seconds 10
     & $composePath @composeArgs run -d --name $observerName --no-deps --entrypoint bash uav_1_agent -lc `
-        "python3 -u AutoTest/scripts/small_field_three_agent_monitor.py --failed-agent $FailedAgent --scenario $Scenario $MonitorArgs"
+        "python3 -u AutoTest/scripts/small_field_three_agent_monitor.py --failed-agent $FailedAgent --scenario $Scenario$geofenceArgs $MonitorArgs"
     if ($LASTEXITCODE -ne 0) { throw 'ROS2 驗證容器啟動失敗。' }
     $observerCodeText = & $dockerPath wait $observerName
     $observerCode = [int]($observerCodeText | Select-Object -Last 1)

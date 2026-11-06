@@ -18,7 +18,7 @@
 | `scripts/dual_agent_regression_monitor.py` | 上述回歸在 Agent 容器內執行的步驟與判定；YAW 步驟量測轉向時間（需 ≥ 理論限速時間 × 0.8）、峰值角速率（需 ≤ `--yaw-rate-limit-deg-s` × 2，容許 PX4 起步落後後的追趕）與高度偏差（需 ≤ `--max-yaw-altitude-deviation-m`），並輸出 `TRACE_YAW` 軌跡 |
 | `scripts/time_sync_container_validation.sh` | 以一次性容器驗證 chrony 主機／客戶端設定與 `taiphoon_agent timesync` |
 | `scripts/start_local_qgcs_agents.ps1` | Windows：以 `docker-compose.local-qgcs.yml` 啟動可供本機原生 QGCS 連線的 Agent |
-| `scripts/small_field_three_agent_validation.ps1` | Windows 三機小場域驗證（`-Scenario formation`／`crossing`、`-FailedAgent 1～3`）。`-CenterLat`／`-CenterLon`／`-LayoutBearingDeg`／`-InitialSpacingM` 指定場域中心與起飛排列；`-AgentEnv 'KEY=VAL;KEY=VAL'` 附加 Agent 環境變數（例如 1.5 m 間距）；`-GeofencePolygon 'lat,lon;...'`、`-GeofenceMarginM` 設定 Agent 地理圍籬；`-MonitorArgs` 原樣傳給 monitor |
+| `scripts/small_field_three_agent_validation.ps1` | Windows 三機小場域驗證（`-Scenario formation`／`crossing`、`-FailedAgent 1～3`）。`-CenterLat`／`-CenterLon`／`-LayoutBearingDeg`／`-InitialSpacingM` 指定場域中心與起飛排列；`-AgentEnv 'KEY=VAL;KEY=VAL'` 附加 Agent 環境變數（例如 1.5 m 間距）；`-GeofencePolygon 'lat,lon;...'`、`-GeofenceMarginM` 由 monitor 起飛前發布地面站圍籬並等三台生效；`-MonitorArgs` 原樣傳給 monitor |
 | `scripts/small_field_three_agent_monitor.py` | 上述驗證在容器內的步驟與判定：場域以 `--field-half-long-m`／`--field-half-short-m`／`--field-bearing-deg` 描述（長軸方位），`--heading-deg` 為起飛航向，`--circle-radius-m`、`--takeoff-alt-m`、`--group-move-m`、`--single-move-m` 為動作幅度，`--min-separation-m` 為機間距離門檻；規劃軌跡出界記為 `trajectory_boundary_violation` |
 | `scripts/compose.no-ssh-agent.yml` | 搭配 `docker-compose.yml` 的覆寫檔：移除 Windows 無法使用的 SSH agent 掛載，只掛載專案目錄 |
 | `Log/` | 測試紀錄（依根目錄 `AGENTS.md` 的 Verification 規範建立） |

@@ -62,7 +62,8 @@ Windows 開發環境可用 PowerShell 執行小場域驗證（需 Docker Desktop
 ### 8×8 m 場域與地理圍籬
 
 實際場域（中心 24.881051576424703, 121.0696306771756，長軸方位 143°，起飛航向 53°）以下列參數重現；
-圍籬頂點為場域四角，margin 0.5 m。設計與失效處理見 [codex/agent-geofence-design.md](codex/agent-geofence-design.md)，
+圍籬頂點為場域四角，margin 0.5 m。圍籬由地面站在執行期設定，腳本把 `-GeofencePolygon` 交給 monitor，
+起飛前發布到 `/uav_all_agent/geofence`，三台 `geofence/status` 都為 ACTIVE 後才開始。設計與失效處理見 [codex/agent-geofence-design.md](codex/agent-geofence-design.md)，
 QGCS 端適配見 [qgcs-adaptation-geofence.md](qgcs-adaptation-geofence.md)。
 
 ```powershell
@@ -74,8 +75,8 @@ QGCS 端適配見 [qgcs-adaptation-geofence.md](qgcs-adaptation-geofence.md)。
 ```
 
 1.5 m 間距加上 `-AgentEnv 'EGO_SWARM_PEER_COLLISION_MIN_DISTANCE_M=1.5;EGO_SWARM_FORMATION_MIN_DISTANCE_M=1.5'`，
-並把 monitor 的 `--min-separation-m` 改為 1.5。開發 compose 可直接設定 `EGO_SWARM_GEOFENCE_POLYGON`、
-`EGO_SWARM_GEOFENCE_MARGIN_M`；實機啟動工具（`settings.ini`）尚未提供圍籬欄位。
+並把 monitor 的 `--min-separation-m` 改為 1.5。手動設定圍籬的指令見介面文件
+[6.3 命令使用範例](taiphoon-agent-interface.md#63-命令使用範例)。
 
 其他 SITL 自動驗收腳本見 [AutoTest/scripts/](../AutoTest/scripts/)。
 

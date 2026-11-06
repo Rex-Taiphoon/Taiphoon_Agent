@@ -538,4 +538,40 @@ TEST(WaypointMissionExecutorTest, ZeroDwellAdvancesOnNextTick)
     EXPECT_EQ(executor.snapshot().current_index, 1U);
 }
 
+// --- 圍籬更新用的待執行航點 ---
+
+TEST(WaypointMissionPendingTargetsTest, FollowsMissionProgress)
+{
+    WaypointMissionExecutor executor;
+    EXPECT_TRUE(executor.pending_targets().empty());
+
+    // LOADED：全部航點都尚未執行。
+    ASSERT_TRUE(executor.load(MISSION_ID, make_legs(), false, START_TIME_S).is_accepted);
+    auto pending = executor.pending_targets();
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending.at(0).first, 0U);
+    EXPECT_EQ(pending.at(1).first, 1U);
+    expect_vector_near(pending.at(1).second, Vector3{10.0, 10.0, -10.0});
+
+    // RUNNING：包含目前航段。
+    ASSERT_TRUE(executor.start(MISSION_ID, make_ready_conditions(),
+                               Vector3{0.0, 0.0, -10.0}, START_TIME_S).is_accepted);
+    const std::optional<Vector3> first = executor.due_target(START_TIME_S);
+    ASSERT_TRUE(first.has_value());
+    pending = executor.pending_targets();
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending.at(0).first, 0U);
+
+    // DWELLING：目前航點已到達，只剩下一段。
+    ASSERT_TRUE(executor.on_target_reached(*first, START_TIME_S + 5.0));
+    pending = executor.pending_targets();
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending.at(0).first, 1U);
+
+    // ABORTED：沒有待執行航點。
+    ASSERT_TRUE(executor.stop(WaypointMissionReason::GEOFENCE_UPDATE, "geofence update"));
+    EXPECT_TRUE(executor.pending_targets().empty());
+    EXPECT_EQ(executor.snapshot().reason, WaypointMissionReason::GEOFENCE_UPDATE);
+}
+
 }  // namespace

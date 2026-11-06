@@ -25,6 +25,8 @@
 #include "taiphoon_agent/msg/agent_attitude.hpp"
 #include "taiphoon_agent/msg/agent_trajectory.hpp"
 #include "taiphoon_agent/msg/formation_epoch.hpp"
+#include "taiphoon_agent/msg/geofence.hpp"
+#include "taiphoon_agent/msg/geofence_status.hpp"
 #include "taiphoon_agent/msg/ned_target.hpp"
 #include "taiphoon_agent/msg/planner_status.hpp"
 #include "taiphoon_agent/msg/waypoint_mission.hpp"
@@ -42,6 +44,7 @@
 #include "ego_swarm/FormationSlotPlanner.hpp"
 #include "ego_swarm/FormationTerminalSnapPolicy.hpp"
 #include "ego_swarm/Geofence.hpp"
+#include "ego_swarm/GeofenceUpdate.hpp"
 #include "ego_swarm/ITrajectoryPlanner.hpp"
 #include "ego_swarm/LivePeerDistancePolicy.hpp"
 #include "ego_swarm/MovementFrame.hpp"
@@ -73,8 +76,6 @@ namespace nodes
 constexpr double DEFAULT_EGO_PLANNER_RATE_HZ = 10.0;
 constexpr double DEFAULT_FORMATION_MIN_DISTANCE_M = 2.0;
 constexpr double DEFAULT_PEER_COLLISION_MIN_DISTANCE_M = 2.0;
-/// 圍籬硬性 margin 預設值（m）：機體中心與場域邊界的最小水平距離。
-constexpr double DEFAULT_GEOFENCE_MARGIN_M = 0.5;
 constexpr double DEFAULT_OBSTACLE_CLEARANCE_M = 1.0;
 constexpr double DEFAULT_FORMATION_RADIUS_M = 5.0;
 constexpr double DEFAULT_FORMATION_SPACING_M = 3.0;
@@ -117,6 +118,9 @@ constexpr double DEFAULT_PLANNER_FAILURE_EVENT_S = 3.0;
 constexpr std::size_t MISSION_PLAN_QOS_DEPTH = 10U;
 /// /{agent_namespace}/mission/status 的 QoS depth（reliable、transient_local）
 constexpr std::size_t MISSION_STATUS_QOS_DEPTH = 1U;
+/// /uav_all_agent/geofence 與 /{agent_namespace}/geofence/status 的 QoS depth
+/// （reliable、transient_local；只保留最新一筆）
+constexpr std::size_t GEOFENCE_QOS_DEPTH = 1U;
 
 /**
  * @brief EGO-Swarm Planner ROS2 節點
@@ -342,11 +346,30 @@ private:
         const rclcpp::Time& now,
         bool peer_data_valid);
     bool update_planner_frame();
-    /** @brief planner Home 凍結後把 WGS84 圍籬頂點轉成 planner NED。 */
+    /** @brief planner Home 凍結後建立等待中的地面站圍籬。 */
     void build_geofence();
     /**
+     * @brief 接收地面站圍籬命令（/uav_all_agent/geofence）
+     * @param msg 圍籬命令
+     */
+    void geofence_cb(const taiphoon_agent::msg::Geofence::SharedPtr msg);
+    /**
+     * @brief 圍籬替換後處理目前的編隊、航點任務與目標
+     *
+     * 落在新圍籬外的工作會被取消並原地懸停，發布 PLANNER_GEOFENCE_TARGET_CANCELLED；
+     * 執行中軌跡越界由下一個 planner 週期的安全重驗證處理。
+     */
+    void apply_geofence_update_effects();
+    /**
+     * @brief 依目前位置更新 GeofenceStatus.position_inside，改變時發布
+     * @param current planner-local NED 目前位置；沒有位置時為 nullptr
+     */
+    void update_geofence_position_status(const ego_swarm::Vector3* current);
+    /** @brief 發布目前的 GeofenceStatus。 */
+    void publish_geofence_status();
+    /**
      * @brief 取得規劃各階段使用的圍籬
-     * @return 未設定圍籬時為 nullptr；設定但無效時回傳無效圍籬（fail closed）
+     * @return 沒有生效中的圍籬時為 nullptr
      */
     const ego_swarm::Geofence* active_geofence() const;
     /**
@@ -503,12 +526,10 @@ private:
     /// planner-local NED 至 PX4 local NED 的固定平移是否已建立。
     bool has_planner_to_px4_ned_transform_{false};
     ego_swarm::Vector3 planner_to_px4_ned_offset_{0.0, 0.0, 0.0};
-    /// 是否設定了圍籬參數（含格式錯誤）；設定後一律 fail closed。
-    bool is_geofence_configured_{false};
-    double geofence_margin_m_{0.5};
-    std::vector<ego_swarm::GeoCoordinate> geofence_vertices_{};
-    /// planner NED 圍籬；planner Home 凍結前或設定無效時為無效狀態。
-    ego_swarm::Geofence geofence_{};
+    /// 地面站設定的圍籬；planner Home 凍結前為 PENDING。
+    ego_swarm::GeofenceUpdatePolicy geofence_policy_{};
+    /// 最近一次回報的 GeofenceStatus.position_inside。
+    bool geofence_position_inside_{true};
 
     bool has_own_state_{false};
     ego_swarm::FlightMissionLifecycle flight_mission_lifecycle_{};
@@ -605,6 +626,8 @@ private:
         mission_plan_sub_;
     rclcpp::Subscription<taiphoon_agent::msg::AgentEvent>::SharedPtr
         agent_event_sub_;
+    rclcpp::Subscription<taiphoon_agent::msg::Geofence>::SharedPtr
+        geofence_sub_;
 
     rclcpp::Publisher<taiphoon_agent::msg::AgentTrajectory>::SharedPtr
         trajectory_pub_;
@@ -616,6 +639,8 @@ private:
     rclcpp::Publisher<taiphoon_agent::msg::WaypointMissionStatus>::SharedPtr
         mission_status_pub_;
     rclcpp::Publisher<taiphoon_agent::msg::AgentEvent>::SharedPtr events_pub_;
+    rclcpp::Publisher<taiphoon_agent::msg::GeofenceStatus>::SharedPtr
+        geofence_status_pub_;
     rclcpp::TimerBase::SharedPtr planner_timer_;
     rclcpp::TimerBase::SharedPtr peer_scan_timer_;
     rclcpp::TimerBase::SharedPtr mission_status_timer_;

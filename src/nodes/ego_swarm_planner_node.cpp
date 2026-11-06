@@ -250,8 +250,6 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
     declare_parameter<double>("peer_collision_min_distance_m",
                              DEFAULT_PEER_COLLISION_MIN_DISTANCE_M);
     declare_parameter<double>("peer_planning_margin_m", 1.0);
-    declare_parameter<std::string>("geofence_polygon", "");
-    declare_parameter<double>("geofence_margin_m", DEFAULT_GEOFENCE_MARGIN_M);
     declare_parameter<double>("obstacle_clearance_m",
                              DEFAULT_OBSTACLE_CLEARANCE_M);
     declare_parameter<double>("knot_interval_s", 1.0);
@@ -399,29 +397,6 @@ EgoSwarmPlannerNode::EgoSwarmPlannerNode()
         "peer_collision_min_distance_m").as_double();
     planner_config_.peer_planning_margin_m = get_parameter(
         "peer_planning_margin_m").as_double();
-    const std::string geofence_polygon = get_parameter(
-        "geofence_polygon").as_string();
-    geofence_margin_m_ = get_parameter("geofence_margin_m").as_double();
-    // 圍籬一旦設定就 fail closed：格式或 margin 錯誤時不靜默停用，
-    // 而是保持無效圍籬，讓所有移動目標被拒絕；起飛、降落與 hold 不受影響。
-    is_geofence_configured_ =
-        geofence_polygon.find_first_not_of(" \t\r\n") != std::string::npos;
-    if (is_geofence_configured_ &&
-        (!ego_swarm::parse_geofence_polygon(
-             geofence_polygon, geofence_vertices_) ||
-         !std::isfinite(geofence_margin_m_) || geofence_margin_m_ < 0.0))
-    {
-        geofence_vertices_.clear();
-        RCLCPP_ERROR(get_logger(),
-                     "Invalid geofence_polygon or geofence_margin_m; all move "
-                     "targets will be rejected");
-    }
-    else if (is_geofence_configured_)
-    {
-        RCLCPP_INFO(get_logger(),
-                    "Geofence configured: vertices=%zu, margin=%.2f m",
-                    geofence_vertices_.size(), geofence_margin_m_);
-    }
     planner_config_.obstacle_clearance_m = get_parameter(
         "obstacle_clearance_m").as_double();
     planner_config_.knot_interval_s = get_parameter(
@@ -773,13 +748,20 @@ bool EgoSwarmPlannerNode::initialize_subscribers()
         std::bind(&EgoSwarmPlannerNode::agent_event_cb, this,
                   std::placeholders::_1));
 
+    // 地面站最後發布的圍籬以 transient_local 保留，Agent 重啟後也能取得。
+    geofence_sub_ = create_subscription<taiphoon_agent::msg::Geofence>(
+        utils::agent_naming::make_all_agent_topic("geofence"),
+        rclcpp::QoS(GEOFENCE_QOS_DEPTH).reliable().transient_local(),
+        std::bind(&EgoSwarmPlannerNode::geofence_cb, this,
+                  std::placeholders::_1));
+
     return own_state_sub_ != nullptr && own_attitude_sub_ != nullptr &&
         ned_target_sub_ != nullptr &&
         mission_intent_sub_ != nullptr && agent_command_sub_ != nullptr &&
         all_command_sub_ != nullptr &&
         obstacle_sub_ != nullptr && trajectory_sub_ != nullptr &&
         formation_epoch_sub_ != nullptr && mission_plan_sub_ != nullptr &&
-        agent_event_sub_ != nullptr;
+        agent_event_sub_ != nullptr && geofence_sub_ != nullptr;
 }
 
 bool EgoSwarmPlannerNode::initialize_publishers()
@@ -805,9 +787,17 @@ bool EgoSwarmPlannerNode::initialize_publishers()
         "/" + agent_namespace_ + "/events",
         rclcpp::QoS(safety::AGENT_EVENT_QOS_DEPTH).reliable().durability_volatile());
 
+    // 晚加入或重啟的 GCS 需要看到目前圍籬，因此使用 transient_local。
+    geofence_status_pub_ =
+        create_publisher<taiphoon_agent::msg::GeofenceStatus>(
+            "/" + agent_namespace_ + "/geofence/status",
+            rclcpp::QoS(GEOFENCE_QOS_DEPTH).reliable().transient_local());
+    publish_geofence_status();
+
     return trajectory_pub_ != nullptr && local_trajectory_pub_ != nullptr &&
         status_pub_ != nullptr && formation_epoch_pub_ != nullptr &&
-        mission_status_pub_ != nullptr && events_pub_ != nullptr;
+        mission_status_pub_ != nullptr && events_pub_ != nullptr &&
+        geofence_status_pub_ != nullptr;
 }
 
 void EgoSwarmPlannerNode::own_state_cb(
@@ -1659,11 +1649,12 @@ bool EgoSwarmPlannerNode::is_formation_terminal_snap_clear(
     const double now_s) const
 {
     // 直接到位不經 optimizer 與 validator，因此圍籬也要在此以直線段檢查。
-    if (is_geofence_configured_ &&
-        !geofence_.segment_inside(
+    const ego_swarm::Geofence* const fence = active_geofence();
+    if (fence != nullptr &&
+        !fence->segment_inside(
             current, final_target,
-            geofence_.required_clearance_from_start(
-                geofence_.clearance_m(current))))
+            fence->required_clearance_from_start(
+                fence->clearance_m(current))))
     {
         return false;
     }
@@ -2342,7 +2333,7 @@ bool EgoSwarmPlannerNode::make_formation_proposal(
         }
     }
     ego_swarm::Vector3 proposal_center_ned{};
-    if (is_geofence_configured_ &&
+    if (active_geofence() != nullptr &&
         (!planner_frame_.to_local_ned(
              ego_swarm::GeoCoordinate{
                  proposal.center_latitude_deg, proposal.center_longitude_deg,
@@ -3157,6 +3148,7 @@ void EgoSwarmPlannerNode::planner_loop_cb()
                        nullptr, false, peer_data_valid, now);
         return;
     }
+    update_geofence_position_status(&current);
 
     ego_swarm::VehiclePlanningState planning_state =
         make_planning_state(current, now_s);
@@ -4139,42 +4131,201 @@ bool EgoSwarmPlannerNode::update_planner_frame()
 
 void EgoSwarmPlannerNode::build_geofence()
 {
-    if (!is_geofence_configured_ || geofence_vertices_.empty())
+    const ego_swarm::GeofenceUpdateOutcome outcome =
+        geofence_policy_.on_home_ready(planner_frame_);
+    if (!outcome.is_status_changed)
     {
         return;
     }
-    if (!ego_swarm::Geofence::from_geodetic(
-            planner_frame_, geofence_vertices_, geofence_margin_m_, geofence_))
+    if (outcome.result == ego_swarm::GeofenceUpdateResult::ACCEPTED)
+    {
+        RCLCPP_INFO(get_logger(),
+                    "Pending geofence %u active after Home freeze",
+                    geofence_policy_.definition().fence_id);
+    }
+    else
     {
         RCLCPP_ERROR(get_logger(),
-                     "Geofence polygon is self-intersecting, degenerate or too far "
-                     "from Home; all move targets will be rejected");
+                     "Pending geofence rejected after Home freeze: %s",
+                     outcome.detail.c_str());
+    }
+    if (outcome.is_fence_changed)
+    {
+        apply_geofence_update_effects();
+    }
+    publish_geofence_status();
+}
+
+void EgoSwarmPlannerNode::geofence_cb(
+    const taiphoon_agent::msg::Geofence::SharedPtr msg)
+{
+    if (msg == nullptr)
+    {
+        RCLCPP_WARN(get_logger(), "geofence_cb received nullptr");
         return;
     }
-    const ego_swarm::Vector3 home{0.0, 0.0, 0.0};
-    RCLCPP_INFO(get_logger(),
-                "Geofence active in planner frame: vertices=%zu, margin=%.2f m, "
-                "Home clearance=%.2f m",
-                geofence_.vertices().size(), geofence_.margin_m(),
-                geofence_.clearance_m(home));
-    if (!geofence_.contains_with_margin(home))
+    ego_swarm::GeofenceRequest request;
+    request.fence_id = msg->fence_id;
+    request.action = msg->action;
+    request.margin_m = static_cast<double>(msg->margin_m);
+    request.vertices.reserve(msg->vertices.size());
+    for (const auto& vertex : msg->vertices)
+    {
+        request.vertices.push_back(ego_swarm::GeoCoordinate{
+            vertex.latitude_deg, vertex.longitude_deg, 0.0});
+    }
+
+    // Home 可凍結時先凍結，讓圍籬直接生效而不是停在 PENDING。
+    (void)update_planner_frame();
+    const ego_swarm::GeofenceUpdateOutcome outcome =
+        geofence_policy_.handle_request(
+            request, planner_frame_.has_origin() ? &planner_frame_ : nullptr);
+    if (outcome.result == ego_swarm::GeofenceUpdateResult::ACCEPTED)
+    {
+        if (outcome.is_status_changed)
+        {
+            RCLCPP_INFO(get_logger(),
+                        "Geofence request %u accepted: %s (vertices=%zu, margin=%.2f m)",
+                        msg->fence_id, outcome.detail.c_str(),
+                        geofence_policy_.definition().vertices.size(),
+                        geofence_policy_.definition().margin_m);
+        }
+    }
+    else
     {
         RCLCPP_WARN(get_logger(),
-                    "Home is outside the geofence margin; planner only allows "
-                    "trajectories that move inward");
+                    "Geofence request %u rejected: %s; keeping previous geofence",
+                    msg->fence_id, outcome.detail.c_str());
     }
+    if (outcome.is_fence_changed)
+    {
+        apply_geofence_update_effects();
+    }
+    if (outcome.is_status_changed || outcome.is_fence_changed)
+    {
+        publish_geofence_status();
+    }
+}
+
+void EgoSwarmPlannerNode::apply_geofence_update_effects()
+{
+    const ego_swarm::Geofence* const fence = active_geofence();
+    ego_swarm::Vector3 current{};
+    const bool has_current = has_own_state_ && planner_frame_.has_origin() &&
+        get_position_in_planner_frame(own_state_, current);
+    // 先更新位置狀態：之後發布的 GeofenceStatus 與事件使用同一份判斷。
+    geofence_position_inside_ = fence == nullptr || !has_current ||
+        fence->contains_with_margin(current);
+    if (fence == nullptr)
+    {
+        // 清除圍籬只放寬限制，目前工作照常執行。
+        return;
+    }
+
+    // 全體收到同一份圍籬並以同一套槽位計算，因此各機對編隊的判斷一致。
+    if (has_formation_ && has_accepted_formation_epoch_ &&
+        !are_formation_slots_inside_geofence(
+            formation_center_,
+            accepted_formation_epoch_.member_agent_ids.size()))
+    {
+        dissolve_formation_to_hold("formation slot outside updated geofence");
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "FORMATION", "Formation slot outside updated geofence; holding");
+        return;
+    }
+
+    const auto outside_waypoint = ego_swarm::first_target_outside_geofence(
+        fence, waypoint_mission_executor_.pending_targets());
+    if (outside_waypoint.has_value())
+    {
+        const std::string detail = "waypoint " +
+            std::to_string(*outside_waypoint + 1U) +
+            " outside updated geofence";
+        const bool was_running = waypoint_mission_executor_.stop(
+            ego_swarm::WaypointMissionReason::GEOFENCE_UPDATE, detail);
+        RCLCPP_WARN(get_logger(), "Waypoint mission cancelled: %s",
+                    detail.c_str());
+        if (was_running)
+        {
+            stop_mission_in_place("waypoint mission " + detail);
+        }
+        publish_mission_status();
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "MISSION", "Waypoint mission " + detail +
+                (was_running ? "; holding" : "; loaded mission cleared"));
+        return;
+    }
+
+    if (!has_formation_ && has_goal_ &&
+        ego_swarm::is_target_outside_geofence(fence, goal_position_))
+    {
+        RCLCPP_WARN(get_logger(),
+                    "Goal outside updated geofence; stopping in place");
+        stop_mission_in_place("goal outside updated geofence");
+        publish_planner_event(
+            safety::AgentEventCode::PLANNER_GEOFENCE_TARGET_CANCELLED,
+            "MOVE", "Goal outside updated geofence; holding");
+    }
+}
+
+void EgoSwarmPlannerNode::update_geofence_position_status(
+    const ego_swarm::Vector3* const current)
+{
+    const ego_swarm::Geofence* const fence = active_geofence();
+    const bool is_inside = fence == nullptr || current == nullptr ||
+        fence->contains_with_margin(*current);
+    if (is_inside == geofence_position_inside_)
+    {
+        return;
+    }
+    geofence_position_inside_ = is_inside;
+    if (!is_inside)
+    {
+        RCLCPP_WARN(get_logger(), "Own position is outside the geofence margin");
+    }
+    publish_geofence_status();
+}
+
+void EgoSwarmPlannerNode::publish_geofence_status()
+{
+    if (geofence_status_pub_ == nullptr)
+    {
+        return;
+    }
+    taiphoon_agent::msg::GeofenceStatus msg;
+    msg.stamp = this->now();
+    msg.state = static_cast<uint8_t>(geofence_policy_.state());
+    const ego_swarm::GeofenceDefinition& definition =
+        geofence_policy_.definition();
+    msg.fence_id = definition.fence_id;
+    msg.margin_m = static_cast<float>(definition.margin_m);
+    msg.vertices.reserve(definition.vertices.size());
+    for (const ego_swarm::GeoCoordinate& vertex : definition.vertices)
+    {
+        taiphoon_agent::msg::GeofenceVertex vertex_msg;
+        vertex_msg.latitude_deg = vertex.latitude_deg;
+        vertex_msg.longitude_deg = vertex.longitude_deg;
+        msg.vertices.push_back(vertex_msg);
+    }
+    msg.last_request_id = geofence_policy_.last_request_id();
+    msg.last_result = static_cast<uint8_t>(geofence_policy_.last_result());
+    msg.position_inside = geofence_position_inside_;
+    msg.detail = geofence_policy_.last_detail();
+    geofence_status_pub_->publish(msg);
 }
 
 const ego_swarm::Geofence* EgoSwarmPlannerNode::active_geofence() const
 {
-    return is_geofence_configured_ ? &geofence_ : nullptr;
+    return geofence_policy_.active_fence();
 }
 
 bool EgoSwarmPlannerNode::is_inside_geofence(
     const ego_swarm::Vector3& position) const
 {
-    return !is_geofence_configured_ ||
-        geofence_.contains_with_margin(position);
+    const ego_swarm::Geofence* const fence = active_geofence();
+    return fence == nullptr || fence->contains_with_margin(position);
 }
 
 bool EgoSwarmPlannerNode::update_planner_to_px4_ned_transform()
@@ -4350,7 +4501,7 @@ bool EgoSwarmPlannerNode::are_formation_slots_inside_geofence(
     const ego_swarm::Vector3& center,
     const std::size_t member_count) const
 {
-    if (!is_geofence_configured_)
+    if (active_geofence() == nullptr)
     {
         return true;
     }

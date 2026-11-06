@@ -7,37 +7,63 @@
   曾延伸到長軸 4.0～4.6 m（`formation-failed-1-164241`、`formation-failed-3-164501`）。
   原因是 planner 不知道場域邊界：Local Goal、A*、最佳化器與 ContinuousSafetyValidator 只考慮同儕與障礙物。
 - 人類開發者決定：Agent 新增可設定的場域多邊形，規劃器以邊界為硬限制，Local Goal、A* 與軌跡都不得超出，
-  超出時拒絕或改走他側。
+  超出時拒絕或改走他側。圍籬範圍需由地面站設定，不在啟動時固定。
 
 ## 範圍
 
 - 只限制水平位置（North／East）。高度沿用既有 TAKEOFF／ALTITUDE 與 PX4 限制，本次不新增限高。
 - 圍籬是 Agent planner 的規劃約束，不取代 PX4 自身 geofence（`GF_*`），也不寫入 PX4 參數。
-- 不新增 ROS2 topic 或 message；只新增 Node 參數、Launch 參數與 Docker 環境變數。
+- 圍籬只由地面站在執行期設定（2026-11-06 人類開發者決定）：移除啟動參數 `geofence_polygon`、
+  `geofence_margin_m` 與對應環境變數；Agent 啟動時沒有圍籬，直到收到地面站的設定。
+  飛行中可以隨時更新或清除。
 
 ## 介面
 
-| 層級 | 名稱 | 型別／預設 | 說明 |
+| 方向 | Topic | 型別 | QoS |
 |---|---|---|---|
-| 環境變數 | `EGO_SWARM_GEOFENCE_POLYGON` | 空字串 | `lat,lon;lat,lon;...`，WGS84 度，至少 3 點；空字串表示停用 |
-| 環境變數 | `EGO_SWARM_GEOFENCE_MARGIN_M` | `0.5` | 機體中心與邊界的最小水平距離（m） |
-| Launch／Node 參數 | `geofence_polygon` | `""` | 同上 |
-| Launch／Node 參數 | `geofence_margin_m` | `0.5` | 同上，必須為有限值且 ≥ 0 |
+| 地面站 → 全體 Agent | `/uav_all_agent/geofence` | `taiphoon_agent/Geofence` | reliable、transient_local、depth 1 |
+| Agent → 地面站 | `/{agent_namespace}/geofence/status` | `taiphoon_agent/GeofenceStatus` | reliable、transient_local、depth 1；狀態改變時發布 |
 
-- 頂點依序連成簡單多邊形（凹多邊形可，不可自交）；最後一點自動與第一點相連，不需重複第一點。
-- 上限 64 個頂點；每個頂點距 planner Home 不得超過 5 km（避免誤填座標）。
-- 最佳化器另以固定 0.5 m 軟性緩衝（`GEOFENCE_OPTIMIZER_SOFT_MARGIN_M`）把軌跡推離邊界，硬性門檻仍是 `geofence_margin_m`。
+`Geofence`（地面站命令）：
+
+| 欄位 | 說明 |
+|---|---|
+| `stamp` | 發布時間（只供日誌） |
+| `fence_id` | 地面站指定的版本號，不得為 0；建議每次修改遞增 |
+| `action` | `ACTION_SET=1` 設定或替換；`ACTION_CLEAR=2` 停用 |
+| `margin_m` | 機體中心與邊界的最小水平距離（m），有限值且 0～10；CLEAR 時忽略 |
+| `vertices` | `GeofenceVertex[]`（WGS84 `latitude_deg`、`longitude_deg`），3～64 點，依序相連、不需重複第一點；CLEAR 時忽略 |
+
+`GeofenceStatus`（每台 Agent 回報）：
+
+| 欄位 | 說明 |
+|---|---|
+| `state` | `STATE_DISABLED=0` 無圍籬；`STATE_PENDING=1` 已接受、等待 planner Home 建立；`STATE_ACTIVE=2` 生效 |
+| `fence_id`、`margin_m`、`vertices` | 目前生效（或等待中）的圍籬內容；DISABLED 時為 0／空。地面站重啟後可據此還原顯示 |
+| `last_request_id` | 最近一次處理的命令 `fence_id` |
+| `last_result` | `RESULT_NONE=0`、`RESULT_ACCEPTED=1`、`RESULT_REJECTED_INVALID=2`（格式、頂點數、margin、自交、面積過小）、`RESULT_REJECTED_TOO_FAR=3`（頂點距 Home 超過 5 km） |
+| `position_inside` | 目前位置是否在圍籬（含 margin）內；沒有圍籬或沒有位置時為 true |
+| `detail` | 英文補充說明 |
+
+- 拒絕時保留原本的圍籬（或維持無圍籬），不進入 fail closed。
+- 同一 `fence_id` 且內容相同的命令（transient_local 重送）只更新 `last_request_id`，不重新套用。
+- 新增事件 403 `PLANNER_GEOFENCE_TARGET_CANCELLED`（WARNING）：圍籬更新讓目前目標、編隊槽位或航點落在圍籬外，
+  Agent 已停止並原地懸停。`WaypointMissionStatus` 新增 `REASON_GEOFENCE_UPDATE=15`。
+- 頂點依序連成簡單多邊形（凹多邊形可，不可自交）；每個頂點距 planner Home 不得超過 5 km（避免誤填座標）。
+- 最佳化器另以固定 0.5 m 軟性緩衝（`GEOFENCE_OPTIMIZER_SOFT_MARGIN_M`）把軌跡推離邊界，硬性門檻仍是 `margin_m`。
 
 ## 資料流
 
-1. Node 建構時解析 `geofence_polygon` 字串並驗證頂點（數量、有限值、緯經度範圍）。
-   字串非空但格式錯誤 → `RCLCPP_ERROR` 並讓 planner 進入「圍籬無效」狀態（fail closed，拒絕所有移動目標）。
-2. `update_planner_frame()` 凍結 planner Home 後，以同一 `LocalNedFrame` 把頂點轉成 planner NED (N, E)，
-   建立 pure C++ `ego_swarm::Geofence`（`src/ego_swarm/Geofence.hpp`）。轉換後檢查不自交與面積 > 1 m²；
-   失敗同樣 fail closed。PX4 重啟只重設 PX4 transform，planner Home 不變，因此不重建圍籬。
-3. `Geofence` 提供 `clearance_m(position)`：在多邊形內為「到最近邊的距離」（正），在外為負值。
-   `is_inside(position, margin)` 等同 `clearance_m ≥ margin`。
-4. 規劃各階段以同一個 `const Geofence*` 取得邊界（停用時為 nullptr，所有檢查視為通過）：
+1. `geofence_cb` 收到命令後，先以 pure C++ `ego_swarm::GeofenceUpdatePolicy`（`src/ego_swarm/GeofenceUpdate.hpp`）
+   檢查 `fence_id`、`action`、margin 與頂點（數量、有限值、緯經度範圍）。
+2. planner Home 已凍結時，以同一 `LocalNedFrame` 把頂點轉成 planner NED (N, E)，建立 `ego_swarm::Geofence`
+   （`src/ego_swarm/Geofence.hpp`），檢查不自交、面積 > 1 m²、距 Home 5 km 內；全部通過才替換目前圍籬。
+   Home 尚未凍結時暫存為 PENDING，凍結當下再建立；建立失敗回報 REJECTED 並維持無圍籬。
+   PX4 重啟只重設 PX4 transform，planner Home 不變，因此不重建圍籬。
+3. 套用（SET 成功或 CLEAR）後立即處理正在進行的工作（見「執行期更新」），再發布 `GeofenceStatus`。
+4. `Geofence` 提供 `clearance_m(position)`：在多邊形內為「到最近邊的距離」（正），在外為負值。
+   `contains_with_margin(position)` 等同 `clearance_m ≥ margin`。
+5. 規劃各階段以同一個 `const Geofence*` 取得邊界（停用時為 nullptr，所有檢查視為通過）：
 
 | 階段 | 位置 | 行為 |
 |---|---|---|
@@ -52,8 +78,8 @@
 | 安全驗證 | `ContinuousSafetyValidator` | 每個取樣點檢查；不足時回傳 `GEOFENCE_VIOLATION` |
 | 直接到位 | terminal snap | 目前位置到目標的直線段需全程在圍籬內，否則改走一般規劃 |
 
-5. 執行中的 active plan 重驗證得到 `GEOFENCE_VIOLATION` 時，比照同儕／障礙物：作廢並重新規劃，不直接煞車。
-6. 小場域的最佳化器補強（未設定圍籬時同樣生效，但只在原本會判定失敗的情況介入）：
+6. 執行中的 active plan 重驗證得到 `GEOFENCE_VIOLATION` 時，比照同儕／障礙物：作廢並重新規劃，不直接煞車。
+7. 小場域的最佳化器補強（未設定圍籬時同樣生效，但只在原本會判定失敗的情況介入）：
    - seed 退回：solver 無法產生合格解時，若 seed 通過全部 hard gate、動力學可行，
      且同儕距離至少保有 `peer_collision_min_distance_m + peer_planning_margin_m`，改用 seed。
    - 時間拉長：solver 的繞行路線已通過同儕、障礙物與圍籬 hard gate，但沿用 seed 的總時間會超出
@@ -69,17 +95,37 @@
 2.5 秒內、交叉機繞過中央懸停機時，與上限修正無關。原因是 planner 只保證計畫軌跡不低於
 `peer_collision_min_distance_m`，沒有替 PX4 追蹤誤差（轉彎時切內側）預留空間；尚未處理。
 
+## 執行期更新
+
+圍籬替換或清除後，Node 依下列順序處理目前工作。所有 Agent 收到同一份圍籬、用同一套規則判斷，
+編隊的處理結果因此一致；各機獨立回報 `GeofenceStatus`。
+
+| 情況 | 處理 |
+|---|---|
+| CLEAR | 只停用圍籬；目前目標、編隊與任務照常執行 |
+| 編隊中，任一槽位（中心＋偏移）在新圍籬外 | 全體各自解散編隊、原地懸停（`dissolve_formation_to_hold`），發布事件 403 |
+| 航點任務 LOADED／RUNNING／DWELLING，尚未完成的任一航點在新圍籬外 | 任務中止（`REASON_GEOFENCE_UPDATE`），執行中則煞停並原地懸停，發布事件 403 |
+| 一般目標（MOVE_*、MOVE_POINT、NED target）在新圍籬外 | 取消目標、煞停並原地懸停，發布事件 403 |
+| 目標仍在圍籬內，但執行中的軌跡越界 | 下一個 planner 週期重驗證得到 `GEOFENCE_VIOLATION`，作廢並重新規劃（既有行為） |
+| 目前位置已在新圍籬外 | 原地懸停時不強制移動；之後的軌跡只允許往內（既有起點放寬規則），`position_inside=false` 提醒地面站 |
+| 已落地或尚未起飛 | 只更新圍籬，之後的命令以新圍籬檢查 |
+
+- 原地懸停的位置可能在新圍籬外；不自動飛回，由操作人員下達往內的移動命令，避免在擁擠場域自動移動。
+- 清除圍籬會失去場域保護；Agent 照常接受，由地面站負責確認流程。
+
 ## 失效情境
 
 | 情境 | 處理 |
 |---|---|
-| 參數空字串 | 停用圍籬，行為與現行完全相同 |
-| 參數格式錯誤、頂點數不足、自交、離 Home 過遠 | fail closed：拒絕所有移動目標並持續記錄錯誤；不影響起飛、降落與 hold |
+| 地面站從未設定 | 無圍籬，行為與未加入圍籬前相同 |
+| 命令格式錯誤、頂點數不足、自交、離 Home 過遠 | 拒絕（`last_result`），保留原本的圍籬；不 fail closed |
+| 地面站離線 | Agent 保留最後一次生效的圍籬；地面站重新上線後以 `GeofenceStatus` 還原顯示 |
+| Agent 重啟 | 從 transient_local 取得地面站最後發布的命令；地面站也離線時無圍籬，`GeofenceStatus` 為 DISABLED |
 | 起飛點或目前位置已在圍籬外／margin 帶內 | 驗證器把該次規劃的門檻放寬為 `min(margin, 起點 clearance − 0.05 m)`：允許往內修正，不允許比起點更外側；新目標仍須在圍籬內 |
 | 同儕擋住唯一的圍籬內路徑 | 規劃失敗 → 既有 waiting hold，待同儕移動後重試；不會為了避讓而出界 |
 | 緊急煞車 | 不經圍籬驗證（必須優先停下）；煞車距離約 v²/(2a)，以 margin 吸收，文件註明 margin 應 ≥ 預期煞車距離 |
 | 同儕解衝突（peer deconfliction）逃逸 | 逃逸目標也須在圍籬內；找不到時維持既有 hold |
-| 各 Agent 圍籬設定不一致 | 視為部署錯誤；各 Agent 只以自己的圍籬檢查自己的目標與軌跡 |
+| 部分 Agent 拒絕或未收到命令 | 各 Agent 只以自己的圍籬檢查自己的目標與軌跡；地面站比對各機 `GeofenceStatus.fence_id` 找出不一致 |
 
 ## 驗證方式
 
@@ -89,7 +135,10 @@
    - `LocalGoalSelector`：圍籬外候選點被排除。
    - `OptimizedEgoPlanner`：同儕擋在直線上、單側為圍籬時，軌跡改走圍籬內側且全程 clearance ≥ margin。
    - `OptimizedEgoPlanner`：1.5 m 間距、場域長軸 0° 與 143° 時，同儕與圍籬之間的窄通道仍可規劃出合格繞行。
-   - 未設定圍籬時，既有 446 項測試行為不變。
-2. 舊版 PX4 SITL 8×8 m 場域三機測試（失效機 uav_1、uav_2、uav_3），以場域四角加 margin 0.5 m 設定圍籬；
+   - `GeofenceUpdatePolicy`：命令檢查、重複命令、PENDING、拒絕保留舊圍籬，以及更新後目標／槽位／航點的取消判斷。
+   - 未設定圍籬時，既有測試行為不變。
+2. 舊版 PX4 SITL 8×8 m 場域三機測試（失效機 uav_1、uav_2、uav_3），monitor 起飛前發布場域四角加 margin 0.5 m 的圍籬，
+   並等三台 `GeofenceStatus` 都為 ACTIVE；
    monitor 的 `trajectory_boundary_violation` 不得再出現，最小機間距 ≥ 2.0 m。
-3. 4 機標準回歸（未設定圍籬）確認沒有退化。
+3. 執行期更新 SITL：飛行中縮小圍籬讓目標落在外側，確認煞停懸停、事件 403 與 `GeofenceStatus`；再清除圍籬確認可繼續移動。
+4. 4 機標準回歸（未設定圍籬）確認沒有退化。

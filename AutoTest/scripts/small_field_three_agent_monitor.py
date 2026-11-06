@@ -14,11 +14,26 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
 from taiphoon_agent.msg import (AgentAttitude, AgentState, AgentTrajectory, FormationEpoch,
-                                PlannerStatus)
+                                Geofence, GeofenceStatus, GeofenceVertex, PlannerStatus)
+
+# 本驗證發布的圍籬版本號；每個案例都重新啟動 Agent，因此固定即可。
+GEOFENCE_ID = 1
+
+
+def parse_geofence_polygon(text):
+    """解析 'lat,lon;lat,lon;...'；空字串回傳空列表。"""
+    vertices = []
+    for item in text.split(";"):
+        if item.strip():
+            latitude, longitude = (float(value) for value in item.split(","))
+            vertices.append((latitude, longitude))
+    if vertices and len(vertices) < 3:
+        raise ValueError("geofence polygon needs at least 3 vertices")
+    return vertices
 
 
 class SmallFieldMonitor(Node):
@@ -28,7 +43,7 @@ class SmallFieldMonitor(Node):
                  min_separation_m=2.0, field_half_m=4.5, field_half_long_m=None,
                  field_half_short_m=None, field_bearing_deg=0.0, heading_deg=None,
                  single_move_m=0.0, circle_radius_m=2.0, takeoff_alt_m=2.0,
-                 group_move_m=1.0):
+                 group_move_m=1.0, geofence_vertices=(), geofence_margin_m=0.5):
         super().__init__("small_field_three_agent_validation", namespace="autotest")
         self.failed_agent = failed_agent
         self.scenario = scenario
@@ -45,6 +60,10 @@ class SmallFieldMonitor(Node):
         self.circle_radius_m = circle_radius_m
         self.takeoff_alt_m = takeoff_alt_m
         self.group_move_m = group_move_m
+        # 圍籬由地面站設定：起飛前發布，三台 GeofenceStatus 都 ACTIVE 後才開始。
+        self.geofence_vertices = list(geofence_vertices)
+        self.geofence_margin_m = geofence_margin_m
+        self.geofence_statuses = {}
         self.attitudes = {}
         self.single_move_start = None
         self.last_status_reason = {}
@@ -74,6 +93,13 @@ class SmallFieldMonitor(Node):
         self.individual_commands = {agent: self.create_publisher(
             String, f"/uav_{agent}_agent/command", 10) for agent in (1, 2, 3)}
         self.shutdown_client = self.create_client(SetBool, f"/uav_{failed_agent}_agent/shutdown")
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.geofence_pub = self.create_publisher(Geofence, "/uav_all_agent/geofence", latched)
+        for agent in self.members:
+            self.subscriptions_keepalive.append(self.create_subscription(
+                GeofenceStatus, f"/uav_{agent}_agent/geofence/status",
+                lambda msg, agent_id=agent: self.geofence_status_cb(msg, agent_id), latched))
         for agent in self.members:
             self.subscriptions_keepalive.append(self.create_subscription(
                 AgentState, f"/uav_{agent}_agent/state",
@@ -90,6 +116,29 @@ class SmallFieldMonitor(Node):
         self.subscriptions_keepalive.append(self.create_subscription(
             AgentTrajectory, "/uav_all_agent/swarm/agent_trajectories", self.trajectory_cb, 20))
         self.timer = self.create_timer(0.05, self.tick)
+
+    def geofence_status_cb(self, msg, agent):
+        if msg is None:
+            return
+        self.geofence_statuses[agent] = msg
+        self.emit("geofence_status", agent=agent, state=msg.state, fence_id=msg.fence_id,
+                  last_request_id=msg.last_request_id, last_result=msg.last_result,
+                  position_inside=msg.position_inside, detail=msg.detail)
+
+    def publish_geofence(self):
+        msg = Geofence()
+        msg.stamp = self.get_clock().now().to_msg()
+        msg.fence_id = GEOFENCE_ID
+        msg.action = Geofence.ACTION_SET
+        msg.margin_m = float(self.geofence_margin_m)
+        for latitude, longitude in self.geofence_vertices:
+            vertex = GeofenceVertex()
+            vertex.latitude_deg = latitude
+            vertex.longitude_deg = longitude
+            msg.vertices.append(vertex)
+        self.geofence_pub.publish(msg)
+        self.emit("command", command=f"GEOFENCE_SET {GEOFENCE_ID}",
+                  vertices=len(msg.vertices), margin_m=msg.margin_m)
 
     def emit(self, event, **values):
         print(json.dumps({"event": event, "time_s": time.time(), "phase": self.phase,
@@ -333,8 +382,12 @@ class SmallFieldMonitor(Node):
             self.reference = [sum(self.states[agent][1][axis] for agent in self.members) / 3.0
                               for axis in range(3)]
             self.emit("field_reference", reference=self.reference)
-            self.publish("MODE_OFFBOARD")
-            self.advance("offboard")
+            if self.geofence_vertices:
+                self.publish_geofence()
+                self.advance("geofence")
+            else:
+                self.publish("MODE_OFFBOARD")
+                self.advance("offboard")
             return
         if self.fresh(now):
             points = [self.project(self.states[agent][1]) for agent in self.members]
@@ -365,7 +418,20 @@ class SmallFieldMonitor(Node):
         if now - self.last_report > 2.0:
             self.last_report = now
             self.emit("progress", members=self.members, min_distance_m=self.min_distance)
-        if self.phase == "offboard":
+        if self.phase == "geofence":
+            statuses = [self.geofence_statuses.get(agent) for agent in self.members]
+            if any(status is not None and status.last_request_id == GEOFENCE_ID and
+                   status.last_result in (GeofenceStatus.RESULT_REJECTED_INVALID,
+                                          GeofenceStatus.RESULT_REJECTED_TOO_FAR)
+                   for status in statuses):
+                self.failure = "geofence_rejected"
+                return
+            if all(status is not None and status.state == GeofenceStatus.STATE_ACTIVE and
+                   status.fence_id == GEOFENCE_ID for status in statuses):
+                self.emit("geofence_active", fence_id=GEOFENCE_ID)
+                self.publish("MODE_OFFBOARD")
+                self.advance("offboard")
+        elif self.phase == "offboard":
             if self.fresh(now) and all(self.states[agent][2].px4_nav_state == 14 for agent in self.members):
                 self.publish("ARM")
                 self.advance("armed")
@@ -483,13 +549,17 @@ def main():
     parser.add_argument("--group-move-m", type=float, default=1.0)
     # 實測位置超出場域的容許量（公尺）；預設 0 為嚴格判定，規劃軌跡不受此值影響。
     parser.add_argument("--observed-field-margin-m", type=float, default=0.0)
+    # 地面站圍籬 'lat,lon;lat,lon;...'（WGS84）；空字串表示不設定。
+    parser.add_argument("--geofence-polygon", default="")
+    parser.add_argument("--geofence-margin-m", type=float, default=0.5)
     args = parser.parse_args()
     rclpy.init()
     monitor = SmallFieldMonitor(args.failed_agent, args.scenario, args.tolerance_scale,
                                 args.min_separation_m, args.field_half_m, args.field_half_long_m,
                                 args.field_half_short_m, args.field_bearing_deg, args.heading_deg,
                                 args.single_move_m, args.circle_radius_m, args.takeoff_alt_m,
-                                args.group_move_m)
+                                args.group_move_m, parse_geofence_polygon(args.geofence_polygon),
+                                args.geofence_margin_m)
     monitor.observed_field_margin_m = args.observed_field_margin_m
     try:
         while rclpy.ok() and not monitor.completed and monitor.failure is None:

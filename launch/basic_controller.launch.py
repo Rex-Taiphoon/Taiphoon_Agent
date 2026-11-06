@@ -77,9 +77,6 @@ def launch_nodes(context, *args, **kwargs):
             LaunchConfiguration("enable_obstacle_cloud_simulator")))
     obstacle_config = context.perform_substitution(
         LaunchConfiguration("obstacle_config"))
-    # 以 Python 字串傳入，避免空字串或含逗號的頂點列表被 YAML 轉成其他型別。
-    geofence_polygon = context.perform_substitution(
-        LaunchConfiguration("geofence_polygon")).strip()
     single_agent_mode = _as_bool(
         context.perform_substitution(
             LaunchConfiguration("single_agent_mode")))
@@ -174,10 +171,6 @@ def launch_nodes(context, *args, **kwargs):
                     "formation_min_distance_m")},
                 {"peer_collision_min_distance_m": LaunchConfiguration(
                     "peer_collision_min_distance_m")},
-                {"geofence_polygon": geofence_polygon},
-                {"geofence_margin_m": ParameterValue(
-                    LaunchConfiguration("geofence_margin_m"),
-                    value_type=float)},
                 {"obstacle_clearance_m": LaunchConfiguration(
                     "obstacle_clearance_m")},
                 {"knot_interval_s": LaunchConfiguration(
@@ -459,14 +452,6 @@ def generate_launch_description():
             "peer_collision_min_distance_m",
             default_value="2.0",
             description="同儕軌跡中心到中心最小距離（公尺），不因資料年齡擴張"),
-        DeclareLaunchArgument(
-            "geofence_polygon",
-            default_value="",
-            description="planner 水平地理圍籬 WGS84 頂點 'lat,lon;lat,lon;...'；空字串停用"),
-        DeclareLaunchArgument(
-            "geofence_margin_m",
-            default_value="0.5",
-            description="機體中心與圍籬邊界的最小水平距離（公尺）"),
         DeclareLaunchArgument(
             "enable_obstacle_cloud_simulator",
             default_value="false",

@@ -36,6 +36,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WaypointMissionStatus.msg"
   "msg/AgentEvent.msg"
   "msg/AgentHealth.msg"
+  "msg/GeofenceVertex.msg"
+  "msg/Geofence.msg"
+  "msg/GeofenceStatus.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 
@@ -462,6 +465,14 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(test_geofence PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # 地面站執行期設定地理圍籬的更新規則
+  ament_add_gtest(test_geofence_update
+    test/geofence_update_test.cpp
+  )
+  target_include_directories(test_geofence_update PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 

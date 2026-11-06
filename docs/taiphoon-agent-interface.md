@@ -122,6 +122,8 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 - `SpatiotemporalRouteInitializer`：只在 Local Goal + `FIXED_Z` 且直線 seed 受阻時執行 bounded `(North, East, time)` A*；結果只作 B-spline seed，不新增 ROS2 介面
 - `FormationReservationPlanner`：以 future `AgentTrajectory.start_time` 表示 reservation，不新增 ROS2 message
 - `FormationConvergenceEvaluator`：由 fresh state、槽位誤差、epoch 與 terminal occupancy 推導 convergence；槽位到達不使用速度門檻
+- `GeofenceUpdatePolicy`：地面站圍籬命令的檢查、版本比對、等待 Home 與拒絕時保留舊圍籬；
+  套用後由 Node 取消落在圍籬外的編隊、航點任務與目標，詳見 [4.4 地理圍籬](#44-地理圍籬geofence)
 - `WaypointMissionExecutor`：單機航點任務的驗證、WGS84／PX4 local 高度換算、狀態機、停留與單段逾時；
   每段航點以一般 Final Target 流程規劃（同儕避碰、障礙物、reservation 與 safety validator 全部照舊），
   詳見 [4.3 航點任務](#43-航點任務waypoint-mission)
@@ -148,8 +150,6 @@ Topic，只在本機容器 IP 綁定其他 Agent 的 DDS 單播埠段，把被 C
 | `minimum_replan_interval_s` | `double` | `0.5` | 正常 progress-based replan 的最短間隔（秒）；不阻擋 safety、Final Target 變更與 segment 結束 |
 | `formation_min_distance_m` | `double` | `2.0` | 編隊槽位的機體中心到中心最小距離 |
 | `peer_collision_min_distance_m` | `double` | `2.0` | 同儕軌跡的機體中心到中心最小距離 |
-| `geofence_polygon` | `string` | `""` | planner 水平地理圍籬，WGS84 頂點 `lat,lon;lat,lon;...`（3～64 點、依序相連、不可自交、距 Home 5 km 內）；空字串停用。格式錯誤或無法建立時 fail closed，拒絕所有移動目標（起飛、降落、hold 不受影響）。Docker 環境變數 `EGO_SWARM_GEOFENCE_POLYGON` |
-| `geofence_margin_m` | `double` | `0.5` | 機體中心與圍籬邊界的最小水平距離；Docker 環境變數 `EGO_SWARM_GEOFENCE_MARGIN_M` |
 | `obstacle_clearance_m` | `double` | `1.0` | 障礙物安全間距 |
 | `knot_interval_s` | `double` | `1.0` | B-spline 最小基準 knot 間隔；實際 duration 由候選路徑長度與動力學限制計算 |
 | `max_velocity_m_s` | `double` | `2.5` | duration 計算使用的最大速度 |
@@ -364,7 +364,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | 欄位 | 型別 | 說明 |
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 狀態時間戳 |
-| `state` | `uint8` | 規劃器狀態 |
+| `state` | `uint8` | 規劃器狀態，見下方 `STATE_*` 對照表 |
 | `trajectory_id` | `uint32` | 目前軌跡識別碼 |
 | `map_valid` | `bool` | 障礙物地圖是否有效 |
 | `localization_valid` | `bool` | 本 Agent 的 planner-local frame 是否有效 |
@@ -373,6 +373,28 @@ EGO-Swarm Planner 狀態與安全指標。
 | `min_obstacle_distance_m` | `float32` | 最近障礙物距離 |
 | `min_peer_distance_m` | `float32` | 最近同儕中心距離 |
 | `reason` | `string` | 降級或失敗原因 |
+
+`state` 數值對照（msg 常數 `STATE_*`）：
+
+| 值 | 常數 | 意義 | 常見 `reason` |
+|---|---|---|---|
+| 0 | `STATE_IDLE` | 保留，目前不發布 | — |
+| 1 | `STATE_RUNNING` | 正沿軌跡飛往目標（含到位前收尾、同儕解衝突的避讓移動） | `ok`、`Arriving; following trajectory to target`、`Progress stalled; following active trajectory to completion`、`Candidate replan failed; retaining safe active trajectory`、`Peer deconfliction escape ...` |
+| 2 | `STATE_HOLD` | 沒有在移動：未起飛、沒有目標、已到位懸停、編隊收斂、等待可行路徑，或緊急煞停中 | 見下表 |
+| 3 | `STATE_ERROR` | 無法產生煞停軌跡，BasicController 保留最後的 setpoint；需操作人員介入（例如 RTL 或 LAND） | `Emergency brake generation failed` |
+
+`STATE_HOLD` 涵蓋正常懸停與異常停止，請依 `reason` 開頭區分：
+
+| `reason` 開頭 | 類別 | 建議顯示 |
+|---|---|---|
+| `Flight mission inactive`、`Local WGS84 Home unavailable`、`Own GPS position unavailable`、`Planner time unavailable` | 尚未就緒（未起飛、沒有定位或 Home） | 一般資訊 |
+| `No mission target`、`Terminal hold`、`formation_converged` | 已到位或沒有任務，正常懸停 | 一般資訊 |
+| `Formation membership change pending`、`Formation sync waiting for peer trajectory`、`peer clock skew ...`、`Waiting for local route arbitration`、`Peer deconfliction: ...`、`Holding until replanning is safe`、`local_goal_selection_failed`、`optimized_no_feasible_horizontal_path` 及其他規劃失敗原因 | 等待同儕或可行路徑，會自動重試 | 提示（非錯誤） |
+| `Emergency brake: target reached while moving` | 到位時仍在移動的預期煞停 | 一般資訊 |
+| 其他 `Emergency brake: ...`、`optimized_emergency_brake: ...`、`Emergency brake in progress` | 避碰或安全驗證失敗的緊急煞停 | 警告；同時會收到 AgentEvent 401 |
+
+- `reason` 為英文說明，內容可能隨版本增加；QGCS 應以 `state` 判斷大類，`reason` 只用於細分與顯示，未知字串照原文顯示。
+- `STATE_ERROR` 與 AgentEvent 401／402 才是需要操作人員處理的狀態。
 
 > 同儕資料無效且某台同儕的時鐘差估計超過 `max_peer_time_skew_s` 時，`reason` 為
 > `peer clock skew agent=<N> offset=<±秒> s exceeds <門檻> s; check time sync`；
@@ -450,6 +472,7 @@ EGO-Swarm Planner 狀態與安全指標。
 | `REASON_FLIGHT_STATE` | 12 | 飛行狀態離開 Offboard 懸停／移動（PX4 自行 RTL、LAND、failsafe 或遙控器切換） |
 | `REASON_LANDED` | 13 | 已落地、上鎖或偵測到 PX4 重新啟動 |
 | `REASON_LEG_TIMEOUT` | 14 | 單段逾時未到達 |
+| `REASON_GEOFENCE_UPDATE` | 15 | 地理圍籬更新後，尚未完成的航點落在圍籬外；`detail` 為 `waypoint <N> outside updated geofence`（N 從 1 起算） |
 
 > `REJECTED` 屬於事件：只對被拒的 `mission_id` 發布一次，目前狀態不變；下一次週期發布回到實際狀態
 > （可能是另一個任務的 RUNNING）。
@@ -492,6 +515,7 @@ Agent 事件（錯誤、警告、資訊）。`basic_controller_node` 與 `ego_sw
 | 400 | `PLANNER_COMMAND_REJECTED` | WARNING | planner | 編隊成員不足、幾何不安全、沒有新鮮姿態、Home 未建立、未在編隊中下達全體 MOVE、目標或編隊槽位在地理圍籬外等 |
 | 401 | `PLANNER_EMERGENCY_BRAKE` | WARNING | planner | planner 啟動緊急煞停（同儕距離、規劃失敗等）；任務停止與到達時仍在移動的預期煞停不發布 |
 | 402 | `PLANNER_FAILURE_PERSISTENT` | ERROR | planner | 連續規劃失敗超過 `planner_failure_event_s`（每輪只發布一次） |
+| 403 | `PLANNER_GEOFENCE_TARGET_CANCELLED` | WARNING | planner | 地理圍籬更新後，目前的編隊槽位（`command=FORMATION`）、航點（`MISSION`）或移動目標（`MOVE`）落在圍籬外；已取消並原地懸停（只載入未開始的航點任務則直接清除） |
 | 500 | `SAFETY_POSITION_DEVIATION` | ERROR | — | 保留；PositionSafetyMonitor 介入目前停用，暫不發布 |
 
 - 同一代碼與 `command` 5 秒內只發布一次；狀態轉換事件（300、301、303、304）只在轉換時發布、不節流。
@@ -535,6 +559,43 @@ Agent 與 PX4 連線健康狀態，`basic_controller_node` 以 `health_publish_r
 | `FAILSAFE_FD_ESC_ARMING_FAILURE` | 1024 | `fd_esc_arming_failure` |
 | `FAILSAFE_LOCAL_POSITION_ACCURACY_LOW` | 2048 | `position_accuracy_low` |
 
+### 3.14 GeofenceVertex (`taiphoon_agent/msg/GeofenceVertex`)
+
+地理圍籬的單一頂點（只使用水平位置）。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `latitude_deg` | `float64` | WGS84 緯度（度） |
+| `longitude_deg` | `float64` | WGS84 經度（度） |
+
+### 3.15 Geofence (`taiphoon_agent/msg/Geofence`)
+
+地面站設定的地理圍籬，發布於 `/uav_all_agent/geofence`，全體 Agent 共用。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 發布時間（只供日誌） |
+| `fence_id` | `uint32` | GCS 指定的版本號，不得為 0；建議每次修改遞增 |
+| `action` | `uint8` | `ACTION_SET=1` 設定或替換；`ACTION_CLEAR=2` 停用 |
+| `margin_m` | `float32` | 機體中心與邊界的最小水平距離（公尺），0～10；CLEAR 時忽略 |
+| `vertices` | `GeofenceVertex[]` | 3～64 點，依序相連、不可自交、不需重複第一點，每點距 planner Home 5 km 內；CLEAR 時忽略 |
+
+### 3.16 GeofenceStatus (`taiphoon_agent/msg/GeofenceStatus`)
+
+各 Agent 的地理圍籬狀態，發布於 `/{agent_namespace}/geofence/status`，狀態改變時發布。
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 發布時間 |
+| `state` | `uint8` | `STATE_DISABLED=0` 沒有圍籬；`STATE_PENDING=1` 已接受、等待 planner Home；`STATE_ACTIVE=2` 生效中 |
+| `fence_id` | `uint32` | 目前生效或等待中的圍籬版本；DISABLED 時為 0 |
+| `margin_m` | `float32` | 目前圍籬的 margin；DISABLED 時為 0 |
+| `vertices` | `GeofenceVertex[]` | 目前圍籬的頂點；DISABLED 時為空（GCS 重啟後可據此還原顯示） |
+| `last_request_id` | `uint32` | 最近一次處理的 `Geofence.fence_id` |
+| `last_result` | `uint8` | `RESULT_NONE=0`、`RESULT_ACCEPTED=1`（含內容相同的重送）、`RESULT_REJECTED_INVALID=2`（版本號、動作、margin、頂點數量或座標不合法、自交、面積過小）、`RESULT_REJECTED_TOO_FAR=3`（頂點距 Home 超過 5 km） |
+| `position_inside` | `bool` | 目前位置在圍籬（含 margin）內；沒有圍籬或沒有位置時為 true |
+| `detail` | `string` | 英文補充說明 |
+
 ---
 
 ## 4. Topic 完整清單
@@ -574,6 +635,7 @@ Agent 與 PX4 連線健康狀態，`basic_controller_node` 以 `health_publish_r
 | `/{agent_namespace}/mission/status` | 航點任務狀態（ego_swarm_planner） | `taiphoon_agent/WaypointMissionStatus` | 改變時立即＋1 Hz 重送 | reliable、transient_local (1) |
 | `/{agent_namespace}/events` | Agent 事件（basic_controller_node 與 ego_swarm_planner） | `taiphoon_agent/AgentEvent` | 事件發生時 | reliable、volatile (20) |
 | `/{agent_namespace}/health` | Agent 與 PX4 連線健康狀態（basic_controller_node） | `taiphoon_agent/AgentHealth` | 1 Hz | reliable、volatile (1) |
+| `/{agent_namespace}/geofence/status` | 地理圍籬狀態（ego_swarm_planner） | `taiphoon_agent/GeofenceStatus` | 改變時 | reliable、transient_local (1) |
 
 **實際範例**（4 機部署）：
 
@@ -591,6 +653,7 @@ Agent 與 PX4 連線健康狀態，`basic_controller_node` 以 `health_publish_r
 | `/{agent_namespace}/command` | 發送命令給**指定** Agent | `std_msgs/String` | reliable (10) |
 | `/uav_all_agent/command` | 廣播命令給**所有** Agent | `std_msgs/String` | reliable (10) |
 | `/{agent_namespace}/mission/plan` | 上傳航點任務給**指定** Agent（只載入，不會移動） | `taiphoon_agent/WaypointMission` | reliable、volatile (10) |
+| `/uav_all_agent/geofence` | 設定、替換或清除**所有** Agent 的地理圍籬 | `taiphoon_agent/Geofence` | reliable、transient_local (1) |
 
 > **GCS 設計建議**：
 > - 使用 `/{agent_namespace}/command` 對單一無人機下達移動、模式切換命令。
@@ -598,6 +661,8 @@ Agent 與 PX4 連線健康狀態，`basic_controller_node` 以 `health_publish_r
 > - 命令格式詳見 [第 6 節](#6-命令協定-command-protocol)。
 > - 航點任務先發布 `mission/plan`，確認 `mission/status` 為 `LOADED` 後再送 `MISSION_START <mission_id>`；
 >   流程詳見 [4.3 航點任務](#43-航點任務waypoint-mission)。
+> - 地理圍籬發布到 `/uav_all_agent/geofence` 後，比對各機 `geofence/status` 的 `fence_id` 確認已生效；
+>   流程詳見 [4.4 地理圍籬](#44-地理圍籬geofence)。
 
 #### 4.2.3 內部控制流（Agent 內部通訊，GCS 可監控）
 
@@ -628,6 +693,8 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/command` | 接收本機 `MOVE_*`、`MOVE_POINT` 與 `FORMATION_CANCEL`，轉換為 EGO-Swarm 目標；模式、起飛與 YAW 仍由 BasicController 處理 |
 | `ego_swarm_planner`（訂閱） | `/{agent_namespace}/attitude` | 取得命令收到當下的機頭 yaw，固定水平 MOVE 的 local NED 目標 |
 | `ego_swarm_planner`（訂閱） | `/uav_all_agent/command` | 接收全體編隊與同步命令 |
+| `ego_swarm_planner`（訂閱） | `/uav_all_agent/geofence` | 接收地面站設定的地理圍籬 |
+| `ego_swarm_planner`（發布） | `/{agent_namespace}/geofence/status` | 回報圍籬是否生效與目前內容 |
 | `ego_swarm_planner`（訂閱／發布） | `/uav_all_agent/swarm/formation_epochs` | 交換 proposal/adopted、共同 WGS84 snapshot 與編隊 heartbeat |
 | `ego_swarm_planner`（訂閱） | `/uav_all_agent/swarm/agent_trajectories` | 取得同儕未來軌跡進行避碰 |
 | `ego_swarm_planner`（發布） | `/uav_all_agent/swarm/agent_trajectories` | 發布本機未來軌跡 |
@@ -711,14 +778,14 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 - 飛行中重新啟動的 Agent 不會自動採用既有編隊，需重新下達 `FORMATION_*`；
   存活成員不會因等待它而停止。
 - 同儕避碰的距離定義為機體中心到機體中心的三維直線距離，不加計機體半徑。
-- **地理圍籬**（`geofence_polygon` 非空時）：只限制水平 North／East，planner Home 凍結後一次換算成
-  planner-local NED，PX4 重啟不重建。命令階段拒絕圍籬（含 `geofence_margin_m`）外的目標：單機
+- **地理圍籬**（地面站設定後生效，見 [4.4](#44-地理圍籬geofence)）：只限制水平 North／East，以 planner
+  Home 換算成 planner-local NED，PX4 重啟不重建。命令階段拒絕圍籬（含 margin）外的目標：單機
   `MOVE_*`／`MOVE_POINT`／NED target 回報 `PLANNER_COMMAND_REJECTED`（detail `Goal outside geofence` 或
   `Goal invalid or outside geofence`）；全體 MOVE 或編隊提案任一槽位在外時回報 `Formation slot outside geofence`；
   遠端 epoch 指派給本機的槽位在外時本機不前往。規劃階段 Local Goal 候選、時空 A* 格點、optimizer
   取樣點與 `ContinuousSafetyValidator`（reason `geofence_violation`）都以圍籬為硬限制，直接到位也以直線段
   檢查；圍籬內暫無可行路徑時低速原地等待重試，不為避讓而出界。起點已在 margin 帶或圍籬外時只允許
-  往內修正。緊急煞停不經圍籬驗證，`geofence_margin_m` 應大於預期煞停距離。
+  往內修正。緊急煞停不經圍籬驗證，margin 應大於預期煞停距離。
 - 最小距離不得在文件或實作中硬編碼為 3 公尺；Launch 與 entrypoint 以
   `formation_min_distance_m`、`peer_collision_min_distance_m` 提供設定，可使用
   1.5 m、2 m 或 3 m 等值。
@@ -756,7 +823,7 @@ EGO-Swarm 以 AgentState 取得同儕目前狀態，使用 WGS84 位置建立接
 `mission_id == 0`、`altitude_frame` 不是 `ALTITUDE_PX4_LOCAL`、航點數為 0 或超過上限、經緯度不合法、
 高度不在 `mission_min_altitude_m`～`mission_max_altitude_m`、`dwell_s` 不合法、`yaw_deg` 不是 NaN（INVALID_PLAN）；
 沒有有效 AgentState、planner Home 或 PX4 local 換算（NOT_READY）；任一航點水平距離超過上限（OUT_OF_RANGE）；
-設定地理圍籬時任一航點在圍籬（含 margin）外（同樣回報 OUT_OF_RANGE，`detail` 為 `waypoint outside geofence`，
+地理圍籬生效時任一航點在圍籬（含 margin）外（同樣回報 OUT_OF_RANGE，`detail` 為 `waypoint outside geofence`，
 `current_index` 指向第一個越界航點）。
 上傳本身不需在懸停；新上傳會取代已載入、已完成或已中止的任務。
 
@@ -788,6 +855,35 @@ PX4 為 Offboard（`px4_nav_state=14`）、AgentState `flight_mode=HOVER`、`px4
 - Agent 重新啟動後任務遺失並發布 IDLE；QGCS 以狀態不符判定任務中止。
 
 ---
+
+### 4.4 地理圍籬（Geofence）
+
+圍籬只由地面站在執行期設定；Agent 啟動時沒有圍籬，也沒有對應的啟動參數或環境變數。
+
+**流程**：
+
+1. GCS 發布 `Geofence`（`ACTION_SET`，新的 `fence_id`）到 `/uav_all_agent/geofence`。QoS 為 reliable、
+   transient_local、depth 1，GCS 保持 publisher 存在時，重啟或晚加入的 Agent 也會收到最後一筆。
+2. 各 Agent 檢查命令並以 planner Home 建立圍籬，結果發布到 `/{agent_namespace}/geofence/status`：
+   - 生效：`state=ACTIVE`、`fence_id` 為新版本、`last_result=RESULT_ACCEPTED`。
+   - Home 尚未建立：`state=PENDING`，Home 凍結後自動生效（或改回報 `REJECTED_*` 並維持無圍籬）。
+   - 拒絕：`last_request_id` 為新版本、`last_result` 為 `RESULT_REJECTED_*`，**原本的圍籬保留**。
+3. GCS 比對各機 `fence_id`，找出未生效或拒絕的 Agent。
+4. 停用時發布 `ACTION_CLEAR`（同樣需要非 0 的 `fence_id`）。
+
+**飛行中更新**（隨時允許）：
+
+| 情況 | Agent 處理 |
+|---|---|
+| 清除圍籬 | 只停用，目前目標、編隊與任務照常 |
+| 編隊中任一槽位落在新圍籬外 | 各機解散編隊、原地懸停，事件 403（`command=FORMATION`） |
+| 航點任務尚未完成的任一航點在外 | 任務中止（`REASON_GEOFENCE_UPDATE`）並原地懸停；只載入未開始的任務直接清除；事件 403（`MISSION`） |
+| 單機移動目標在外 | 取消目標並原地懸停，事件 403（`MOVE`） |
+| 目標仍在內，但執行中軌跡越界 | 下一個規劃週期重新規劃（不煞停） |
+| 目前位置已在新圍籬外 | 不自動飛回；之後只允許往內的移動，`position_inside=false` |
+
+- 內容相同的重送（同 `fence_id`、margin 與頂點）不重新套用，也不重新觸發上述處理。
+- 清除圍籬會失去場域保護，Agent 不另外確認，請由 GCS 端確認操作。
 
 ## 5. Service 完整清單
 
@@ -966,6 +1062,16 @@ ros2 topic pub --once /uav_1_agent/mission/plan taiphoon_agent/msg/WaypointMissi
     {latitude_deg: 24.00010, longitude_deg: 121.00010, altitude_m: 10.0, dwell_s: 0.0, yaw_deg: .nan}]}"
 ros2 topic pub --once /uav_1_agent/command std_msgs/msg/String "data: 'MISSION_START 7'"
 
+# 設定全體地理圍籬（四角、margin 0.5 m；-w 為等待的 Agent 數），再觀察 uav_1 是否生效
+ros2 topic pub --once -w 4 --qos-reliability reliable --qos-durability transient_local \
+  /uav_all_agent/geofence taiphoon_agent/msg/Geofence \
+  "{fence_id: 1, action: 1, margin_m: 0.5, vertices: [
+    {latitude_deg: 24.881044504, longitude_deg: 121.069686147},
+    {latitude_deg: 24.881001255, longitude_deg: 121.069622881},
+    {latitude_deg: 24.881058649, longitude_deg: 121.069575207},
+    {latitude_deg: 24.881101898, longitude_deg: 121.069638473}]}"
+ros2 topic echo --qos-durability transient_local /uav_1_agent/geofence/status
+
 # 觀察任務狀態、事件與健康狀態
 ros2 topic echo /uav_1_agent/mission/status
 ros2 topic echo /uav_1_agent/events
@@ -1016,11 +1122,12 @@ PX4 uXRCE-DDS topic 的固定路徑元件，不代表 UAV 的實例識別碼。
 | `/{agent_namespace}/planning/status`、`/planning/trajectory` | reliable | volatile | 10 |
 | `/{agent_namespace}/mission/plan` | reliable | volatile | 10 |
 | `/{agent_namespace}/mission/status` | reliable | transient_local | 1 |
+| `/uav_all_agent/geofence`、`/{agent_namespace}/geofence/status` | reliable | transient_local | 1 |
 | `/{agent_namespace}/events` | reliable | volatile | 20 |
 | `/{agent_namespace}/health` | reliable | volatile | 1 |
 
 > 上述 QoS 與目前 `basic_controller_node`、`ego_swarm_planner`、`obstacle_cloud_simulator` 實作一致。
-> `mission/status` 使用 transient_local，晚加入的 GCS 會先收到最後一筆狀態；`events` 刻意使用 volatile，不重播舊事件。
+> `mission/status`、`geofence/status` 使用 transient_local，晚加入的 GCS 會先收到最後一筆狀態；`events` 刻意使用 volatile，不重播舊事件。
 
 ---
 

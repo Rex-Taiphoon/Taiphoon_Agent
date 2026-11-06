@@ -34,8 +34,6 @@
 | `planning_rate_hz` | double | `10.0` | 規劃迴圈頻率 |
 | `enable_local_goal_planning` | bool | `true` | Local Goal segmented planning；水平 FIXED_Z 受阻時啟用 bounded 時空 A*，FREE_3D／LINEAR_Z 維持既有 planner |
 | `enable_generic_trajectory_reservation` | bool | `false` | 將 reservation 擴展至 MOVE 等所有 moving trajectory；Formation 仍固定使用 reservation |
-| `geofence_polygon` | string | `""` | planner 水平地理圍籬，WGS84 頂點 `lat,lon;lat,lon;...`（3～64 點、依序相連、不可自交、距 Home 5 km 內）；空字串停用。格式錯誤或無法建立時 fail closed，拒絕所有移動目標（起飛、降落、hold 不受影響）。Docker 環境變數 `EGO_SWARM_GEOFENCE_POLYGON` |
-| `geofence_margin_m` | double | `0.5` | 機體中心與圍籬邊界的最小水平距離；Docker 環境變數 `EGO_SWARM_GEOFENCE_MARGIN_M` |
 | `peer_planning_margin_m` | m | `1.0` | planner 產生路徑時額外保留的機間距離；最終安全門檻仍由 `peer_collision_min_distance_m` 驗證 |
 | `local_goal_horizon_m` | double | `10.0` | Local Goal 單一 planning segment 的距離 horizon（公尺） |
 | `local_goal_detour_margin_m` | double | `3.0` | Local Goal 側向繞行相對於 peer collision distance 額外保留的追蹤裕度（公尺） |
