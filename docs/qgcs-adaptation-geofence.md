@@ -52,6 +52,11 @@
 - 航點越界沿用 `REASON_OUT_OF_RANGE`，沒有新增 msg 常數；QGCS 若要區分「距離過遠」與「超出圍籬」，請判斷 `detail`。
 - 拒絕發生在命令階段，Agent 目標不變（維持原本的懸停或任務）。
 - 等待狀態不是錯誤：同儕讓開後 Agent 會自動繼續，QGCS 不需要重送命令。
+- 停滯字串會持續到 Agent 換成新軌跡為止（通常 0.5～2 秒），之後回到 `ok`；一次移動可能出現數次，
+  都不是錯誤，建議以一般提示顯示，不要跳出警告。
+- 既有的 `Emergency brake: target reached while moving`（`state` 為 HOLD）表示飛機到位時仍在移動，
+  Agent 原地煞停後進入懸停；小場域幾乎每次到位都會出現。建議 QGCS 對這個字串降低警示等級，
+  與真正的避碰煞停（`optimized_emergency_brake: ...`）分開顯示。
 
 ## 4. GuardModule 與輸入範圍
 
